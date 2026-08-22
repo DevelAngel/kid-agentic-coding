@@ -3,4 +3,17 @@ name = "kid-agentic-coding"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "kid_agentic_coding"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kid-agentic-coding"
+path = "src/main.rs"
+
 [dependencies]
+agent-client-protocol = { version = "2.0.0", features = ["unstable_mcp_over_acp", "unstable_protocol_v2"] }
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1.52", default-features = false, features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
