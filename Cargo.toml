@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 agent-client-protocol = { version = "2.0.0", features = ["unstable_mcp_over_acp", "unstable_protocol_v2"] }
 clap = { version = "4.5", features = ["derive"] }
+ratatui = "0.30.2"
 tokio = { version = "1.52", default-features = false, features = ["macros", "rt-multi-thread", "sync"] }
 tracing = "0.1"
 thiserror = "2.0"
