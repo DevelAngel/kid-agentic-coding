@@ -6,14 +6,12 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AudioContent, ContentBlock, EmbeddedResourceResource, ImageContent, InitializeRequest,
     PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
-    PermissionOption,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
     StopReason, TextContent,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, Dispatch, Handled, UntypedMessage};
 use std::path::PathBuf;
-use tokio::sync::{mpsc, oneshot};
 
 /// Converts a `ContentBlock` to its string representation.
 ///
@@ -246,173 +244,10 @@ pub async fn prompt(
     Ok(accumulated_text)
 }
 
-/// Events emitted from an interactive session to a UI layer.
-#[derive(Debug)]
-pub enum SessionEvent {
-    /// A chunk of agent message content.
-    Chunk(Box<ContentBlock>),
-    /// The agent requests permission to proceed.
-    ///
-    /// Reply with `Some(option_id)` to select an option, or `None` to cancel.
-    PermissionRequest {
-        options: Vec<PermissionOption>,
-        reply: oneshot::Sender<Option<String>>,
-    },
-    /// The current turn ended with the given reason. The session stays open
-    /// for further prompts.
-    Stopped(StopReason),
-}
 
-/// Returned by [`SessionHandle::send_prompt`] when the session task has already ended.
-#[derive(Debug)]
-pub struct SessionClosed;
+mod bridge;
+mod session;
 
-impl std::fmt::Display for SessionClosed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "interactive session task has ended")
-    }
-}
-
-impl std::error::Error for SessionClosed {}
-
-/// Handle to a running interactive ACP session.
-///
-/// Prompts are sent via [`SessionHandle::send_prompt`], updates are consumed via
-/// [`SessionHandle::recv_event`]. The underlying agent connection stays open across
-/// multiple turns until the handle is dropped.
-pub struct SessionHandle {
-    prompt_tx: mpsc::UnboundedSender<String>,
-    event_rx: mpsc::UnboundedReceiver<SessionEvent>,
-}
-
-impl SessionHandle {
-    /// Sends a new prompt into the running session.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SessionClosed`] if the session task has already ended.
-    pub fn send_prompt(&self, prompt_text: impl ToString) -> Result<(), SessionClosed> {
-        self.prompt_tx
-            .send(prompt_text.to_string())
-            .map_err(|_| SessionClosed)
-    }
-
-    /// Awaits the next event from the session.
-    ///
-    /// Returns `None` once the session task has ended (e.g. startup failed,
-    /// or the agent connection closed).
-    pub async fn recv_event(&mut self) -> Option<SessionEvent> {
-        self.event_rx.recv().await
-    }
-}
-
-/// Starts an interactive ACP session that stays open across multiple prompts.
-///
-/// Unlike [`prompt_with_callback`], which runs a single turn and returns, this spawns
-/// the agent connection as a background task and returns a [`SessionHandle`] immediately.
-/// Send prompts and read [`SessionEvent`]s through the handle for as long as needed;
-/// dropping the handle shuts the session down.
-pub fn start_interactive_session(component: impl ConnectTo<Client> + 'static) -> SessionHandle {
-    let (prompt_tx, mut prompt_rx) = mpsc::unbounded_channel::<String>();
-    let (event_tx, event_rx) = mpsc::unbounded_channel::<SessionEvent>();
-
-    tokio::spawn(async move {
-        let result = Client
-            .builder()
-            .on_receive_dispatch(
-                async |message: Dispatch<UntypedMessage, UntypedMessage>, _cx| {
-                    tracing::trace!("received: {:?}", message.message());
-                    Ok(Handled::No {
-                        message,
-                        retry: false,
-                    })
-                },
-                agent_client_protocol::on_receive_dispatch!(),
-            )
-            .connect_with(
-                component,
-                |cx: agent_client_protocol::ConnectionTo<Agent>| async move {
-                    let _init_response = cx
-                        .send_request(InitializeRequest::new(ProtocolVersion::V1))
-                        .block_task()
-                        .await?;
-
-                    let mut session = cx
-                        .build_session(PathBuf::from("."))
-                        .block_task()
-                        .start_session()
-                        .await?;
-
-                    loop {
-                        tokio::select! {
-                            prompt = prompt_rx.recv() => {
-                                match prompt {
-                                    Some(text) => session.send_prompt(text)?,
-                                    None => break,
-                                }
-                            }
-                            update = session.read_update() => {
-                                match update? {
-                                    agent_client_protocol::SessionMessage::SessionMessage(message) => {
-                                        MatchDispatch::new(message)
-                                            .if_notification(async |notification: SessionNotification| {
-                                                if let SessionUpdate::AgentMessageChunk(content_chunk) =
-                                                    notification.update
-                                                {
-                                                    let _ = event_tx
-                                                        .send(SessionEvent::Chunk(Box::new(content_chunk.content)));
-                                                }
-                                                Ok(())
-                                            })
-                                            .await
-                                            .if_request(
-                                                async |request: RequestPermissionRequest, responder| {
-                                                    let (reply_tx, reply_rx) = oneshot::channel();
-                                                    let _ = event_tx.send(SessionEvent::PermissionRequest {
-                                                        options: request.options.clone(),
-                                                        reply: reply_tx,
-                                                    });
-
-                                                    let outcome = match reply_rx.await {
-                                                        Ok(Some(option_id)) => {
-                                                            RequestPermissionOutcome::Selected(
-                                                                SelectedPermissionOutcome::new(option_id),
-                                                            )
-                                                        }
-                                                        _ => RequestPermissionOutcome::Cancelled,
-                                                    };
-
-                                                    responder
-                                                        .respond(RequestPermissionResponse::new(outcome))?;
-                                                    Ok(())
-                                                },
-                                            )
-                                            .await
-                                            .otherwise(async |_msg| Ok(()))
-                                            .await?;
-                                    }
-                                    agent_client_protocol::SessionMessage::StopReason(stop_reason) => {
-                                        let _ = event_tx.send(SessionEvent::Stopped(stop_reason));
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-
-                    Ok(())
-                },
-            )
-            .await;
-
-        if let Err(err) = result {
-            tracing::warn!(?err, "interactive session task ended with error");
-        }
-    });
-
-    SessionHandle {
-        prompt_tx,
-        event_rx,
-    }
-}
+pub use bridge::{SessionClosed, SessionEvent, SessionHandle};
+pub use session::start_interactive_session;
 
