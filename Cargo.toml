@@ -1,17 +1,12 @@
-[package]
-name = "kid-agentic-coding"
+[workspace]
+resolver = "3"
+members = ["app"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[lib]
-name = "kid_agentic_coding"
-path = "src/lib.rs"
-
-[[bin]]
-name = "kid-agentic-coding"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
 agent-client-protocol = { version = "2.0.0", features = ["unstable_mcp_over_acp", "unstable_protocol_v2"] }
 clap = { version = "4.5", features = ["derive"] }
 ratatui = "0.30.2"
