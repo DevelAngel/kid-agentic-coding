@@ -133,6 +133,12 @@ fn new_prompt_textarea() -> ratatui_textarea::TextArea<'static> {
             )),
     );
     textarea.set_cursor_line_style(Style::default());
+    textarea.set_placeholder_text("Type a message, or :q / :quit to exit");
+    textarea.set_placeholder_style(
+        Style::default()
+            .fg(Color::DarkGray)
+            .bg(Color::Rgb(40, 40, 50)),
+    );
     textarea
 }
 
