@@ -59,4 +59,31 @@ impl SessionHandle {
     pub async fn recv_event(&mut self) -> Option<SessionEvent> {
         self.event_rx.recv().await
     }
+
+    /// Builds a `SessionHandle` backed by disconnected channels, for tests
+    /// that need a handle but don't exercise prompt sending or event receiving.
+    #[doc(hidden)]
+    pub fn new_disconnected_for_test() -> Self {
+        let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        Self {
+            prompt_tx,
+            event_rx,
+        }
+    }
+
+    /// Builds a `SessionHandle` alongside its prompt receiver, for tests that
+    /// need `send_prompt` to succeed rather than report a closed session.
+    #[doc(hidden)]
+    pub fn new_connected_for_test() -> (Self, UnboundedReceiver<String>) {
+        let (prompt_tx, prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Self {
+                prompt_tx,
+                event_rx,
+            },
+            prompt_rx,
+        )
+    }
 }
