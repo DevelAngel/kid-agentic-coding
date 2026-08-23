@@ -95,6 +95,10 @@ impl App {
                 if prompt_text.is_empty() {
                     return;
                 }
+                if matches!(prompt_text.as_str(), ":q" | ":quit") {
+                    self.should_quit = true;
+                    return;
+                }
                 self.prompt = new_prompt_textarea();
                 self.chat_log.push_user(prompt_text.clone());
                 if session.send_prompt(prompt_text).is_err() {
@@ -108,7 +112,7 @@ impl App {
             KeyCode::PageDown => {
                 self.scroll_offset = self.scroll_offset.saturating_add(SCROLL_STEP);
             }
-            KeyCode::Esc => self.should_quit = true,
+            KeyCode::Esc => self.prompt = new_prompt_textarea(),
             _ => {
                 self.prompt.input(key);
             }
@@ -344,3 +348,71 @@ pub async fn run(component: impl ConnectTo<Client> + 'static) -> io::Result<()> 
 
     result
 }
+
+#[cfg(test)]
+mod handle_key_tests {
+    use super::App;
+    use kid_agentic_coding::SessionHandle;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn test_session() -> SessionHandle {
+        SessionHandle::new_disconnected_for_test()
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn type_text(app: &mut App, session: &SessionHandle, text: &str) {
+        for c in text.chars() {
+            app.handle_key(key(KeyCode::Char(c)), session);
+        }
+    }
+
+    #[test]
+    fn esc_clears_prompt_without_quitting() {
+        let mut app = App::new();
+        let session = test_session();
+
+        type_text(&mut app, &session, "hello");
+        app.handle_key(key(KeyCode::Esc), &session);
+
+        assert!(!app.should_quit);
+        assert!(app.prompt.lines().join(" ").trim().is_empty());
+    }
+
+    #[test]
+    fn colon_q_quits_on_enter() {
+        let mut app = App::new();
+        let session = test_session();
+
+        type_text(&mut app, &session, ":q");
+        app.handle_key(key(KeyCode::Enter), &session);
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn colon_quit_quits_on_enter() {
+        let mut app = App::new();
+        let session = test_session();
+
+        type_text(&mut app, &session, ":quit");
+        app.handle_key(key(KeyCode::Enter), &session);
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn regular_prompt_does_not_quit() {
+        let mut app = App::new();
+        let (session, _prompt_rx) = SessionHandle::new_connected_for_test();
+
+        type_text(&mut app, &session, "hello agent");
+        app.handle_key(key(KeyCode::Enter), &session);
+
+        assert!(!app.should_quit);
+        assert_eq!(app.chat_log.messages().len(), 1);
+    }
+}
+
