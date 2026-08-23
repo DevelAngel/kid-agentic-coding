@@ -10,7 +10,7 @@ use agent_client_protocol::schema::v1::{
     SessionNotification, SessionUpdate, StopReason, TextContent,
 };
 use agent_client_protocol::{Agent, Stdio};
-use std::error;
+use color_eyre::Result;
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -26,7 +26,8 @@ static NEXT_SESSION_ID: AtomicUsize = AtomicUsize::new(0);
 static NEXT_PROMPT_SEED: AtomicUsize = AtomicUsize::new(0);
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn error::Error>> {
+async fn main() -> Result<()> {
+    color_eyre::install()?;
     tracing_subscriber::fmt().with_writer(io::stderr).init();
 
     Agent

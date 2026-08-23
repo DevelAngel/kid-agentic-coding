@@ -3,6 +3,7 @@
 mod ui;
 
 use clap::Parser;
+use color_eyre::Result;
 use kid_agentic_coding::PromptRunner;
 
 #[derive(Parser, Debug)]
@@ -19,7 +20,8 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
+    color_eyre::install()?;
     let args = Args::parse();
     let agent = PromptRunner::parse_agent_args(&args.agent_args)?;
 

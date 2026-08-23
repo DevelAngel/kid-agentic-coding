@@ -6,6 +6,7 @@ build = false
 
 [dependencies]
 agent-client-protocol.workspace = true
+color-eyre.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
