@@ -189,3 +189,42 @@ fn visible_bubbles_never_overlap_at_any_scroll_offset() {
         }
     }
 }
+
+#[test]
+fn collapsed_tool_cluster_is_a_single_unframed_row() {
+    let mut log = ChatLog::new();
+    log.push_tool_call("git_status");
+    log.push_tool_call("git_switch_branch");
+
+    let layout = BubbleLayout::new(&log, 80, 24);
+
+    assert_eq!(layout.bubbles().len(), 1);
+    assert_eq!(layout.bubbles()[0].rect.height, 1);
+    assert_eq!(layout.bubbles()[0].borders, ratatui::widgets::Borders::NONE);
+    assert_eq!(layout.bubbles()[0].alignment, Alignment::Left);
+}
+
+#[test]
+fn expanded_tool_cluster_reserves_one_row_per_entry_plus_summary() {
+    let mut log = ChatLog::new();
+    log.push_tool_call("git_status");
+    log.push_tool_call("git_switch_branch");
+    log.push_tool_call("git_pull");
+    log.toggle_cluster(0);
+
+    let layout = BubbleLayout::new(&log, 80, 24);
+
+    assert_eq!(layout.bubbles()[0].rect.height, 4);
+}
+
+#[test]
+fn thought_row_is_unframed() {
+    let mut log = ChatLog::new();
+    log.push_thought("checking existing error handling");
+
+    let layout = BubbleLayout::new(&log, 80, 24);
+
+    assert_eq!(layout.bubbles()[0].borders, ratatui::widgets::Borders::NONE);
+    assert_eq!(layout.bubbles()[0].alignment, Alignment::Left);
+}
+

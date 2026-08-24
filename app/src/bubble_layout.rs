@@ -41,31 +41,36 @@ impl BubbleLayout {
         let mut y: u16 = 0;
 
         for message in log.messages() {
-            let (text, alignment) = match message {
-                Message::User(m) => (m.text.as_str(), Alignment::Right),
-                Message::Agent(m) => (m.text.as_str(), Alignment::Left),
-            };
-
-            let text_lines = wrapped_line_count(text, text_width);
-            let bubble_height = 2 + text_lines;
-
-            let x = match alignment {
-                Alignment::Right => width.saturating_sub(bubble_width),
-                Alignment::Left => 0,
+            let (rect, borders, alignment) = match message {
+                Message::User(m) => {
+                    let text_lines = wrapped_line_count(&m.text, text_width);
+                    framed_rect(bubble_width, width, 2 + text_lines, Alignment::Right)
+                }
+                Message::Agent(m) => {
+                    let text_lines = wrapped_line_count(&m.text, text_width);
+                    framed_rect(bubble_width, width, 2 + text_lines, Alignment::Left)
+                }
+                Message::Thought(text) => {
+                    let text_lines = wrapped_line_count(text, bubble_width);
+                    unframed_rect(bubble_width, text_lines)
+                }
+                Message::ToolCluster(cluster) => {
+                    let rows = if cluster.expanded() {
+                        1 + cluster.entries().len() as u16
+                    } else {
+                        1
+                    };
+                    unframed_rect(bubble_width, rows)
+                }
             };
 
             bubbles.push(Bubble {
-                rect: Rect {
-                    x,
-                    y,
-                    width: bubble_width,
-                    height: bubble_height,
-                },
-                borders: Borders::ALL,
+                rect: Rect { y, ..rect },
+                borders,
                 alignment,
             });
 
-            y = y.saturating_add(bubble_height);
+            y = y.saturating_add(rect.height);
         }
 
         Self {
@@ -169,6 +174,48 @@ fn bubble_width(viewport_width: u16) -> u16 {
     let seventy_percent = (u32::from(viewport_width) * 70) / 100;
     (seventy_percent as u16).max(2).min(viewport_width.max(2))
 }
+
+/// Rect/borders/alignment for a bordered bubble of the given content
+/// `height` (already including the top/bottom border rows). `y` is left
+/// at `0`; the caller overwrites it once the running offset is known.
+fn framed_rect(
+    bubble_width: u16,
+    viewport_width: u16,
+    height: u16,
+    alignment: Alignment,
+) -> (Rect, Borders, Alignment) {
+    let x = match alignment {
+        Alignment::Right => viewport_width.saturating_sub(bubble_width),
+        Alignment::Left => 0,
+    };
+    (
+        Rect {
+            x,
+            y: 0,
+            width: bubble_width,
+            height,
+        },
+        Borders::ALL,
+        alignment,
+    )
+}
+
+/// Rect/borders/alignment for an unframed, left-aligned row (thoughts and
+/// tool clusters) of the given `height`. `y` is left at `0`; the caller
+/// overwrites it once the running offset is known.
+fn unframed_rect(bubble_width: u16, height: u16) -> (Rect, Borders, Alignment) {
+    (
+        Rect {
+            x: 0,
+            y: 0,
+            width: bubble_width,
+            height,
+        },
+        Borders::NONE,
+        Alignment::Left,
+    )
+}
+
 
 /// Number of rows `text` occupies when greedily word-wrapped to `width`
 /// columns. Words longer than `width` are not split further.
