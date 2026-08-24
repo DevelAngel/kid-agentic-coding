@@ -1,0 +1,48 @@
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v6.0.0"
+[[repos.hooks]]
+id = "trailing-whitespace"
+[[repos.hooks]]
+id = "end-of-file-fixer"
+
+[[repos]]
+repo = "local"
+[[repos.hooks]]
+stages = ["pre-commit"]
+id = "deno-fmt"
+name = "deno fmt"
+language = "system"
+types = ["json", "markdown"]
+pass_filenames = false
+entry = "deno fmt"
+[[repos.hooks]]
+stages = ["pre-commit"]
+id = "cargo-fmt"
+name = "cargo fmt"
+language = "system"
+types = ["rust"]
+pass_filenames = false # This makes it a lot faster
+entry = "cargo fmt --"
+[[repos.hooks]]
+stages = ["pre-commit"]
+id = "cargo-clippy"
+name = "cargo clippy"
+language = "system"
+types = ["rust"]
+pass_filenames = false
+entry = "cargo clippy --all-targets --all-features -- -D warnings"
+[[repos.hooks]]
+stages = ["pre-commit"]
+id = "cargo-test"
+name = "cargo test"
+language = "system"
+types = ["rust"]
+pass_filenames = false
+entry = "cargo test"
+# [[repos.hooks]]
+# stages = ["prepare-commit-msg"]
+# id = "git-cliff"
+# name = "git cliff"
+# language = "system"
+# entry = "scripts/prepare_commit_msg.py"
