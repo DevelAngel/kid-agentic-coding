@@ -13,8 +13,8 @@ mod timeline_layout;
 
 pub use bridge::{SessionClosed, SessionEvent, SessionHandle};
 pub use bubble_layout::{Alignment, Bubble, BubbleLayout, VisibleBubble};
-pub use chat_log::{AgentMessage, ChatLog, Message, UserMessage};
+pub use chat_log::{AgentMessage, ChatLog, EntryId, Message, ToolCallEntry, ToolCluster, UserMessage};
 pub use prompt::{PromptError, PromptRunner};
 pub use session::start_interactive_session;
-pub use timeline::{EntryId, EntryKind, Status, TimelineEntry, TimelineLog};
+pub use timeline::{EntryKind, Status, TimelineEntry, TimelineLog};
 pub use timeline_layout::{TimelineBlock, TimelineLayout, VisibleBlock};
