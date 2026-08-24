@@ -2,9 +2,10 @@
 
 use agent_client_protocol::schema::v1::{PermissionOption, ToolCallId, ToolCallStatus};
 use agent_client_protocol::{Client, ConnectTo};
+use kid_agentic_coding::start_interactive_session;
 use kid_agentic_coding::{
-    BubbleLayout, ChatLog, EntryId, EntryKind, Message, PromptRunner, SessionEvent,
-    SessionHandle, Status, TimelineLayout, TimelineLog,
+    BubbleLayout, ChatLog, EntryId, Message, PromptRunner, SessionEvent, SessionHandle, Status,
+    ToolCluster, VisibleBubble,
 };
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -16,11 +17,12 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, BorderType, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
     ScrollbarState, Wrap,
 };
+use ratatui_textarea::TextArea;
 use std::collections::HashMap;
 use std::io::{self, Stdout};
 use std::mem;
@@ -49,14 +51,12 @@ struct PendingPermission {
 /// TUI application state.
 struct App {
     chat_log: ChatLog,
-    prompt: ratatui_textarea::TextArea<'static>,
+    prompt: TextArea<'static>,
     agent_buffer: String,
     scroll_offset: u16,
     pending_permission: Option<PendingPermission>,
     should_quit: bool,
-    timeline: TimelineLog,
     tool_call_ids: HashMap<ToolCallId, EntryId>,
-    timeline_scroll_offset: u16,
 }
 
 impl App {
@@ -68,9 +68,7 @@ impl App {
             scroll_offset: 0,
             pending_permission: None,
             should_quit: false,
-            timeline: TimelineLog::new(),
             tool_call_ids: HashMap::new(),
-            timeline_scroll_offset: 0,
         }
     }
 
@@ -90,11 +88,11 @@ impl App {
             }
             SessionEvent::Thought(block) => {
                 let text = PromptRunner::content_block_to_string(&block);
-                self.timeline.push_thought(vec![text]);
+                self.chat_log.push_thought(text);
             }
             SessionEvent::ToolCall { id, title, status } => {
-                let entry_id = self.timeline.push_tool_call(title, vec![]);
-                self.timeline
+                let entry_id = self.chat_log.push_tool_call(title);
+                self.chat_log
                     .update_tool_call_status(entry_id, map_tool_call_status(status));
                 self.tool_call_ids.insert(id, entry_id);
             }
@@ -102,7 +100,7 @@ impl App {
                 if let Some(status) = status
                     && let Some(&entry_id) = self.tool_call_ids.get(&id)
                 {
-                    self.timeline
+                    self.chat_log
                         .update_tool_call_status(entry_id, map_tool_call_status(status));
                 }
             }
@@ -159,8 +157,8 @@ fn map_tool_call_status(status: ToolCallStatus) -> Status {
 }
 
 /// Builds a fresh single-line prompt textarea with the mage-themed block.
-fn new_prompt_textarea() -> ratatui_textarea::TextArea<'static> {
-    let mut textarea = ratatui_textarea::TextArea::default();
+fn new_prompt_textarea() -> TextArea<'static> {
+    let mut textarea = TextArea::default();
     textarea.set_block(
         Block::bordered()
             .border_type(BorderType::Rounded)
@@ -256,22 +254,14 @@ trait DrawApp {
 
     /// Renders the permission popup over the given area.
     fn draw_permission_popup(&mut self, pending: &PendingPermission, area: Rect);
-
-    /// Renders the tool call / thought timeline as a scrollable vertical
-    /// list with connector glyphs.
-    fn draw_timeline(&mut self, app: &mut App, area: Rect);
 }
 
 impl DrawApp for Frame<'_> {
     fn draw_app(&mut self, app: &mut App) {
-        let [main_area, input_area] =
+        let [log_area, input_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(self.area());
-        let [log_area, timeline_area] =
-            Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
-                .areas(main_area);
 
         self.draw_chat_log(app, log_area);
-        self.draw_timeline(app, timeline_area);
         self.render_widget(&app.prompt, input_area);
 
         if let Some(pending) = &app.pending_permission {
@@ -305,25 +295,44 @@ impl DrawApp for Frame<'_> {
                 height: visible_bubble.screen_rect.height,
             };
 
-            let (icon, name, color, text) = match message {
-                Message::User(m) => (USER_ICON, USER_NAME, USER_COLOR, m.text.as_str()),
-                Message::Agent(m) => (AGENT_ICON, AGENT_NAME, AGENT_COLOR, m.text.as_str()),
-            };
-
-            let block = Block::default()
-                .borders(visible_bubble.borders)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(color))
-                .title(Span::styled(
-                    format!(" {icon} {name} "),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ));
-
-            let paragraph = Paragraph::new(text)
-                .wrap(Wrap { trim: true })
-                .scroll((visible_bubble.text_line_skip, 0))
-                .block(block);
-            self.render_widget(paragraph, render_rect);
+            match message {
+                Message::User(m) => {
+                    self.render_widget(
+                        bubble_paragraph(
+                            USER_ICON,
+                            USER_NAME,
+                            USER_COLOR,
+                            &m.text,
+                            &visible_bubble,
+                        ),
+                        render_rect,
+                    );
+                }
+                Message::Agent(m) => {
+                    self.render_widget(
+                        bubble_paragraph(
+                            AGENT_ICON,
+                            AGENT_NAME,
+                            AGENT_COLOR,
+                            &m.text,
+                            &visible_bubble,
+                        ),
+                        render_rect,
+                    );
+                }
+                Message::Thought(text) => {
+                    let paragraph = Paragraph::new(text.as_str())
+                        .wrap(Wrap { trim: true })
+                        .scroll((visible_bubble.text_line_skip, 0))
+                        .style(Style::default().fg(Color::DarkGray));
+                    self.render_widget(paragraph, render_rect);
+                }
+                Message::ToolCluster(cluster) => {
+                    let text = render_tool_cluster(cluster);
+                    let paragraph = Paragraph::new(text).scroll((visible_bubble.text_line_skip, 0));
+                    self.render_widget(paragraph, render_rect);
+                }
+            }
         }
 
         let mut scrollbar_state = ScrollbarState::new(layout.total_height() as usize)
@@ -353,71 +362,79 @@ impl DrawApp for Frame<'_> {
         self.render_widget(Clear, popup_area);
         self.render_widget(popup, popup_area);
     }
+}
+/// Builds the framed paragraph for a User/Agent bubble.
+fn bubble_paragraph<'a>(
+    icon: &str,
+    name: &str,
+    color: Color,
+    text: &'a str,
+    visible_bubble: &VisibleBubble,
+) -> Paragraph<'a> {
+    let block = Block::default()
+        .borders(visible_bubble.borders)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color))
+        .title(Span::styled(
+            format!(" {icon} {name} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
 
-    fn draw_timeline(&mut self, app: &mut App, area: Rect) {
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .title(" \u{f085} Timeline ");
-        let inner = block.inner(area);
-        self.render_widget(block, area);
+    Paragraph::new(text)
+        .wrap(Wrap { trim: true })
+        .scroll((visible_bubble.text_line_skip, 0))
+        .block(block)
+}
 
-        const GUTTER_WIDTH: u16 = 3;
-        let mut layout = TimelineLayout::new(&app.timeline, inner.width, inner.height);
-        let delta = (i32::from(app.timeline_scroll_offset) - i32::from(layout.scroll_offset()))
-            .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-        layout.scroll(delta);
-        app.timeline_scroll_offset = layout.scroll_offset();
-
-        let entries = app.timeline.entries().iter();
-        let visible = layout.visible_blocks().into_iter();
-        for (entry, visible_block) in entries.zip(visible) {
-            let Some(vb) = visible_block else { continue };
-
-            let gutter_rect = Rect {
-                x: inner.x,
-                y: inner.y + vb.screen_rect.y,
-                width: GUTTER_WIDTH,
-                height: vb.screen_rect.height,
-            };
-            let content_rect = Rect {
-                x: inner.x + GUTTER_WIDTH,
-                y: inner.y + vb.screen_rect.y,
-                width: inner.width.saturating_sub(GUTTER_WIDTH),
-                height: vb.screen_rect.height,
-            };
-
-            let corner = if vb.is_last { "\u{2570}\u{2500} " } else { "\u{251c}\u{2500} " };
-            let continuation = if vb.is_last { "   " } else { "\u{2502}  " };
-            let gutter_text: Vec<&str> = (0..vb.screen_rect.height)
-                .map(|row| {
-                    if vb.line_skip == 0 && row == 0 {
-                        corner
-                    } else {
-                        continuation
-                    }
-                })
-                .collect();
-            let gutter = Paragraph::new(gutter_text.join("\n"))
-                .style(Style::default().fg(Color::DarkGray));
-            self.render_widget(gutter, gutter_rect);
-
-            let (icon, color, label) = status_style(vb.status);
-            let header = match &entry.kind {
-                EntryKind::ToolCall { name } => format!("{icon} {name} [{label}]"),
-                EntryKind::Thought => format!("{icon} thinking"),
-            };
-            let body = std::iter::once(header)
-                .chain(entry.lines.iter().cloned())
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let content = Paragraph::new(body)
-                .wrap(Wrap { trim: true })
-                .scroll((vb.line_skip, 0))
-                .style(Style::default().fg(color));
-            self.render_widget(content, content_rect);
+/// The aggregate status of a tool cluster: [`Status::Running`] if any entry
+/// is running, else [`Status::Failed`] if any failed, else [`Status::Done`]
+/// only if every entry is done, else [`Status::Pending`].
+fn cluster_status(cluster: &ToolCluster) -> Status {
+    let mut aggregate = Status::Done;
+    for entry in cluster.entries() {
+        match entry.status {
+            Status::Running => return Status::Running,
+            Status::Failed => aggregate = Status::Failed,
+            Status::Pending if aggregate != Status::Failed => aggregate = Status::Pending,
+            Status::Done | Status::Pending => {}
         }
     }
+    aggregate
+}
+
+/// Renders a tool cluster as a summary line, or a summary line followed by
+/// a `├─`/`╰─` tree of its entries when expanded.
+fn render_tool_cluster(cluster: &ToolCluster) -> Text<'static> {
+    let (icon, color, _) = status_style(cluster_status(cluster));
+    let count = cluster.entries().len();
+    let noun = if count == 1 { "tool" } else { "tools" };
+    let summary = Span::styled(
+        format!("{icon} Used KID-Text-Editor \u{b7} {count} {noun}"),
+        Style::default().fg(color),
+    );
+
+    if !cluster.expanded() {
+        return Text::from(Line::from(summary));
+    }
+
+    let mut lines = vec![Line::from(summary)];
+    for (index, entry) in cluster.entries().iter().enumerate() {
+        let is_last = index + 1 == cluster.entries().len();
+        let branch = if is_last {
+            "\u{2570}\u{2500} "
+        } else {
+            "\u{251c}\u{2500} "
+        };
+        let (entry_icon, entry_color, _) = status_style(entry.status);
+        lines.push(Line::from(vec![
+            Span::styled(branch, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{entry_icon} {}", entry.name),
+                Style::default().fg(entry_color),
+            ),
+        ]));
+    }
+    Text::from(lines)
 }
 
 /// Icon, accent color, and status label for a timeline entry's status.
@@ -464,7 +481,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 /// Runs the interactive terminal UI against the given agent component until
 /// the user quits, restoring the terminal afterwards regardless of outcome.
 pub async fn run(component: impl ConnectTo<Client> + 'static) -> io::Result<()> {
-    let mut session = kid_agentic_coding::start_interactive_session(component);
+    let mut session = start_interactive_session(component);
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
     let mut app = App::new();
@@ -546,8 +563,10 @@ mod handle_key_tests {
 #[cfg(test)]
 mod session_event_tests {
     use super::{App, map_tool_call_status};
-    use agent_client_protocol::schema::v1::{ContentBlock, TextContent, ToolCallId, ToolCallStatus};
-    use kid_agentic_coding::{EntryKind, SessionEvent, Status};
+    use agent_client_protocol::schema::v1::{
+        ContentBlock, TextContent, ToolCallId, ToolCallStatus,
+    };
+    use kid_agentic_coding::{Message, SessionEvent, Status, ToolCluster};
 
     fn thought(text: &str) -> SessionEvent {
         SessionEvent::Thought(Box::new(ContentBlock::Text(TextContent::new(
@@ -555,16 +574,24 @@ mod session_event_tests {
         ))))
     }
 
+    fn tool_cluster<'a>(app: &'a App, message_index: usize) -> &'a ToolCluster {
+        let Message::ToolCluster(cluster) = &app.chat_log.messages()[message_index] else {
+            panic!("expected a tool cluster at index {message_index}");
+        };
+        cluster
+    }
+
     #[test]
-    fn thought_event_appends_a_done_timeline_entry() {
+    fn thought_event_appends_a_thought_message() {
         let mut app = App::new();
 
         app.handle_session_event(thought("checking existing error handling"));
 
-        assert_eq!(app.timeline.len(), 1);
-        let entry = &app.timeline.entries()[0];
-        assert!(matches!(entry.kind, EntryKind::Thought));
-        assert_eq!(entry.status, Status::Done);
+        assert_eq!(app.chat_log.len(), 1);
+        assert!(matches!(
+            app.chat_log.messages()[0],
+            Message::Thought(ref t) if t == "checking existing error handling"
+        ));
     }
 
     #[test]
@@ -578,10 +605,11 @@ mod session_event_tests {
             status: ToolCallStatus::InProgress,
         });
 
-        assert_eq!(app.timeline.len(), 1);
-        let entry = &app.timeline.entries()[0];
-        assert!(matches!(&entry.kind, EntryKind::ToolCall { name } if name == "read_file"));
-        assert_eq!(entry.status, Status::Running);
+        assert_eq!(app.chat_log.len(), 1);
+        let cluster = tool_cluster(&app, 0);
+        assert_eq!(cluster.entries().len(), 1);
+        assert_eq!(cluster.entries()[0].name, "read_file");
+        assert_eq!(cluster.entries()[0].status, Status::Running);
     }
 
     #[test]
@@ -599,7 +627,7 @@ mod session_event_tests {
             status: Some(ToolCallStatus::Completed),
         });
 
-        assert_eq!(app.timeline.entries()[0].status, Status::Done);
+        assert_eq!(tool_cluster(&app, 0).entries()[0].status, Status::Done);
     }
 
     #[test]
@@ -616,7 +644,7 @@ mod session_event_tests {
             status: Some(ToolCallStatus::Completed),
         });
 
-        assert_eq!(app.timeline.entries()[0].status, Status::Pending);
+        assert_eq!(tool_cluster(&app, 0).entries()[0].status, Status::Pending);
     }
 
     #[test]
@@ -631,15 +659,23 @@ mod session_event_tests {
 
         app.handle_session_event(SessionEvent::ToolCallUpdate { id, status: None });
 
-        assert_eq!(app.timeline.entries()[0].status, Status::Pending);
+        assert_eq!(tool_cluster(&app, 0).entries()[0].status, Status::Pending);
     }
 
     #[test]
     fn map_tool_call_status_covers_the_known_variants() {
-        assert_eq!(map_tool_call_status(ToolCallStatus::Pending), Status::Pending);
-        assert_eq!(map_tool_call_status(ToolCallStatus::InProgress), Status::Running);
-        assert_eq!(map_tool_call_status(ToolCallStatus::Completed), Status::Done);
+        assert_eq!(
+            map_tool_call_status(ToolCallStatus::Pending),
+            Status::Pending
+        );
+        assert_eq!(
+            map_tool_call_status(ToolCallStatus::InProgress),
+            Status::Running
+        );
+        assert_eq!(
+            map_tool_call_status(ToolCallStatus::Completed),
+            Status::Done
+        );
         assert_eq!(map_tool_call_status(ToolCallStatus::Failed), Status::Failed);
     }
 }
-

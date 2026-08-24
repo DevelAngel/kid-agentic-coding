@@ -1,6 +1,7 @@
 //! Contract tests for `BubbleLayout`.
 
 use kid_agentic_coding::{Alignment, BubbleLayout, ChatLog};
+use ratatui::widgets::Borders;
 
 #[test]
 fn short_message_yields_single_row_of_text_plus_border() {
@@ -46,7 +47,7 @@ fn every_bubble_has_full_borders() {
     let layout = BubbleLayout::new(&log, 80, 24);
 
     for bubble in layout.bubbles() {
-        assert_eq!(bubble.borders, ratatui::widgets::Borders::ALL);
+        assert_eq!(bubble.borders, Borders::ALL);
     }
 }
 
@@ -109,7 +110,7 @@ fn fully_visible_bubble_keeps_full_borders_and_no_text_skip() {
     let bubble = visible[0].expect("bubble is within the viewport");
     assert_eq!(bubble.screen_rect.y, 0);
     assert_eq!(bubble.screen_rect.height, layout.bubbles()[0].rect.height);
-    assert_eq!(bubble.borders, ratatui::widgets::Borders::ALL);
+    assert_eq!(bubble.borders, Borders::ALL);
     assert_eq!(bubble.text_line_skip, 0);
 }
 
@@ -151,7 +152,7 @@ fn scrolling_into_a_bubble_from_the_top_drops_its_top_border_and_does_not_overla
 
     assert_eq!(first.screen_rect.y, 0);
     assert_eq!(first.screen_rect.height, 2);
-    assert!(!first.borders.contains(ratatui::widgets::Borders::TOP));
+    assert!(!first.borders.contains(Borders::TOP));
 
     assert_eq!(
         second.screen_rect.y,
@@ -200,7 +201,7 @@ fn collapsed_tool_cluster_is_a_single_unframed_row() {
 
     assert_eq!(layout.bubbles().len(), 1);
     assert_eq!(layout.bubbles()[0].rect.height, 1);
-    assert_eq!(layout.bubbles()[0].borders, ratatui::widgets::Borders::NONE);
+    assert_eq!(layout.bubbles()[0].borders, Borders::NONE);
     assert_eq!(layout.bubbles()[0].alignment, Alignment::Left);
 }
 
@@ -224,7 +225,6 @@ fn thought_row_is_unframed() {
 
     let layout = BubbleLayout::new(&log, 80, 24);
 
-    assert_eq!(layout.bubbles()[0].borders, ratatui::widgets::Borders::NONE);
+    assert_eq!(layout.bubbles()[0].borders, Borders::NONE);
     assert_eq!(layout.bubbles()[0].alignment, Alignment::Left);
 }
-
