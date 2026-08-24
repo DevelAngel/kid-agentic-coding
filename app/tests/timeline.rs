@@ -60,7 +60,10 @@ fn push_thought_appends_entry_with_done_status() {
     let entry = &log.entries()[0];
     assert_eq!(entry.status, Status::Done);
     assert!(matches!(entry.kind, EntryKind::Thought));
-    assert_eq!(entry.lines, vec!["Checking existing error handling...".to_string()]);
+    assert_eq!(
+        entry.lines,
+        vec!["Checking existing error handling...".to_string()]
+    );
 }
 
 #[test]

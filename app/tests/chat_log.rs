@@ -53,7 +53,9 @@ fn push_thought_appends_thought_message() {
     log.push_thought("checking existing error handling");
 
     assert_eq!(log.len(), 1);
-    assert!(matches!(log.messages()[0], Message::Thought(ref t) if t == "checking existing error handling"));
+    assert!(
+        matches!(log.messages()[0], Message::Thought(ref t) if t == "checking existing error handling")
+    );
 }
 
 #[test]
@@ -125,4 +127,3 @@ fn toggle_cluster_flips_expanded_state() {
     };
     assert!(!cluster.expanded());
 }
-
