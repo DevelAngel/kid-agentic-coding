@@ -116,7 +116,10 @@ impl BubbleLayout {
     /// `text_line_skip` is how many wrapped text lines are hidden above
     /// the visible window, for use with `Paragraph::scroll`.
     pub fn visible_bubbles(&self) -> Vec<Option<VisibleBubble>> {
-        self.bubbles.iter().map(|b| self.visible_bubble(b)).collect()
+        self.bubbles
+            .iter()
+            .map(|b| self.visible_bubble(b))
+            .collect()
     }
 
     fn visible_bubble(&self, bubble: &Bubble) -> Option<VisibleBubble> {
@@ -215,7 +218,6 @@ fn unframed_rect(bubble_width: u16, height: u16) -> (Rect, Borders, Alignment) {
         Alignment::Left,
     )
 }
-
 
 /// Number of rows `text` occupies when greedily word-wrapped to `width`
 /// columns. Words longer than `width` are not split further.

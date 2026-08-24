@@ -574,7 +574,7 @@ mod session_event_tests {
         ))))
     }
 
-    fn tool_cluster<'a>(app: &'a App, message_index: usize) -> &'a ToolCluster {
+    fn tool_cluster(app: &App, message_index: usize) -> &ToolCluster {
         let Message::ToolCluster(cluster) = &app.chat_log.messages()[message_index] else {
             panic!("expected a tool cluster at index {message_index}");
         };

@@ -176,31 +176,29 @@ impl PromptRunner {
                                 .otherwise(async |_msg| Ok(()))
                                 .await?;
                         }
-                        SessionMessage::StopReason(stop_reason) => {
-                            match stop_reason {
-                                StopReason::EndTurn => break,
-                                StopReason::MaxTokens => {
-                                    tracing::debug!("Agent hit max tokens limit");
-                                    break;
-                                }
-                                StopReason::MaxTurnRequests => {
-                                    tracing::debug!("Agent hit max turn requests limit");
-                                    break;
-                                }
-                                StopReason::Refusal => {
-                                    tracing::warn!("Agent refused to continue");
-                                    break;
-                                }
-                                StopReason::Cancelled => {
-                                    tracing::debug!("Session was cancelled");
-                                    break;
-                                }
-                                other => {
-                                    tracing::warn!("Unknown stop reason: {:?}", other);
-                                    break;
-                                }
+                        SessionMessage::StopReason(stop_reason) => match stop_reason {
+                            StopReason::EndTurn => break,
+                            StopReason::MaxTokens => {
+                                tracing::debug!("Agent hit max tokens limit");
+                                break;
                             }
-                        }
+                            StopReason::MaxTurnRequests => {
+                                tracing::debug!("Agent hit max turn requests limit");
+                                break;
+                            }
+                            StopReason::Refusal => {
+                                tracing::warn!("Agent refused to continue");
+                                break;
+                            }
+                            StopReason::Cancelled => {
+                                tracing::debug!("Session was cancelled");
+                                break;
+                            }
+                            other => {
+                                tracing::warn!("Unknown stop reason: {:?}", other);
+                                break;
+                            }
+                        },
                         _ => {}
                     }
                 }
