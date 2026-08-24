@@ -1,9 +1,10 @@
 //! Interactive terminal UI for an ACP session.
 
-use agent_client_protocol::schema::v1::PermissionOption;
+use agent_client_protocol::schema::v1::{PermissionOption, ToolCallId, ToolCallStatus};
 use agent_client_protocol::{Client, ConnectTo};
 use kid_agentic_coding::{
-    BubbleLayout, ChatLog, Message, PromptRunner, SessionEvent, SessionHandle,
+    BubbleLayout, ChatLog, EntryId, EntryKind, Message, PromptRunner, SessionEvent,
+    SessionHandle, Status, TimelineLayout, TimelineLog,
 };
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -20,6 +21,7 @@ use ratatui::widgets::{
     Block, BorderType, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
     ScrollbarState, Wrap,
 };
+use std::collections::HashMap;
 use std::io::{self, Stdout};
 use std::mem;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -52,6 +54,9 @@ struct App {
     scroll_offset: u16,
     pending_permission: Option<PendingPermission>,
     should_quit: bool,
+    timeline: TimelineLog,
+    tool_call_ids: HashMap<ToolCallId, EntryId>,
+    timeline_scroll_offset: u16,
 }
 
 impl App {
@@ -63,6 +68,9 @@ impl App {
             scroll_offset: 0,
             pending_permission: None,
             should_quit: false,
+            timeline: TimelineLog::new(),
+            tool_call_ids: HashMap::new(),
+            timeline_scroll_offset: 0,
         }
     }
 
@@ -80,10 +88,24 @@ impl App {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
             }
-            // Wired into the timeline view in a follow-up change.
-            SessionEvent::Thought(_)
-            | SessionEvent::ToolCall { .. }
-            | SessionEvent::ToolCallUpdate { .. } => {}
+            SessionEvent::Thought(block) => {
+                let text = PromptRunner::content_block_to_string(&block);
+                self.timeline.push_thought(vec![text]);
+            }
+            SessionEvent::ToolCall { id, title, status } => {
+                let entry_id = self.timeline.push_tool_call(title, vec![]);
+                self.timeline
+                    .update_tool_call_status(entry_id, map_tool_call_status(status));
+                self.tool_call_ids.insert(id, entry_id);
+            }
+            SessionEvent::ToolCallUpdate { id, status } => {
+                if let Some(status) = status
+                    && let Some(&entry_id) = self.tool_call_ids.get(&id)
+                {
+                    self.timeline
+                        .update_tool_call_status(entry_id, map_tool_call_status(status));
+                }
+            }
         }
     }
 
@@ -121,6 +143,18 @@ impl App {
                 self.prompt.input(key);
             }
         }
+    }
+}
+
+/// Maps an ACP tool call status onto the timeline's protocol-agnostic
+/// [`Status`]. Non-exhaustive future variants default to [`Status::Pending`].
+fn map_tool_call_status(status: ToolCallStatus) -> Status {
+    match status {
+        ToolCallStatus::Pending => Status::Pending,
+        ToolCallStatus::InProgress => Status::Running,
+        ToolCallStatus::Completed => Status::Done,
+        ToolCallStatus::Failed => Status::Failed,
+        _ => Status::Pending,
     }
 }
 
@@ -222,14 +256,22 @@ trait DrawApp {
 
     /// Renders the permission popup over the given area.
     fn draw_permission_popup(&mut self, pending: &PendingPermission, area: Rect);
+
+    /// Renders the tool call / thought timeline as a scrollable vertical
+    /// list with connector glyphs.
+    fn draw_timeline(&mut self, app: &mut App, area: Rect);
 }
 
 impl DrawApp for Frame<'_> {
     fn draw_app(&mut self, app: &mut App) {
-        let [log_area, input_area] =
+        let [main_area, input_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(self.area());
+        let [log_area, timeline_area] =
+            Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
+                .areas(main_area);
 
         self.draw_chat_log(app, log_area);
+        self.draw_timeline(app, timeline_area);
         self.render_widget(&app.prompt, input_area);
 
         if let Some(pending) = &app.pending_permission {
@@ -310,6 +352,81 @@ impl DrawApp for Frame<'_> {
 
         self.render_widget(Clear, popup_area);
         self.render_widget(popup, popup_area);
+    }
+
+    fn draw_timeline(&mut self, app: &mut App, area: Rect) {
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title(" \u{f085} Timeline ");
+        let inner = block.inner(area);
+        self.render_widget(block, area);
+
+        const GUTTER_WIDTH: u16 = 3;
+        let mut layout = TimelineLayout::new(&app.timeline, inner.width, inner.height);
+        let delta = (i32::from(app.timeline_scroll_offset) - i32::from(layout.scroll_offset()))
+            .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        layout.scroll(delta);
+        app.timeline_scroll_offset = layout.scroll_offset();
+
+        let entries = app.timeline.entries().iter();
+        let visible = layout.visible_blocks().into_iter();
+        for (entry, visible_block) in entries.zip(visible) {
+            let Some(vb) = visible_block else { continue };
+
+            let gutter_rect = Rect {
+                x: inner.x,
+                y: inner.y + vb.screen_rect.y,
+                width: GUTTER_WIDTH,
+                height: vb.screen_rect.height,
+            };
+            let content_rect = Rect {
+                x: inner.x + GUTTER_WIDTH,
+                y: inner.y + vb.screen_rect.y,
+                width: inner.width.saturating_sub(GUTTER_WIDTH),
+                height: vb.screen_rect.height,
+            };
+
+            let corner = if vb.is_last { "\u{2570}\u{2500} " } else { "\u{251c}\u{2500} " };
+            let continuation = if vb.is_last { "   " } else { "\u{2502}  " };
+            let gutter_text: Vec<&str> = (0..vb.screen_rect.height)
+                .map(|row| {
+                    if vb.line_skip == 0 && row == 0 {
+                        corner
+                    } else {
+                        continuation
+                    }
+                })
+                .collect();
+            let gutter = Paragraph::new(gutter_text.join("\n"))
+                .style(Style::default().fg(Color::DarkGray));
+            self.render_widget(gutter, gutter_rect);
+
+            let (icon, color, label) = status_style(vb.status);
+            let header = match &entry.kind {
+                EntryKind::ToolCall { name } => format!("{icon} {name} [{label}]"),
+                EntryKind::Thought => format!("{icon} thinking"),
+            };
+            let body = std::iter::once(header)
+                .chain(entry.lines.iter().cloned())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let content = Paragraph::new(body)
+                .wrap(Wrap { trim: true })
+                .scroll((vb.line_skip, 0))
+                .style(Style::default().fg(color));
+            self.render_widget(content, content_rect);
+        }
+    }
+}
+
+/// Icon, accent color, and status label for a timeline entry's status.
+fn status_style(status: Status) -> (&'static str, Color, &'static str) {
+    match status {
+        Status::Pending => ("\u{25cb}", Color::DarkGray, "pending"),
+        Status::Running => ("\u{25d0}", Color::Yellow, "running"),
+        Status::Done => ("\u{25cf}", Color::Green, "done"),
+        Status::Failed => ("\u{2717}", Color::Red, "failed"),
     }
 }
 
@@ -423,6 +540,106 @@ mod handle_key_tests {
 
         assert!(!app.should_quit);
         assert_eq!(app.chat_log.messages().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod session_event_tests {
+    use super::{App, map_tool_call_status};
+    use agent_client_protocol::schema::v1::{ContentBlock, TextContent, ToolCallId, ToolCallStatus};
+    use kid_agentic_coding::{EntryKind, SessionEvent, Status};
+
+    fn thought(text: &str) -> SessionEvent {
+        SessionEvent::Thought(Box::new(ContentBlock::Text(TextContent::new(
+            text.to_owned(),
+        ))))
+    }
+
+    #[test]
+    fn thought_event_appends_a_done_timeline_entry() {
+        let mut app = App::new();
+
+        app.handle_session_event(thought("checking existing error handling"));
+
+        assert_eq!(app.timeline.len(), 1);
+        let entry = &app.timeline.entries()[0];
+        assert!(matches!(entry.kind, EntryKind::Thought));
+        assert_eq!(entry.status, Status::Done);
+    }
+
+    #[test]
+    fn tool_call_event_appends_entry_with_mapped_status() {
+        let mut app = App::new();
+        let id = ToolCallId::new("call-1".to_owned());
+
+        app.handle_session_event(SessionEvent::ToolCall {
+            id,
+            title: "read_file".to_owned(),
+            status: ToolCallStatus::InProgress,
+        });
+
+        assert_eq!(app.timeline.len(), 1);
+        let entry = &app.timeline.entries()[0];
+        assert!(matches!(&entry.kind, EntryKind::ToolCall { name } if name == "read_file"));
+        assert_eq!(entry.status, Status::Running);
+    }
+
+    #[test]
+    fn tool_call_update_changes_status_of_the_matching_entry() {
+        let mut app = App::new();
+        let id = ToolCallId::new("call-1".to_owned());
+
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: id.clone(),
+            title: "read_file".to_owned(),
+            status: ToolCallStatus::Pending,
+        });
+        app.handle_session_event(SessionEvent::ToolCallUpdate {
+            id,
+            status: Some(ToolCallStatus::Completed),
+        });
+
+        assert_eq!(app.timeline.entries()[0].status, Status::Done);
+    }
+
+    #[test]
+    fn tool_call_update_for_unknown_id_is_a_no_op() {
+        let mut app = App::new();
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: ToolCallId::new("call-1".to_owned()),
+            title: "read_file".to_owned(),
+            status: ToolCallStatus::Pending,
+        });
+
+        app.handle_session_event(SessionEvent::ToolCallUpdate {
+            id: ToolCallId::new("call-unknown".to_owned()),
+            status: Some(ToolCallStatus::Completed),
+        });
+
+        assert_eq!(app.timeline.entries()[0].status, Status::Pending);
+    }
+
+    #[test]
+    fn tool_call_update_without_status_is_a_no_op() {
+        let mut app = App::new();
+        let id = ToolCallId::new("call-1".to_owned());
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: id.clone(),
+            title: "read_file".to_owned(),
+            status: ToolCallStatus::Pending,
+        });
+
+        app.handle_session_event(SessionEvent::ToolCallUpdate { id, status: None });
+
+        assert_eq!(app.timeline.entries()[0].status, Status::Pending);
+    }
+
+    #[test]
+    fn map_tool_call_status_covers_the_known_variants() {
+        assert_eq!(map_tool_call_status(ToolCallStatus::Pending), Status::Pending);
+        assert_eq!(map_tool_call_status(ToolCallStatus::InProgress), Status::Running);
+        assert_eq!(map_tool_call_status(ToolCallStatus::Completed), Status::Done);
+        assert_eq!(map_tool_call_status(ToolCallStatus::Failed), Status::Failed);
     }
 }
 
