@@ -8,6 +8,7 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     InitializeRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+    ToolCall, ToolCallUpdate,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{
@@ -104,8 +105,40 @@ async fn handle_update(
         SessionMessage::SessionMessage(message) => {
             MatchDispatch::new(message)
                 .if_notification(async |notification: SessionNotification| {
-                    if let SessionUpdate::AgentMessageChunk(content_chunk) = notification.update {
-                        let _ = event_tx.send(SessionEvent::Chunk(Box::new(content_chunk.content)));
+                    match notification.update {
+                        SessionUpdate::AgentMessageChunk(content_chunk) => {
+                            let _ =
+                                event_tx.send(SessionEvent::Chunk(Box::new(content_chunk.content)));
+                        }
+                        SessionUpdate::AgentThoughtChunk(content_chunk) => {
+                            let _ = event_tx
+                                .send(SessionEvent::Thought(Box::new(content_chunk.content)));
+                        }
+                        SessionUpdate::ToolCall(ToolCall {
+                            tool_call_id,
+                            title,
+                            status,
+                            ..
+                        }) => {
+                            let _ = event_tx.send(SessionEvent::ToolCall {
+                                id: tool_call_id,
+                                title,
+                                status,
+                            });
+                        }
+                        SessionUpdate::ToolCallUpdate(ToolCallUpdate {
+                            tool_call_id,
+                            fields,
+                            ..
+                        }) => {
+                            let _ = event_tx.send(SessionEvent::ToolCallUpdate {
+                                id: tool_call_id,
+                                status: fields.status,
+                            });
+                        }
+                        sn => {
+                            tracing::debug!("{:?} dropped", sn);
+                        }
                     }
                     Ok(())
                 })
