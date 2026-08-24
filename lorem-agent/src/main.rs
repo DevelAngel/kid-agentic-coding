@@ -7,7 +7,8 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentNotification, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
     NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId,
-    SessionNotification, SessionUpdate, StopReason, TextContent,
+    SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall, ToolCallId,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol::{Agent, Stdio};
 use color_eyre::Result;
@@ -57,6 +58,39 @@ async fn main() -> Result<()> {
                         SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
                             TextContent::new(text),
                         ))),
+                    ),
+                ))?;
+
+                // Emit a thought and a tool call round-trip so downstream
+                // code exercising SessionUpdate::AgentThoughtChunk/ToolCall/
+                // ToolCallUpdate has something real to observe.
+                cx.send_notification(AgentNotification::SessionNotification(
+                    SessionNotification::new(
+                        request.session_id.clone(),
+                        SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::Text(
+                            TextContent::new("Generating lorem ipsum".to_owned()),
+                        ))),
+                    ),
+                ))?;
+
+                let tool_call_id = ToolCallId::new(format!("lorem-tool-{seed}"));
+                cx.send_notification(AgentNotification::SessionNotification(
+                    SessionNotification::new(
+                        request.session_id.clone(),
+                        SessionUpdate::ToolCall(
+                            ToolCall::new(tool_call_id.clone(), "generate_lorem_ipsum")
+                                .status(ToolCallStatus::InProgress),
+                        ),
+                    ),
+                ))?;
+
+                cx.send_notification(AgentNotification::SessionNotification(
+                    SessionNotification::new(
+                        request.session_id.clone(),
+                        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                            tool_call_id,
+                            ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+                        )),
                     ),
                 ))?;
 
