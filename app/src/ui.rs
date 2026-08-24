@@ -80,6 +80,10 @@ impl App {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
             }
+            // Wired into the timeline view in a follow-up change.
+            SessionEvent::Thought(_)
+            | SessionEvent::ToolCall { .. }
+            | SessionEvent::ToolCallUpdate { .. } => {}
         }
     }
 

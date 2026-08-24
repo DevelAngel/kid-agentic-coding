@@ -3,7 +3,9 @@
 //! This module has no ACP-specific knowledge beyond the event payloads it carries;
 //! the protocol handling lives in [`crate::session`].
 
-use agent_client_protocol::schema::v1::{ContentBlock, PermissionOption, StopReason};
+use agent_client_protocol::schema::v1::{
+    ContentBlock, PermissionOption, StopReason, ToolCallId, ToolCallStatus,
+};
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::Sender;
@@ -13,6 +15,19 @@ use tokio::sync::oneshot::Sender;
 pub enum SessionEvent {
     /// A chunk of agent message content.
     Chunk(Box<ContentBlock>),
+    /// A chunk of the agent's internal reasoning.
+    Thought(Box<ContentBlock>),
+    /// A new tool call has been initiated.
+    ToolCall {
+        id: ToolCallId,
+        title: String,
+        status: ToolCallStatus,
+    },
+    /// A status or content update for an existing tool call.
+    ToolCallUpdate {
+        id: ToolCallId,
+        status: Option<ToolCallStatus>,
+    },
     /// The agent requests permission to proceed.
     ///
     /// Reply with `Some(option_id)` to select an option, or `None` to cancel.
