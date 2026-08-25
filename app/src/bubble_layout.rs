@@ -50,17 +50,8 @@ impl BubbleLayout {
                     let text_lines = wrapped_line_count(&m.text, text_width);
                     framed_rect(bubble_width, width, 2 + text_lines, Alignment::Left)
                 }
-                Message::Thought(text) => {
-                    let text_lines = wrapped_line_count(text, bubble_width);
-                    unframed_rect(bubble_width, text_lines)
-                }
                 Message::ToolCluster(cluster) => {
-                    let rows = if cluster.expanded() {
-                        1 + cluster.entries().len() as u16
-                    } else {
-                        1
-                    };
-                    unframed_rect(bubble_width, rows)
+                    unframed_rect(bubble_width, cluster.visible_row_count() as u16)
                 }
             };
 

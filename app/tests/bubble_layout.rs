@@ -192,10 +192,12 @@ fn visible_bubbles_never_overlap_at_any_scroll_offset() {
 }
 
 #[test]
-fn collapsed_tool_cluster_is_a_single_unframed_row() {
+fn collapsed_settled_tool_cluster_is_a_single_unframed_row() {
     let mut log = ChatLog::new();
-    log.push_tool_call("git_status");
-    log.push_tool_call("git_switch_branch");
+    let a = log.push_tool_call("git_status");
+    let b = log.push_tool_call("git_switch_branch");
+    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
 
     let layout = BubbleLayout::new(&log, 80, 24);
 
@@ -206,11 +208,28 @@ fn collapsed_tool_cluster_is_a_single_unframed_row() {
 }
 
 #[test]
-fn expanded_tool_cluster_reserves_one_row_per_entry_plus_summary() {
+fn still_running_tool_cluster_shows_a_live_tail() {
     let mut log = ChatLog::new();
     log.push_tool_call("git_status");
     log.push_tool_call("git_switch_branch");
-    log.push_tool_call("git_pull");
+    let running = log.push_tool_call("git_pull");
+    log.update_tool_call_status(running, kid_agentic_coding::Status::Running);
+
+    let layout = BubbleLayout::new(&log, 80, 24);
+
+    // summary + 3 steps, no truncation marker since all 3 fit
+    assert_eq!(layout.bubbles()[0].rect.height, 4);
+}
+
+#[test]
+fn expanded_tool_cluster_reserves_one_row_per_step_plus_summary() {
+    let mut log = ChatLog::new();
+    let a = log.push_tool_call("git_status");
+    let b = log.push_tool_call("git_switch_branch");
+    let c = log.push_tool_call("git_pull");
+    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(c, kid_agentic_coding::Status::Done);
     log.toggle_cluster(0);
 
     let layout = BubbleLayout::new(&log, 80, 24);
