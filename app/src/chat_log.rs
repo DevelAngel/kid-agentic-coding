@@ -1,5 +1,6 @@
-//! Append-only chat history: user/agent text, thoughts, and tool call
-//! clusters, interleaved in the order they occurred.
+//! Append-only chat history: user/agent text and tool call clusters
+//! (which may themselves interleave thoughts and tool calls), in the
+//! order they occurred.
 
 /// Progress of a tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,25 +30,93 @@ pub struct ToolCallEntry {
     pub status: Status,
 }
 
-/// A run of consecutive tool calls, rendered as one collapsible row.
-/// Broken by any [`Message::Thought`], [`Message::Agent`], or
-/// [`Message::User`] in between, so it never spans unrelated turns.
+/// A single item within a [`ToolCluster`]: either a thought, or a tool
+/// call going through [`Status::Pending`] → [`Status::Running`] →
+/// [`Status::Done`]/[`Status::Failed`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    Thought(String),
+    ToolCall(ToolCallEntry),
+}
+
+/// A run of consecutive thoughts and tool calls, rendered as one
+/// collapsible row. Broken only by an [`Message::Agent`] or
+/// [`Message::User`] message in between, so it never spans unrelated
+/// turns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCluster {
-    entries: Vec<ToolCallEntry>,
+    steps: Vec<Step>,
     expanded: bool,
 }
 
 impl ToolCluster {
-    /// Tool calls in this cluster, in insertion order.
-    pub fn entries(&self) -> &[ToolCallEntry] {
-        &self.entries
+    /// Thoughts and tool calls in this cluster, in insertion order.
+    pub fn steps(&self) -> &[Step] {
+        &self.steps
     }
 
-    /// Whether the cluster is showing its individual entries rather than
-    /// just a summary line.
+    /// Whether the cluster is showing its individual steps rather than
+    /// just a summary line, regardless of [`Self::status`].
     pub fn expanded(&self) -> bool {
         self.expanded
+    }
+
+    /// Number of tool call steps in the cluster (thoughts excluded).
+    pub fn tool_call_count(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|step| matches!(step, Step::ToolCall(_)))
+            .count()
+    }
+
+    /// Aggregate status across the cluster's tool call steps:
+    /// [`Status::Running`] if any is running, else [`Status::Failed`] if
+    /// any failed, else [`Status::Done`] only if every tool call step is
+    /// done (or there are none, i.e. a thoughts-only cluster), else
+    /// [`Status::Pending`].
+    pub fn status(&self) -> Status {
+        let mut aggregate = Status::Done;
+        for step in &self.steps {
+            let Step::ToolCall(entry) = step else {
+                continue;
+            };
+            match entry.status {
+                Status::Running => return Status::Running,
+                Status::Failed => aggregate = Status::Failed,
+                Status::Pending if aggregate != Status::Failed => aggregate = Status::Pending,
+                Status::Done | Status::Pending => {}
+            }
+        }
+        aggregate
+    }
+
+    /// The steps that should currently be rendered as a tree under the
+    /// summary line: all of them when [`Self::expanded`], the last three
+    /// while the cluster is still [`Status::Pending`]/[`Status::Running`]
+    /// (so it stays legible mid-flight without needing to expand it), or
+    /// none once it has settled into a terminal status and the user has
+    /// not asked to expand it.
+    pub fn visible_steps(&self) -> &[Step] {
+        if self.expanded {
+            &self.steps
+        } else if matches!(self.status(), Status::Pending | Status::Running) {
+            let start = self.steps.len().saturating_sub(3);
+            &self.steps[start..]
+        } else {
+            &[]
+        }
+    }
+
+    /// Number of rows this cluster renders as: 1 for a plain summary, or
+    /// summary + a truncation marker (if any steps are hidden) + one row
+    /// per step returned by [`Self::visible_steps`].
+    pub fn visible_row_count(&self) -> usize {
+        let shown = self.visible_steps();
+        if shown.is_empty() {
+            1
+        } else {
+            1 + usize::from(self.steps.len() > shown.len()) + shown.len()
+        }
     }
 }
 
@@ -56,17 +125,15 @@ impl ToolCluster {
 pub enum Message {
     User(UserMessage),
     Agent(AgentMessage),
-    Thought(String),
     ToolCluster(ToolCluster),
 }
 
-/// Opaque handle to a [`ToolCallEntry`], returned by
-/// [`ChatLog::push_tool_call`] and consumed by
-/// [`ChatLog::update_tool_call_status`].
+/// Opaque handle to a [`Step`], returned by [`ChatLog::push_tool_call`]
+/// and consumed by [`ChatLog::update_tool_call_status`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntryId {
     message_index: usize,
-    entry_index: usize,
+    step_index: usize,
 }
 
 /// Ordered chat history. The only way to add entries is through
@@ -84,22 +151,24 @@ impl ChatLog {
         Self::default()
     }
 
-    /// Appends a user message.
+    /// Appends a user message. Ends whatever tool cluster is currently
+    /// open, so the next thought or tool call starts a fresh one.
     pub fn push_user(&mut self, text: impl Into<String>) {
         self.messages
             .push(Message::User(UserMessage { text: text.into() }));
     }
 
-    /// Appends an agent message.
+    /// Appends an agent message. Ends whatever tool cluster is currently
+    /// open, so the next thought or tool call starts a fresh one.
     pub fn push_agent(&mut self, text: impl Into<String>) {
         self.messages
             .push(Message::Agent(AgentMessage { text: text.into() }));
     }
 
-    /// Appends a thought. Ends whatever tool cluster is currently open, so
-    /// the next tool call starts a fresh one.
+    /// Appends a thought, joining the open cluster at the end of the log
+    /// if there is one, or starting a new one otherwise.
     pub fn push_thought(&mut self, text: impl Into<String>) {
-        self.messages.push(Message::Thought(text.into()));
+        self.push_step(Step::Thought(text.into()));
     }
 
     /// Appends a pending tool call, joining the open cluster at the end of
@@ -107,42 +176,44 @@ impl ChatLog {
     /// handle for later status updates via
     /// [`update_tool_call_status`](Self::update_tool_call_status).
     pub fn push_tool_call(&mut self, name: impl Into<String>) -> EntryId {
-        let entry = ToolCallEntry {
+        self.push_step(Step::ToolCall(ToolCallEntry {
             name: name.into(),
             status: Status::Pending,
-        };
+        }))
+    }
 
+    fn push_step(&mut self, step: Step) -> EntryId {
         let message_index = self.messages.len().saturating_sub(1);
         if let Some(Message::ToolCluster(cluster)) = self.messages.last_mut() {
-            cluster.entries.push(entry);
+            cluster.steps.push(step);
             return EntryId {
                 message_index,
-                entry_index: cluster.entries.len() - 1,
+                step_index: cluster.steps.len() - 1,
             };
         }
 
         self.messages.push(Message::ToolCluster(ToolCluster {
-            entries: vec![entry],
+            steps: vec![step],
             expanded: false,
         }));
         EntryId {
             message_index: self.messages.len() - 1,
-            entry_index: 0,
+            step_index: 0,
         }
     }
 
-    /// Updates the status of the tool call entry identified by `id`.
-    /// A no-op if `id` no longer refers to an entry.
+    /// Updates the status of the tool call step identified by `id`.
+    /// A no-op if `id` no longer refers to a tool call step.
     pub fn update_tool_call_status(&mut self, id: EntryId, status: Status) {
         if let Some(Message::ToolCluster(cluster)) = self.messages.get_mut(id.message_index)
-            && let Some(entry) = cluster.entries.get_mut(id.entry_index)
+            && let Some(Step::ToolCall(entry)) = cluster.steps.get_mut(id.step_index)
         {
             entry.status = status;
         }
     }
 
     /// Toggles whether the tool cluster at `message_index` shows its
-    /// individual entries. A no-op if there is no cluster at that index.
+    /// individual steps. A no-op if there is no cluster at that index.
     pub fn toggle_cluster(&mut self, message_index: usize) {
         if let Some(Message::ToolCluster(cluster)) = self.messages.get_mut(message_index) {
             cluster.expanded = !cluster.expanded;
