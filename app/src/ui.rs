@@ -5,7 +5,7 @@ use agent_client_protocol::{Client, ConnectTo};
 use kid_agentic_coding::start_interactive_session;
 use kid_agentic_coding::{
     BubbleLayout, ChatLog, EntryId, Message, PromptRunner, SessionEvent, SessionHandle, Status,
-    ToolCluster, VisibleBubble,
+    Step, ToolCluster, VisibleBubble,
 };
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -403,13 +403,6 @@ impl DrawApp for Frame<'_> {
                         render_rect,
                     );
                 }
-                Message::Thought(text) => {
-                    let paragraph = Paragraph::new(text.as_str())
-                        .wrap(Wrap { trim: true })
-                        .scroll((visible_bubble.text_line_skip, 0))
-                        .style(Style::default().fg(Color::DarkGray));
-                    self.render_widget(paragraph, render_rect);
-                }
                 Message::ToolCluster(cluster) => {
                     let is_focused = app.focused_cluster == Some(index);
                     let text = render_tool_cluster(cluster, is_focused);
@@ -470,30 +463,19 @@ fn bubble_paragraph<'a>(
         .block(block)
 }
 
-/// The aggregate status of a tool cluster: [`Status::Running`] if any entry
-/// is running, else [`Status::Failed`] if any failed, else [`Status::Done`]
-/// only if every entry is done, else [`Status::Pending`].
-fn cluster_status(cluster: &ToolCluster) -> Status {
-    let mut aggregate = Status::Done;
-    for entry in cluster.entries() {
-        match entry.status {
-            Status::Running => return Status::Running,
-            Status::Failed => aggregate = Status::Failed,
-            Status::Pending if aggregate != Status::Failed => aggregate = Status::Pending,
-            Status::Done | Status::Pending => {}
-        }
-    }
-    aggregate
-}
-
 /// Renders a tool cluster as a summary line, or a summary line followed by
-/// a `├─`/`╰─` tree of its entries when expanded. `is_focused` renders the
-/// summary in bold white with a `▸` marker so Ctrl+↑/↓ navigation has a
-/// visible target on an otherwise unframed row.
+/// a `├─`/`╰─` tree of the steps returned by
+/// [`ToolCluster::visible_steps`], with a `⋮` marker if any are hidden.
+/// `is_focused` renders the summary in bold white with a `▸` marker so
+/// Ctrl+↑/↓ navigation has a visible target on an otherwise unframed row.
 fn render_tool_cluster(cluster: &ToolCluster, is_focused: bool) -> Text<'static> {
-    let (icon, color, _) = status_style(cluster_status(cluster));
-    let count = cluster.entries().len();
-    let noun = if count == 1 { "tool" } else { "tools" };
+    let (icon, color, _) = status_style(cluster.status());
+    let count = cluster.tool_call_count();
+    let label = match count {
+        0 => "thinking".to_owned(),
+        1 => "1 tool".to_owned(),
+        n => format!("{n} tools"),
+    };
     let prefix = if is_focused { "\u{25b8} " } else { "  " };
     let mut summary_style = Style::default().fg(color);
     if is_focused {
@@ -501,30 +483,37 @@ fn render_tool_cluster(cluster: &ToolCluster, is_focused: bool) -> Text<'static>
             .fg(Color::White)
             .add_modifier(Modifier::BOLD);
     }
-    let summary = Span::styled(
-        format!("{prefix}{icon} Used KID-Text-Editor \u{b7} {count} {noun}"),
-        summary_style,
-    );
+    let summary = Span::styled(format!("{prefix}{icon} {label}"), summary_style);
 
-    if !cluster.expanded() {
+    let shown = cluster.visible_steps();
+    if shown.is_empty() {
         return Text::from(Line::from(summary));
     }
 
     let mut lines = vec![Line::from(summary)];
-    for (index, entry) in cluster.entries().iter().enumerate() {
-        let is_last = index + 1 == cluster.entries().len();
+    if cluster.steps().len() > shown.len() {
+        lines.push(Line::from(Span::styled(
+            "   \u{22ee}",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    for (index, step) in shown.iter().enumerate() {
+        let is_last = index + 1 == shown.len();
         let branch = if is_last {
             "\u{2570}\u{2500} "
         } else {
             "\u{251c}\u{2500} "
         };
-        let (entry_icon, entry_color, _) = status_style(entry.status);
+        let (step_icon, step_color, text) = match step {
+            Step::Thought(text) => ("\u{00b7}", Color::DarkGray, text.clone()),
+            Step::ToolCall(entry) => {
+                let (icon, color, _) = status_style(entry.status);
+                (icon, color, entry.name.clone())
+            }
+        };
         lines.push(Line::from(vec![
             Span::styled(branch, Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{entry_icon} {}", entry.name),
-                Style::default().fg(entry_color),
-            ),
+            Span::styled(format!("{step_icon} {text}"), Style::default().fg(step_color)),
         ]));
     }
     Text::from(lines)
@@ -534,7 +523,7 @@ fn render_tool_cluster(cluster: &ToolCluster, is_focused: bool) -> Text<'static>
 fn status_style(status: Status) -> (&'static str, Color, &'static str) {
     match status {
         Status::Pending => ("\u{25cb}", Color::DarkGray, "pending"),
-        Status::Running => ("\u{25d0}", Color::Yellow, "running"),
+        Status::Running => ("\u{29d6}", Color::Yellow, "running"),
         Status::Done => ("\u{25cf}", Color::Green, "done"),
         Status::Failed => ("\u{2717}", Color::Red, "failed"),
     }
@@ -691,7 +680,7 @@ mod handle_key_tests {
         let mut app = App::new();
         let session = test_session();
         push_tool_call(&mut app, "call-1", "read_file");
-        app.chat_log.push_thought("checking existing error handling");
+        app.chat_log.push_agent("done with the first step");
         push_tool_call(&mut app, "call-2", "write_file");
 
         app.handle_key(ctrl_key(KeyCode::Up), &session);
@@ -791,7 +780,7 @@ mod session_event_tests {
     use agent_client_protocol::schema::v1::{
         ContentBlock, TextContent, ToolCallId, ToolCallStatus,
     };
-    use kid_agentic_coding::{Message, SessionEvent, Status, ToolCluster};
+    use kid_agentic_coding::{Message, SessionEvent, Status, Step, ToolCluster};
 
     fn thought(text: &str) -> SessionEvent {
         SessionEvent::Thought(Box::new(ContentBlock::Text(TextContent::new(
@@ -806,16 +795,28 @@ mod session_event_tests {
         cluster
     }
 
+    fn nth_tool_call<'a>(
+        cluster: &'a ToolCluster,
+        index: usize,
+    ) -> &'a kid_agentic_coding::ToolCallEntry {
+        let mut calls = cluster.steps().iter().filter_map(|step| match step {
+            Step::ToolCall(entry) => Some(entry),
+            Step::Thought(_) => None,
+        });
+        calls.nth(index).expect("expected a tool call at that index")
+    }
+
     #[test]
-    fn thought_event_appends_a_thought_message() {
+    fn thought_event_starts_a_tool_cluster() {
         let mut app = App::new();
 
         app.handle_session_event(thought("checking existing error handling"));
 
         assert_eq!(app.chat_log.len(), 1);
+        let cluster = tool_cluster(&app, 0);
         assert!(matches!(
-            app.chat_log.messages()[0],
-            Message::Thought(ref t) if t == "checking existing error handling"
+            cluster.steps()[0],
+            Step::Thought(ref t) if t == "checking existing error handling"
         ));
     }
 
@@ -832,9 +833,10 @@ mod session_event_tests {
 
         assert_eq!(app.chat_log.len(), 1);
         let cluster = tool_cluster(&app, 0);
-        assert_eq!(cluster.entries().len(), 1);
-        assert_eq!(cluster.entries()[0].name, "read_file");
-        assert_eq!(cluster.entries()[0].status, Status::Running);
+        assert_eq!(cluster.tool_call_count(), 1);
+        let entry = nth_tool_call(cluster, 0);
+        assert_eq!(entry.name, "read_file");
+        assert_eq!(entry.status, Status::Running);
     }
 
     #[test]
@@ -852,7 +854,7 @@ mod session_event_tests {
             status: Some(ToolCallStatus::Completed),
         });
 
-        assert_eq!(tool_cluster(&app, 0).entries()[0].status, Status::Done);
+        assert_eq!(nth_tool_call(tool_cluster(&app, 0), 0).status, Status::Done);
     }
 
     #[test]
@@ -869,7 +871,10 @@ mod session_event_tests {
             status: Some(ToolCallStatus::Completed),
         });
 
-        assert_eq!(tool_cluster(&app, 0).entries()[0].status, Status::Pending);
+        assert_eq!(
+            nth_tool_call(tool_cluster(&app, 0), 0).status,
+            Status::Pending
+        );
     }
 
     #[test]
@@ -884,7 +889,10 @@ mod session_event_tests {
 
         app.handle_session_event(SessionEvent::ToolCallUpdate { id, status: None });
 
-        assert_eq!(tool_cluster(&app, 0).entries()[0].status, Status::Pending);
+        assert_eq!(
+            nth_tool_call(tool_cluster(&app, 0), 0).status,
+            Status::Pending
+        );
     }
 
     #[test]
