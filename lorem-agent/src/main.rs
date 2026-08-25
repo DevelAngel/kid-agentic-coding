@@ -48,10 +48,13 @@ enum Step {
 
 /// The thought/tool-call plan for the `prompt_index`-th prompt in a
 /// session. Cycles every three requests: a first request keeps the
-/// original single thought + single tool call; the second and third show
-/// multiple tool calls clustering together and multiple thoughts breaking
-/// up separate clusters, so the inline tool cluster UI has something
-/// non-trivial to render.
+/// original single thought + single tool call; the second interleaves a
+/// couple of tool calls with thoughts; the third runs more than three
+/// tool calls so the inline UI's live tail (last three steps) and its
+/// truncation marker actually have something to show while the turn is
+/// still in progress. Since a thought no longer ends the cluster it
+/// belongs to (only a following user/agent message does), every step in
+/// one plan renders as a single growing tool cluster.
 fn plan_for(prompt_index: usize) -> Vec<Step> {
     match prompt_index % 3 {
         0 => vec![
@@ -69,10 +72,10 @@ fn plan_for(prompt_index: usize) -> Vec<Step> {
             Step::Thought("Exploring possible approaches"),
             Step::ToolCall("grep_codebase"),
             Step::ToolCall("read_file"),
+            Step::Thought("Narrowing down the relevant files"),
             Step::ToolCall("read_file"),
-            Step::Thought("Verifying edge cases"),
             Step::ToolCall("run_tests"),
-            Step::Thought("Refining the implementation plan"),
+            Step::Thought("Verifying edge cases"),
             Step::ToolCall("write_file"),
             Step::ToolCall("run_tests"),
         ],
@@ -200,21 +203,30 @@ mod plan_for_tests {
             tool_call_names(&steps),
             vec!["search_files", "read_file", "list_directory"]
         );
-        // search_files and read_file must be adjacent so they join one
-        // cluster; list_directory follows a thought, starting a new one.
+        // search_files and read_file are adjacent tool calls; since a
+        // thought no longer ends the cluster, both this pair and
+        // list_directory (after a thought) end up in the same cluster.
         assert!(matches!(steps[1], Step::ToolCall("search_files")));
         assert!(matches!(steps[2], Step::ToolCall("read_file")));
     }
 
     #[test]
-    fn third_request_has_multiple_clusters() {
+    fn third_request_has_more_than_three_tool_calls() {
         let steps = plan_for(2);
-        assert_eq!(tool_call_names(&steps).len(), 6);
+        // More than the inline UI's 3-step live tail, so this request
+        // exercises the truncation marker while the turn is running.
+        assert!(tool_call_names(&steps).len() > 3);
+    }
+
+    #[test]
+    fn third_request_interleaves_thoughts_between_tool_calls() {
+        let steps = plan_for(2);
         let thought_count = steps
             .iter()
             .filter(|step| matches!(step, Step::Thought(_)))
             .count();
-        assert_eq!(thought_count, 3);
+        assert!(thought_count >= 2);
+        assert!(matches!(steps[0], Step::Thought(_)));
     }
 
     #[test]
