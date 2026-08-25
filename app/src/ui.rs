@@ -4,8 +4,8 @@ use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId
 use agent_client_protocol::{Client, ConnectTo};
 use kid_agentic_coding::start_interactive_session;
 use kid_agentic_coding::{
-    BubbleLayout, ChatLog, EntryId, Message, PromptRunner, SessionEvent, SessionHandle, Status,
-    Step, ToolCluster, VisibleBubble, SessionNoticeKind,
+    BubbleLayout, ChatLog, EntryId, Message, PromptRunner, SessionEvent, SessionHandle,
+    SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
 };
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -92,18 +92,18 @@ impl App {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
                 if reason != StopReason::EndTurn {
-                    self.chat_log.push_session_notice(
-                        SessionNoticeKind::Stopped,
-                        stop_reason_text(reason),
-                    );
+                    self.chat_log
+                        .push_session_notice(SessionNoticeKind::Stopped, stop_reason_text(reason));
                 }
             }
             SessionEvent::Error(error) => {
                 if !self.agent_buffer.is_empty() {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
-                self.chat_log
-                    .push_session_notice(SessionNoticeKind::Error, format!("Session failed: {error}"));
+                self.chat_log.push_session_notice(
+                    SessionNoticeKind::Error,
+                    format!("Session failed: {error}"),
+                );
             }
             SessionEvent::Thought(block) => {
                 let text = PromptRunner::content_block_to_string(&block);
@@ -240,7 +240,9 @@ fn stop_reason_text(reason: StopReason) -> String {
     match reason {
         StopReason::Cancelled => "Session cancelled.".to_string(),
         StopReason::MaxTokens => "Session stopped: maximum tokens reached.".to_string(),
-        StopReason::MaxTurnRequests => "Session stopped: maximum turn requests reached.".to_string(),
+        StopReason::MaxTurnRequests => {
+            "Session stopped: maximum turn requests reached.".to_string()
+        }
         StopReason::Refusal => "Session stopped: agent refused the request.".to_string(),
         StopReason::EndTurn => "".to_string(),
         _ => format!("Session stopped: {reason:?}."),
@@ -447,10 +449,7 @@ impl DrawApp for Frame<'_> {
                         SessionNoticeKind::Error => Style::default().fg(Color::Red),
                         SessionNoticeKind::Stopped => Style::default().fg(Color::Yellow),
                     };
-                    self.render_widget(
-                        Paragraph::new(m.text.as_str()).style(style),
-                        render_rect,
-                    );
+                    self.render_widget(Paragraph::new(m.text.as_str()).style(style), render_rect);
                 }
             }
         }
@@ -530,9 +529,7 @@ fn render_tool_cluster(
     let marker = if is_focused { "\u{25b8}" } else { icon };
     let mut summary_style = Style::default().fg(color);
     if is_focused {
-        summary_style = summary_style
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD);
+        summary_style = summary_style.fg(Color::White).add_modifier(Modifier::BOLD);
     }
     let summary = Span::styled(format!("{marker} {label}"), summary_style);
 
@@ -568,7 +565,10 @@ fn render_tool_cluster(
             }
         };
         lines.push(Line::from(vec![
-            Span::styled(format!("{corner}{dashes} "), Style::default().fg(line_color)),
+            Span::styled(
+                format!("{corner}{dashes} "),
+                Style::default().fg(line_color),
+            ),
             Span::raw(text),
         ]));
     }
@@ -893,15 +893,14 @@ mod session_event_tests {
         cluster
     }
 
-    fn nth_tool_call<'a>(
-        cluster: &'a ToolCluster,
-        index: usize,
-    ) -> &'a kid_agentic_coding::ToolCallEntry {
+    fn nth_tool_call(cluster: &ToolCluster, index: usize) -> &kid_agentic_coding::ToolCallEntry {
         let mut calls = cluster.steps().iter().filter_map(|step| match step {
             Step::ToolCall(entry) => Some(entry),
             Step::Thought(_) => None,
         });
-        calls.nth(index).expect("expected a tool call at that index")
+        calls
+            .nth(index)
+            .expect("expected a tool call at that index")
     }
 
     #[test]

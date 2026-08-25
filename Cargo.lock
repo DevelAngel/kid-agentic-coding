@@ -1332,6 +1332,7 @@ name = "lorem-agent"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "clap",
  "color-eyre",
  "tokio",
  "tracing",

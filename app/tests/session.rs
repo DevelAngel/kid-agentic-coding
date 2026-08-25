@@ -37,11 +37,43 @@ async fn interactive_session_relays_thought_and_tool_call_events() {
             SessionEvent::ToolCall { .. } => saw_tool_call = true,
             SessionEvent::ToolCallUpdate { .. } => saw_tool_call_update = true,
             SessionEvent::Stopped(_) => saw_stopped = true,
-            SessionEvent::Chunk(_) | SessionEvent::PermissionRequest { .. } | SessionEvent::Error(_) => {}
+            SessionEvent::Chunk(_)
+            | SessionEvent::PermissionRequest { .. }
+            | SessionEvent::Error(_) => {}
         }
     }
 
     assert!(saw_thought, "expected a Thought event");
     assert!(saw_tool_call, "expected a ToolCall event");
     assert!(saw_tool_call_update, "expected a ToolCallUpdate event");
+}
+
+#[tokio::test]
+async fn interactive_session_reports_lorem_agent_failure_mode() {
+    let agent = AcpAgent::from_args(&[
+        "cargo".to_owned(),
+        "run".to_owned(),
+        "--quiet".to_owned(),
+        "-p".to_owned(),
+        "lorem-agent".to_owned(),
+        "--".to_owned(),
+        "--fail-session".to_owned(),
+    ])
+    .expect("valid agent command");
+
+    let mut session = start_interactive_session(agent);
+    session
+        .send_prompt("Hello, agent!")
+        .expect("session accepts the prompt");
+
+    let mut saw_error = false;
+    while !saw_error {
+        if let SessionEvent::Error(_) = session
+            .recv_event()
+            .await
+            .expect("session stays open until the failure is reported")
+        {
+            saw_error = true;
+        }
+    }
 }
