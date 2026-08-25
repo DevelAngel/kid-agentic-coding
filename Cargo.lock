@@ -1334,6 +1334,7 @@ dependencies = [
  "agent-client-protocol",
  "clap",
  "color-eyre",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

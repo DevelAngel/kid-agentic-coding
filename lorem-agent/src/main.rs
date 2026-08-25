@@ -158,7 +158,12 @@ async fn main() -> Result<()> {
                                     request.session_id.clone(),
                                     SessionUpdate::ToolCall(
                                         ToolCall::new(tool_call_id.clone(), name)
-                                            .status(ToolCallStatus::InProgress),
+                                            .status(ToolCallStatus::InProgress)
+                                            .raw_input(serde_json::json!({
+                                                "tool": name,
+                                                "prompt_seed": seed,
+                                                "step_index": step_index,
+                                            })),
                                     ),
                                 ),
                             ))?;
