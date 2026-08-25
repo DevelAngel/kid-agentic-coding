@@ -170,6 +170,34 @@ fn update_tool_call_status_does_not_touch_a_thought_at_the_same_index() {
 }
 
 #[test]
+fn update_tool_call_result_sets_the_matching_step() {
+    let mut log = ChatLog::new();
+    let id = log.push_tool_call("run_tests");
+
+    log.update_tool_call_result(id, "3 passed; 0 failed".to_owned());
+
+    let Step::ToolCall(entry) = &tool_cluster(&log, 0).steps()[0] else {
+        panic!("expected a tool call");
+    };
+    assert_eq!(entry.result.as_deref(), Some("3 passed; 0 failed"));
+}
+
+#[test]
+fn update_tool_call_result_does_not_touch_a_thought_at_the_same_index() {
+    let mut log = ChatLog::new();
+    log.push_thought("thinking");
+    let id = log.push_tool_call("run_tests");
+
+    log.update_tool_call_result(id, "ok".to_owned());
+
+    assert!(matches!(tool_cluster(&log, 0).steps()[0], Step::Thought(_)));
+    let Step::ToolCall(entry) = &tool_cluster(&log, 0).steps()[1] else {
+        panic!("expected a tool call");
+    };
+    assert_eq!(entry.result.as_deref(), Some("ok"));
+}
+
+#[test]
 fn new_cluster_starts_collapsed() {
     let mut log = ChatLog::new();
     log.push_tool_call("git_status");

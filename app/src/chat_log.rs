@@ -43,6 +43,7 @@ pub struct ToolCallEntry {
     pub name: String,
     pub status: Status,
     pub parameters: Option<String>,
+    pub result: Option<String>,
 }
 
 /// A single item within a [`ToolCluster`]: either a thought, or a tool
@@ -213,6 +214,7 @@ impl ChatLog {
             name: name.into(),
             status: Status::Pending,
             parameters,
+            result: None,
         }))
     }
 
@@ -242,6 +244,16 @@ impl ChatLog {
             && let Some(Step::ToolCall(entry)) = cluster.steps.get_mut(id.step_index)
         {
             entry.parameters = Some(parameters);
+        }
+    }
+
+    /// Updates the result of the tool call step identified by `id`.
+    /// A no-op if `id` no longer refers to a tool call step.
+    pub fn update_tool_call_result(&mut self, id: EntryId, result: String) {
+        if let Some(Message::ToolCluster(cluster)) = self.messages.get_mut(id.message_index)
+            && let Some(Step::ToolCall(entry)) = cluster.steps.get_mut(id.step_index)
+        {
+            entry.result = Some(result);
         }
     }
 

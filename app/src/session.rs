@@ -4,11 +4,12 @@
 //! [`crate::bridge`].
 
 use crate::bridge::{SessionEvent, SessionHandle};
+use crate::prompt::PromptRunner;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     InitializeRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
-    ToolCall, ToolCallUpdate,
+    ToolCall, ToolCallContent, ToolCallUpdate,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{
@@ -121,6 +122,8 @@ async fn handle_update(
                             title,
                             status,
                             raw_input,
+                            content,
+                            raw_output,
                             ..
                         }) => {
                             let _ = event_tx.send(SessionEvent::ToolCall {
@@ -128,6 +131,7 @@ async fn handle_update(
                                 title,
                                 status,
                                 parameters: raw_input.map(|value| value.to_string()),
+                                result: tool_call_result(&content, raw_output.as_ref()),
                             });
                         }
 
@@ -136,10 +140,15 @@ async fn handle_update(
                             fields,
                             ..
                         }) => {
+                            let result = tool_call_result(
+                                fields.content.as_deref().unwrap_or(&[]),
+                                fields.raw_output.as_ref(),
+                            );
                             let _ = event_tx.send(SessionEvent::ToolCallUpdate {
                                 id: tool_call_id,
                                 status: fields.status,
                                 parameters: fields.raw_input.map(|value| value.to_string()),
+                                result,
                             });
                         }
                         sn => {
@@ -177,4 +186,34 @@ async fn handle_update(
     }
 
     Ok(())
+}
+
+/// Renders a tool call's result content into a display string, joining
+/// standard content blocks, summarizing diffs and terminal embeds, and
+/// falling back to pretty-printed `raw_output` when no content blocks were
+/// provided. Returns `None` when the tool call carries no result yet.
+fn tool_call_result(
+    content: &[ToolCallContent],
+    raw_output: Option<&serde_json::Value>,
+) -> Option<String> {
+    let rendered: Vec<String> = content
+        .iter()
+        .map(|item| match item {
+            ToolCallContent::Content(content) => {
+                PromptRunner::content_block_to_string(&content.content)
+            }
+            ToolCallContent::Diff(diff) => format!("[diff: {}]", diff.path.display()),
+            ToolCallContent::Terminal(terminal) => {
+                format!("[terminal: {}]", terminal.terminal_id)
+            }
+            _ => "[unsupported content type]".to_owned(),
+        })
+        .collect();
+
+    if !rendered.is_empty() {
+        return Some(rendered.join("\n"));
+    }
+
+    raw_output
+        .map(|value| serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()))
 }

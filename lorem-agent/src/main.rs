@@ -28,6 +28,11 @@ struct Args {
     /// Exits the agent process to exercise the connection loss path.
     #[arg(long)]
     crash: bool,
+
+    /// Completes the first tool call of each prompt as `Failed` with a
+    /// failure message, to exercise the failure-result display path.
+    #[arg(long)]
+    fail_tool: bool,
 }
 
 /// Number of words the fake agent replies with per prompt.
@@ -169,13 +174,24 @@ async fn main() -> Result<()> {
                             ))?;
 
                             sleep(TOOL_CALL_DELAY).await;
+                            let fail = args.fail_tool && step_index == 0;
+                            let (status, result_text) = if fail {
+                                (ToolCallStatus::Failed, format!("{name}: simulated failure"))
+                            } else {
+                                (
+                                    ToolCallStatus::Completed,
+                                    format!("{name}: ok ({} words)", REPLY_WORD_COUNT),
+                                )
+                            };
                             cx.send_notification(AgentNotification::SessionNotification(
                                 SessionNotification::new(
                                     request.session_id.clone(),
                                     SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
                                         tool_call_id,
-                                        ToolCallUpdateFields::new()
-                                            .status(ToolCallStatus::Completed),
+                                        ToolCallUpdateFields::new().status(status).content(vec![
+                                            ContentBlock::Text(TextContent::new(result_text))
+                                                .into(),
+                                        ]),
                                     )),
                                 ),
                             ))?;
@@ -241,7 +257,7 @@ mod plan_for_tests {
     fn third_request_has_more_than_three_tool_calls() {
         let steps = plan_for(2);
         // More than the inline UI's 3-step live tail, so this request
-        // exercises the truncation marker while the turn is running.
+        // exercises the truncation marker while the turn is still running.
         assert!(tool_call_names(&steps).len() > 3);
     }
 

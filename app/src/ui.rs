@@ -120,18 +120,23 @@ impl App {
                 title,
                 status,
                 parameters,
+                result,
             } => {
                 let entry_id = self
                     .chat_log
                     .push_tool_call_with_parameters(title, parameters);
                 self.chat_log
                     .update_tool_call_status(entry_id, map_tool_call_status(status));
+                if let Some(result) = result {
+                    self.chat_log.update_tool_call_result(entry_id, result);
+                }
                 self.tool_call_ids.insert(id, entry_id);
             }
             SessionEvent::ToolCallUpdate {
                 id,
                 status,
                 parameters,
+                result,
             } => {
                 if let Some(&entry_id) = self.tool_call_ids.get(&id) {
                     if let Some(status) = status {
@@ -141,6 +146,9 @@ impl App {
                     if let Some(parameters) = parameters {
                         self.chat_log
                             .update_tool_call_parameters(entry_id, parameters);
+                    }
+                    if let Some(result) = result {
+                        self.chat_log.update_tool_call_result(entry_id, result);
                     }
                 }
             }
@@ -626,8 +634,14 @@ impl DrawApp for Frame<'_> {
             .parameters
             .as_deref()
             .unwrap_or("No parameters supplied.");
+        let result_label = if entry.status == Status::Failed {
+            "Result (failed)"
+        } else {
+            "Result"
+        };
+        let result = entry.result.as_deref().unwrap_or("Not available yet.");
         let text =
-            format!("Status: {status}\n\nParameters\n{parameters}\n\nResult\nNot available yet.");
+            format!("Status: {status}\n\nParameters\n{parameters}\n\n{result_label}\n{result}");
         let paragraph = Paragraph::new(text)
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0))
@@ -710,15 +724,15 @@ fn render_tool_cluster(
         let (line_color, dashes, text) = match step {
             Step::Thought(text) => (Color::White, "\u{2500}\u{2500}", text.clone()),
             Step::ToolCall(entry) => {
-                let result = match entry.status {
+                let status_icon = match entry.status {
                     Status::Done => "\u{2713}",
                     Status::Failed => "\u{2717}",
                     _ => "",
                 };
-                let text = if result.is_empty() {
+                let text = if status_icon.is_empty() {
                     entry.name.clone()
                 } else {
-                    format!("{} {result}", entry.name)
+                    format!("{} {status_icon}", entry.name)
                 };
                 (Color::White, "\u{2500}\u{2500}", text)
             }
@@ -743,7 +757,6 @@ fn running_icon(phase: usize) -> &'static str {
     SPINNER[phase % SPINNER.len()]
 }
 
-/// Icon, accent color, and status label for a tool call's status.
 fn status_style(status: Status) -> (&'static str, Color, &'static str) {
     match status {
         Status::Pending => ("\u{25cb}", Color::DarkGray, "pending"),
@@ -801,7 +814,7 @@ pub async fn run(component: impl ConnectTo<Client> + 'static) -> io::Result<()> 
 
 #[cfg(test)]
 mod handle_key_tests {
-    use super::App;
+    use super::{App, SCROLL_STEP};
     use agent_client_protocol::schema::v1::{StopReason, ToolCallId, ToolCallStatus};
     use kid_agentic_coding::{Message, SessionEvent, SessionHandle, SessionNoticeKind};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -816,6 +829,7 @@ mod handle_key_tests {
             title: name.to_owned(),
             status: ToolCallStatus::Pending,
             parameters: None,
+            result: None,
         });
     }
 
@@ -1039,6 +1053,51 @@ mod handle_key_tests {
     }
 
     #[test]
+    fn tool_call_popup_opens_for_tool_call_with_result() {
+        let mut app = App::new();
+        let session = test_session();
+        push_tool_call(&mut app, "call-1", "run_tests");
+        app.handle_session_event(SessionEvent::ToolCallUpdate {
+            id: ToolCallId::new("call-1".to_owned()),
+            parameters: None,
+            status: Some(ToolCallStatus::Failed),
+            result: Some("assertion failed: left != right".to_owned()),
+        });
+
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+        app.handle_key(key(KeyCode::Enter), &session);
+        app.handle_key(key(KeyCode::Enter), &session);
+
+        assert!(app.tool_call_popup.is_some());
+        assert_eq!(
+            app.chat_log
+                .tool_call(app.tool_call_popup.expect("popup should be open"))
+                .and_then(|entry| entry.result.as_deref()),
+            Some("assertion failed: left != right")
+        );
+    }
+
+    #[test]
+    fn tool_call_popup_scrolls_multiline_result() {
+        let mut app = App::new();
+        let session = test_session();
+        push_tool_call(&mut app, "call-1", "read_file");
+        app.handle_session_event(SessionEvent::ToolCallUpdate {
+            id: ToolCallId::new("call-1".to_owned()),
+            parameters: None,
+            status: Some(ToolCallStatus::Completed),
+            result: Some("line one\nline two\nline three".to_owned()),
+        });
+
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+        app.handle_key(key(KeyCode::Enter), &session);
+        app.handle_key(key(KeyCode::Enter), &session);
+        app.handle_key(key(KeyCode::PageDown), &session);
+
+        assert!(app.tool_call_popup.is_some());
+        assert_eq!(app.tool_call_popup_scroll, SCROLL_STEP);
+    }
+    #[test]
     fn typing_while_focused_on_a_cluster_does_not_reach_the_prompt() {
         let mut app = App::new();
         let session = test_session();
@@ -1106,6 +1165,7 @@ mod session_event_tests {
             title: "read_file".to_owned(),
             parameters: Some("{\"path\":\"src/lib.rs\"}".to_owned()),
             status: ToolCallStatus::InProgress,
+            result: None,
         });
 
         assert_eq!(app.chat_log.len(), 1);
@@ -1130,17 +1190,20 @@ mod session_event_tests {
             title: "read_file".to_owned(),
             parameters: Some("{\"path\":\"src/lib.rs\"}".to_owned()),
             status: ToolCallStatus::Pending,
+            result: None,
         });
         app.handle_session_event(SessionEvent::ToolCall {
             id: ToolCallId::new("call-2".to_owned()),
             title: "write_file".to_owned(),
             parameters: Some("{\"path\":\"src/main.rs\"}".to_owned()),
             status: ToolCallStatus::Pending,
+            result: None,
         });
         app.handle_session_event(SessionEvent::ToolCallUpdate {
             id,
             parameters: Some("{\"path\":\"src/lib.rs\"}".to_owned()),
             status: Some(ToolCallStatus::Completed),
+            result: None,
         });
         let entry = nth_tool_call(tool_cluster(&app, 0), 0);
         assert_eq!(entry.status, Status::Done);
@@ -1164,12 +1227,14 @@ mod session_event_tests {
             title: "read_file".to_owned(),
             parameters: None,
             status: ToolCallStatus::Pending,
+            result: None,
         });
 
         app.handle_session_event(SessionEvent::ToolCallUpdate {
             id: ToolCallId::new("call-unknown".to_owned()),
             parameters: None,
             status: Some(ToolCallStatus::Completed),
+            result: None,
         });
 
         assert_eq!(
@@ -1187,17 +1252,86 @@ mod session_event_tests {
             title: "read_file".to_owned(),
             parameters: None,
             status: ToolCallStatus::Pending,
+            result: None,
         });
 
         app.handle_session_event(SessionEvent::ToolCallUpdate {
             id,
             status: None,
             parameters: None,
+            result: None,
         });
 
         assert_eq!(
             nth_tool_call(tool_cluster(&app, 0), 0).status,
             Status::Pending
+        );
+    }
+
+    #[test]
+    fn tool_call_result_on_creation_is_stored_on_the_entry() {
+        let mut app = App::new();
+
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: ToolCallId::new("call-1".to_owned()),
+            title: "read_file".to_owned(),
+            parameters: None,
+            status: ToolCallStatus::Completed,
+            result: Some("file contents".to_owned()),
+        });
+
+        let entry = nth_tool_call(tool_cluster(&app, 0), 0);
+        assert_eq!(entry.result.as_deref(), Some("file contents"));
+    }
+
+    #[test]
+    fn tool_call_update_stores_successful_result() {
+        let mut app = App::new();
+        let id = ToolCallId::new("call-1".to_owned());
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: id.clone(),
+            title: "run_tests".to_owned(),
+            parameters: None,
+            status: ToolCallStatus::InProgress,
+            result: None,
+        });
+
+        app.handle_session_event(SessionEvent::ToolCallUpdate {
+            id,
+            status: Some(ToolCallStatus::Completed),
+            parameters: None,
+            result: Some("3 passed; 0 failed".to_owned()),
+        });
+
+        let entry = nth_tool_call(tool_cluster(&app, 0), 0);
+        assert_eq!(entry.status, Status::Done);
+        assert_eq!(entry.result.as_deref(), Some("3 passed; 0 failed"));
+    }
+
+    #[test]
+    fn tool_call_update_stores_failure_result() {
+        let mut app = App::new();
+        let id = ToolCallId::new("call-1".to_owned());
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: id.clone(),
+            title: "run_tests".to_owned(),
+            parameters: None,
+            status: ToolCallStatus::InProgress,
+            result: None,
+        });
+
+        app.handle_session_event(SessionEvent::ToolCallUpdate {
+            id,
+            status: Some(ToolCallStatus::Failed),
+            parameters: None,
+            result: Some("assertion failed: left != right".to_owned()),
+        });
+
+        let entry = nth_tool_call(tool_cluster(&app, 0), 0);
+        assert_eq!(entry.status, Status::Failed);
+        assert_eq!(
+            entry.result.as_deref(),
+            Some("assertion failed: left != right")
         );
     }
 

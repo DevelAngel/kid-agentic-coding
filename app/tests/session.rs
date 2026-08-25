@@ -23,7 +23,7 @@ async fn interactive_session_relays_thought_and_tool_call_events() {
 
     let mut saw_thought = false;
     let mut saw_tool_call = false;
-    let mut saw_tool_call_update = false;
+    let mut saw_tool_call_result = false;
     let mut saw_stopped = false;
 
     while !saw_stopped {
@@ -35,9 +35,12 @@ async fn interactive_session_relays_thought_and_tool_call_events() {
         match event {
             SessionEvent::Thought(_) => saw_thought = true,
             SessionEvent::ToolCall { .. } => saw_tool_call = true,
-            SessionEvent::ToolCallUpdate { .. } => saw_tool_call_update = true,
+            SessionEvent::ToolCallUpdate {
+                result: Some(_), ..
+            } => saw_tool_call_result = true,
             SessionEvent::Stopped(_) => saw_stopped = true,
-            SessionEvent::Chunk(_)
+            SessionEvent::ToolCallUpdate { .. }
+            | SessionEvent::Chunk(_)
             | SessionEvent::PermissionRequest { .. }
             | SessionEvent::Error(_) => {}
         }
@@ -45,7 +48,10 @@ async fn interactive_session_relays_thought_and_tool_call_events() {
 
     assert!(saw_thought, "expected a Thought event");
     assert!(saw_tool_call, "expected a ToolCall event");
-    assert!(saw_tool_call_update, "expected a ToolCallUpdate event");
+    assert!(
+        saw_tool_call_result,
+        "expected a ToolCallUpdate event carrying a result"
+    );
 }
 
 #[tokio::test]
