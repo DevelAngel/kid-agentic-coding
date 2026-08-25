@@ -22,11 +22,13 @@ pub enum SessionEvent {
         id: ToolCallId,
         title: String,
         status: ToolCallStatus,
+        parameters: Option<String>,
     },
     /// A status or content update for an existing tool call.
     ToolCallUpdate {
         id: ToolCallId,
         status: Option<ToolCallStatus>,
+        parameters: Option<String>,
     },
     /// The agent requests permission to proceed.
     ///

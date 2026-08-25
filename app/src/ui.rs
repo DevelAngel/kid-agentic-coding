@@ -61,6 +61,9 @@ struct App {
     /// Index into `chat_log.messages()` of the `ToolCluster` currently
     /// navigated via Ctrl+↑/↓, if any. `None` means the prompt has focus.
     focused_cluster: Option<usize>,
+    focused_tool_call: Option<EntryId>,
+    tool_call_popup: Option<EntryId>,
+    tool_call_popup_scroll: u16,
 }
 
 impl App {
@@ -75,6 +78,9 @@ impl App {
             tool_call_ids: HashMap::new(),
             spinner_phase: 0,
             focused_cluster: None,
+            focused_tool_call: None,
+            tool_call_popup: None,
+            tool_call_popup_scroll: 0,
         }
     }
 
@@ -109,18 +115,33 @@ impl App {
                 let text = PromptRunner::content_block_to_string(&block);
                 self.chat_log.push_thought(text);
             }
-            SessionEvent::ToolCall { id, title, status } => {
-                let entry_id = self.chat_log.push_tool_call(title);
+            SessionEvent::ToolCall {
+                id,
+                title,
+                status,
+                parameters,
+            } => {
+                let entry_id = self
+                    .chat_log
+                    .push_tool_call_with_parameters(title, parameters);
                 self.chat_log
                     .update_tool_call_status(entry_id, map_tool_call_status(status));
                 self.tool_call_ids.insert(id, entry_id);
             }
-            SessionEvent::ToolCallUpdate { id, status } => {
-                if let Some(status) = status
-                    && let Some(&entry_id) = self.tool_call_ids.get(&id)
-                {
-                    self.chat_log
-                        .update_tool_call_status(entry_id, map_tool_call_status(status));
+            SessionEvent::ToolCallUpdate {
+                id,
+                status,
+                parameters,
+            } => {
+                if let Some(&entry_id) = self.tool_call_ids.get(&id) {
+                    if let Some(status) = status {
+                        self.chat_log
+                            .update_tool_call_status(entry_id, map_tool_call_status(status));
+                    }
+                    if let Some(parameters) = parameters {
+                        self.chat_log
+                            .update_tool_call_parameters(entry_id, parameters);
+                    }
                 }
             }
         }
@@ -129,6 +150,11 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent, session: &SessionHandle) {
         if self.pending_permission.is_some() {
             handle_permission_key(key.code, &mut self.pending_permission);
+            return;
+        }
+
+        if self.tool_call_popup.is_some() {
+            self.handle_tool_call_popup_key(key);
             return;
         }
 
@@ -170,31 +196,94 @@ impl App {
         }
     }
 
-    /// Applies a key press while a tool cluster has focus (entered via
-    /// Ctrl+↑): Ctrl+↓/Esc return focus to the prompt, ↑/↓ move between
-    /// clusters skipping any other message in between, Enter/Space toggle
-    /// the focused cluster's expanded state. Everything else is ignored —
-    /// typing while a cluster is focused must not reach the prompt.
+    /// Applies a key press while a tool cluster has focus. Ctrl+↑/↓ moves
+    /// between clusters; Enter/Space expands or collapses the selected
+    /// cluster. Once expanded, ↑/↓ selects tool calls and Enter opens their
+    /// audit details while Space collapses the cluster.
     fn handle_cluster_focus_key(&mut self, key: KeyEvent, focused: usize) {
+        let expanded = matches!(
+            self.chat_log.messages().get(focused),
+            Some(Message::ToolCluster(cluster)) if cluster.expanded()
+        );
+        let tool_calls = self.chat_log.tool_call_ids(focused);
+
         match key.code {
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.focused_cluster = None;
-            }
             KeyCode::Esc => {
                 self.focused_cluster = None;
+                self.focused_tool_call = None;
             }
-            KeyCode::Up => {
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(prev) = cluster_index_before(&self.chat_log, focused) {
                     self.focused_cluster = Some(prev);
+                    self.focused_tool_call = None;
                 }
             }
-            KeyCode::Down => {
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(next) = cluster_index_after(&self.chat_log, focused) {
                     self.focused_cluster = Some(next);
+                    self.focused_tool_call = None;
+                } else {
+                    self.focused_cluster = None;
+                    self.focused_tool_call = None;
+                }
+            }
+            KeyCode::Up if expanded => {
+                self.focused_tool_call = previous_tool_call(&tool_calls, self.focused_tool_call);
+            }
+            KeyCode::Down if expanded => {
+                self.focused_tool_call = next_tool_call(&tool_calls, self.focused_tool_call);
+            }
+
+            KeyCode::Up if !expanded => {
+                if let Some(prev) = cluster_index_before(&self.chat_log, focused) {
+                    self.focused_cluster = Some(prev);
+                    self.focused_tool_call = None;
+                }
+            }
+            KeyCode::Down if !expanded => {
+                if let Some(next) = cluster_index_after(&self.chat_log, focused) {
+                    self.focused_cluster = Some(next);
+                    self.focused_tool_call = None;
+                }
+            }
+
+            KeyCode::Enter if expanded => {
+                if let Some(entry_id) = self.focused_tool_call {
+                    self.tool_call_popup = Some(entry_id);
+                    self.tool_call_popup_scroll = 0;
                 }
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 self.chat_log.toggle_cluster(focused);
+                self.focused_tool_call = if expanded {
+                    None
+                } else {
+                    tool_calls.first().copied()
+                };
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_tool_call_popup_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.tool_call_popup = None;
+                self.tool_call_popup_scroll = 0;
+            }
+            KeyCode::Up => {
+                self.tool_call_popup_scroll = self.tool_call_popup_scroll.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                self.tool_call_popup_scroll = self.tool_call_popup_scroll.saturating_add(1);
+            }
+            KeyCode::PageUp => {
+                self.tool_call_popup_scroll =
+                    self.tool_call_popup_scroll.saturating_sub(SCROLL_STEP);
+            }
+            KeyCode::PageDown => {
+                self.tool_call_popup_scroll =
+                    self.tool_call_popup_scroll.saturating_add(SCROLL_STEP);
             }
             _ => {}
         }
@@ -222,6 +311,25 @@ fn cluster_index_after(chat_log: &ChatLog, index: usize) -> Option<usize> {
         .iter()
         .position(|m| matches!(m, Message::ToolCluster(_)))
         .map(|offset| index + 1 + offset)
+}
+
+fn previous_tool_call(tool_calls: &[EntryId], selected: Option<EntryId>) -> Option<EntryId> {
+    match selected.and_then(|id| tool_calls.iter().position(|candidate| *candidate == id)) {
+        Some(index) => index
+            .checked_sub(1)
+            .and_then(|index| tool_calls.get(index).copied()),
+        None => tool_calls.last().copied(),
+    }
+}
+
+fn next_tool_call(tool_calls: &[EntryId], selected: Option<EntryId>) -> Option<EntryId> {
+    match selected.and_then(|id| tool_calls.iter().position(|candidate| *candidate == id)) {
+        Some(index) => tool_calls
+            .get(index + 1)
+            .copied()
+            .or_else(|| tool_calls.last().copied()),
+        None => tool_calls.first().copied(),
+    }
 }
 
 /// Maps an ACP tool call status onto the chat log's protocol-agnostic
@@ -353,6 +461,14 @@ trait DrawApp {
 
     /// Renders the permission popup over the given area.
     fn draw_permission_popup(&mut self, pending: &PendingPermission, area: Rect);
+
+    /// Renders a tool call audit popup over the given area.
+    fn draw_tool_call_popup(
+        &mut self,
+        entry: &kid_agentic_coding::ToolCallEntry,
+        scroll: u16,
+        area: Rect,
+    );
 }
 
 impl DrawApp for Frame<'_> {
@@ -365,6 +481,12 @@ impl DrawApp for Frame<'_> {
 
         if let Some(pending) = &app.pending_permission {
             self.draw_permission_popup(pending, self.area());
+        }
+
+        if let Some(entry_id) = app.tool_call_popup
+            && let Some(entry) = app.chat_log.tool_call(entry_id)
+        {
+            self.draw_tool_call_popup(entry, app.tool_call_popup_scroll, self.area());
         }
     }
 
@@ -437,10 +559,15 @@ impl DrawApp for Frame<'_> {
                         render_rect,
                     );
                 }
+
                 Message::ToolCluster(cluster) => {
                     let is_focused = app.focused_cluster == Some(index);
-                    let text = render_tool_cluster(cluster, is_focused, app.spinner_phase);
 
+                    let selected_step = app
+                        .focused_tool_call
+                        .and_then(|id| app.chat_log.tool_call_step_index(index, id));
+                    let text =
+                        render_tool_cluster(cluster, is_focused, selected_step, app.spinner_phase);
                     let paragraph = Paragraph::new(text).scroll((visible_bubble.text_line_skip, 0));
                     self.render_widget(paragraph, render_rect);
                 }
@@ -481,6 +608,37 @@ impl DrawApp for Frame<'_> {
         self.render_widget(Clear, popup_area);
         self.render_widget(popup, popup_area);
     }
+
+    fn draw_tool_call_popup(
+        &mut self,
+        entry: &kid_agentic_coding::ToolCallEntry,
+        scroll: u16,
+        area: Rect,
+    ) {
+        let popup_area = centered_rect(90, 85, area);
+        let status = match entry.status {
+            Status::Pending => "pending",
+            Status::Running => "running",
+            Status::Done => "done",
+            Status::Failed => "failed",
+        };
+        let parameters = entry
+            .parameters
+            .as_deref()
+            .unwrap_or("No parameters supplied.");
+        let text =
+            format!("Status: {status}\n\nParameters\n{parameters}\n\nResult\nNot available yet.");
+        let paragraph = Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0))
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .title(format!(" Tool Call: {} ", entry.name)),
+            );
+        self.render_widget(Clear, popup_area);
+        self.render_widget(paragraph, popup_area);
+    }
 }
 /// Builds the framed paragraph for a User/Agent bubble.
 fn bubble_paragraph<'a>(
@@ -505,13 +663,11 @@ fn bubble_paragraph<'a>(
         .block(block)
 }
 
-/// Renders a tool cluster as a summary line, or a summary line followed by
-/// a `├─`/`╰─` tree of the steps returned by
-/// [`ToolCluster::visible_steps`], with a `⋮` marker if any are hidden.
-/// Renders a tool cluster with the aggregate status aligned to the tree.
+/// Renders a tool cluster as a summary line followed by its visible steps.
 fn render_tool_cluster(
     cluster: &ToolCluster,
     is_focused: bool,
+    selected_step: Option<usize>,
     spinner_phase: usize,
 ) -> Text<'static> {
     let (icon, color, _) = status_style(cluster.status());
@@ -538,16 +694,19 @@ fn render_tool_cluster(
         return Text::from(Line::from(summary));
     }
 
+    let hidden = cluster.steps().len().saturating_sub(shown.len());
     let mut lines = vec![Line::from(summary)];
-    if cluster.steps().len() > shown.len() {
+    if hidden > 0 {
         lines.push(Line::from(Span::styled(
             "\u{22ee}",
             Style::default().fg(Color::White),
         )));
     }
     for (index, step) in shown.iter().enumerate() {
+        let actual_index = hidden + index;
         let is_last = index + 1 == shown.len();
         let corner = if is_last { "\u{2570}" } else { "\u{251c}" };
+        let selected = selected_step == Some(actual_index);
         let (line_color, dashes, text) = match step {
             Step::Thought(text) => (Color::White, "\u{2500}\u{2500}", text.clone()),
             Step::ToolCall(entry) => {
@@ -564,12 +723,16 @@ fn render_tool_cluster(
                 (Color::White, "\u{2500}\u{2500}", text)
             }
         };
+        let style = if selected {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(line_color)
+        };
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("{corner}{dashes} "),
-                Style::default().fg(line_color),
-            ),
-            Span::raw(text),
+            Span::styled(format!("{corner}{dashes} "), style),
+            Span::styled(text, style),
         ]));
     }
     Text::from(lines)
@@ -652,6 +815,7 @@ mod handle_key_tests {
             id: ToolCallId::new(id.to_owned()),
             title: name.to_owned(),
             status: ToolCallStatus::Pending,
+            parameters: None,
         });
     }
 
@@ -860,6 +1024,21 @@ mod handle_key_tests {
     }
 
     #[test]
+    fn expanded_cluster_opens_selected_tool_call_details() {
+        let mut app = App::new();
+        push_tool_call(&mut app, "call-1", "read_file");
+
+        app.handle_key(ctrl_key(KeyCode::Up), &test_session());
+        app.handle_key(key(KeyCode::Enter), &test_session());
+        app.handle_key(key(KeyCode::Enter), &test_session());
+
+        assert!(app.tool_call_popup.is_some());
+
+        app.handle_key(key(KeyCode::Esc), &test_session());
+        assert!(app.tool_call_popup.is_none());
+    }
+
+    #[test]
     fn typing_while_focused_on_a_cluster_does_not_reach_the_prompt() {
         let mut app = App::new();
         let session = test_session();
@@ -925,6 +1104,7 @@ mod session_event_tests {
         app.handle_session_event(SessionEvent::ToolCall {
             id,
             title: "read_file".to_owned(),
+            parameters: Some("{\"path\":\"src/lib.rs\"}".to_owned()),
             status: ToolCallStatus::InProgress,
         });
 
@@ -934,6 +1114,10 @@ mod session_event_tests {
         let entry = nth_tool_call(cluster, 0);
         assert_eq!(entry.name, "read_file");
         assert_eq!(entry.status, Status::Running);
+        assert_eq!(
+            entry.parameters.as_deref(),
+            Some("{\"path\":\"src/lib.rs\"}")
+        );
     }
 
     #[test]
@@ -944,14 +1128,32 @@ mod session_event_tests {
         app.handle_session_event(SessionEvent::ToolCall {
             id: id.clone(),
             title: "read_file".to_owned(),
+            parameters: Some("{\"path\":\"src/lib.rs\"}".to_owned()),
+            status: ToolCallStatus::Pending,
+        });
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: ToolCallId::new("call-2".to_owned()),
+            title: "write_file".to_owned(),
+            parameters: Some("{\"path\":\"src/main.rs\"}".to_owned()),
             status: ToolCallStatus::Pending,
         });
         app.handle_session_event(SessionEvent::ToolCallUpdate {
             id,
+            parameters: Some("{\"path\":\"src/lib.rs\"}".to_owned()),
             status: Some(ToolCallStatus::Completed),
         });
-
-        assert_eq!(nth_tool_call(tool_cluster(&app, 0), 0).status, Status::Done);
+        let entry = nth_tool_call(tool_cluster(&app, 0), 0);
+        assert_eq!(entry.status, Status::Done);
+        assert_eq!(
+            entry.parameters.as_deref(),
+            Some("{\"path\":\"src/lib.rs\"}")
+        );
+        let second = nth_tool_call(tool_cluster(&app, 0), 1);
+        assert_eq!(second.name, "write_file");
+        assert_eq!(
+            second.parameters.as_deref(),
+            Some("{\"path\":\"src/main.rs\"}")
+        );
     }
 
     #[test]
@@ -960,11 +1162,13 @@ mod session_event_tests {
         app.handle_session_event(SessionEvent::ToolCall {
             id: ToolCallId::new("call-1".to_owned()),
             title: "read_file".to_owned(),
+            parameters: None,
             status: ToolCallStatus::Pending,
         });
 
         app.handle_session_event(SessionEvent::ToolCallUpdate {
             id: ToolCallId::new("call-unknown".to_owned()),
+            parameters: None,
             status: Some(ToolCallStatus::Completed),
         });
 
@@ -981,10 +1185,15 @@ mod session_event_tests {
         app.handle_session_event(SessionEvent::ToolCall {
             id: id.clone(),
             title: "read_file".to_owned(),
+            parameters: None,
             status: ToolCallStatus::Pending,
         });
 
-        app.handle_session_event(SessionEvent::ToolCallUpdate { id, status: None });
+        app.handle_session_event(SessionEvent::ToolCallUpdate {
+            id,
+            status: None,
+            parameters: None,
+        });
 
         assert_eq!(
             nth_tool_call(tool_cluster(&app, 0), 0).status,
