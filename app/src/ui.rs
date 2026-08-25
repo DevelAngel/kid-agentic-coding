@@ -1,11 +1,11 @@
 //! Interactive terminal UI for an ACP session.
 
-use agent_client_protocol::schema::v1::{PermissionOption, ToolCallId, ToolCallStatus};
+use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
 use agent_client_protocol::{Client, ConnectTo};
 use kid_agentic_coding::start_interactive_session;
 use kid_agentic_coding::{
     BubbleLayout, ChatLog, EntryId, Message, PromptRunner, SessionEvent, SessionHandle, Status,
-    Step, ToolCluster, VisibleBubble,
+    Step, ToolCluster, VisibleBubble, SessionNoticeKind,
 };
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -87,10 +87,23 @@ impl App {
             SessionEvent::PermissionRequest { options, reply } => {
                 self.pending_permission = Some(PendingPermission { options, reply });
             }
-            SessionEvent::Stopped(_) => {
+            SessionEvent::Stopped(reason) => {
                 if !self.agent_buffer.is_empty() {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
+                if reason != StopReason::EndTurn {
+                    self.chat_log.push_session_notice(
+                        SessionNoticeKind::Stopped,
+                        stop_reason_text(reason),
+                    );
+                }
+            }
+            SessionEvent::Error(error) => {
+                if !self.agent_buffer.is_empty() {
+                    self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
+                }
+                self.chat_log
+                    .push_session_notice(SessionNoticeKind::Error, format!("Session failed: {error}"));
             }
             SessionEvent::Thought(block) => {
                 let text = PromptRunner::content_block_to_string(&block);
@@ -220,6 +233,17 @@ fn map_tool_call_status(status: ToolCallStatus) -> Status {
         ToolCallStatus::Completed => Status::Done,
         ToolCallStatus::Failed => Status::Failed,
         _ => Status::Pending,
+    }
+}
+
+fn stop_reason_text(reason: StopReason) -> String {
+    match reason {
+        StopReason::Cancelled => "Session cancelled.".to_string(),
+        StopReason::MaxTokens => "Session stopped: maximum tokens reached.".to_string(),
+        StopReason::MaxTurnRequests => "Session stopped: maximum turn requests reached.".to_string(),
+        StopReason::Refusal => "Session stopped: agent refused the request.".to_string(),
+        StopReason::EndTurn => "".to_string(),
+        _ => format!("Session stopped: {reason:?}."),
     }
 }
 
@@ -414,8 +438,19 @@ impl DrawApp for Frame<'_> {
                 Message::ToolCluster(cluster) => {
                     let is_focused = app.focused_cluster == Some(index);
                     let text = render_tool_cluster(cluster, is_focused, app.spinner_phase);
+
                     let paragraph = Paragraph::new(text).scroll((visible_bubble.text_line_skip, 0));
                     self.render_widget(paragraph, render_rect);
+                }
+                Message::SessionNotice(m) => {
+                    let style = match m.kind {
+                        SessionNoticeKind::Error => Style::default().fg(Color::Red),
+                        SessionNoticeKind::Stopped => Style::default().fg(Color::Yellow),
+                    };
+                    self.render_widget(
+                        Paragraph::new(m.text.as_str()).style(style),
+                        render_rect,
+                    );
                 }
             }
         }
@@ -604,8 +639,8 @@ pub async fn run(component: impl ConnectTo<Client> + 'static) -> io::Result<()> 
 #[cfg(test)]
 mod handle_key_tests {
     use super::App;
-    use agent_client_protocol::schema::v1::{ToolCallId, ToolCallStatus};
-    use kid_agentic_coding::{Message, SessionEvent, SessionHandle};
+    use agent_client_protocol::schema::v1::{StopReason, ToolCallId, ToolCallStatus};
+    use kid_agentic_coding::{Message, SessionEvent, SessionHandle, SessionNoticeKind};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
@@ -632,6 +667,43 @@ mod handle_key_tests {
         for c in text.chars() {
             app.handle_key(key(KeyCode::Char(c)), session);
         }
+    }
+
+    #[test]
+    fn session_error_is_added_to_chat_history() {
+        let mut app = App::new();
+
+        app.handle_session_event(SessionEvent::Error("connection lost".to_owned()));
+
+        assert!(matches!(
+            &app.chat_log.messages()[0],
+            Message::SessionNotice(notice)
+                if notice.kind == SessionNoticeKind::Error
+                    && notice.text == "Session failed: connection lost"
+        ));
+    }
+
+    #[test]
+    fn non_normal_stop_is_added_to_chat_history() {
+        let mut app = App::new();
+
+        app.handle_session_event(SessionEvent::Stopped(StopReason::Cancelled));
+
+        assert!(matches!(
+            &app.chat_log.messages()[0],
+            Message::SessionNotice(notice)
+                if notice.kind == SessionNoticeKind::Stopped
+                    && notice.text == "Session cancelled."
+        ));
+    }
+
+    #[test]
+    fn normal_stop_is_not_added_to_chat_history() {
+        let mut app = App::new();
+
+        app.handle_session_event(SessionEvent::Stopped(StopReason::EndTurn));
+
+        assert!(app.chat_log.is_empty());
     }
 
     #[test]

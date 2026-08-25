@@ -47,6 +47,7 @@ async fn run_session(
     mut prompt_rx: UnboundedReceiver<String>,
     event_tx: UnboundedSender<SessionEvent>,
 ) {
+    let session_event_tx = event_tx.clone();
     let result = Client
         .builder()
         .on_receive_dispatch(
@@ -80,7 +81,7 @@ async fn run_session(
                         }
                     }
                     update = session.read_update() => {
-                        handle_update(update?, &event_tx).await?;
+                        handle_update(update?, &session_event_tx).await?;
                     }
                 }
             }
@@ -90,6 +91,7 @@ async fn run_session(
         .await;
 
     if let Err(err) = result {
+        let _ = event_tx.send(SessionEvent::Error(err.to_string()));
         tracing::warn!(?err, "interactive session task ended with error");
     }
 }

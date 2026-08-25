@@ -23,6 +23,20 @@ pub struct AgentMessage {
     pub text: String,
 }
 
+/// Outcome of an interactive session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionNoticeKind {
+    Error,
+    Stopped,
+}
+
+/// A session outcome shown in the chat history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionNotice {
+    pub kind: SessionNoticeKind,
+    pub text: String,
+}
+
 /// A single tool call within a [`ToolCluster`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallEntry {
@@ -126,6 +140,7 @@ pub enum Message {
     User(UserMessage),
     Agent(AgentMessage),
     ToolCluster(ToolCluster),
+    SessionNotice(SessionNotice),
 }
 
 /// Opaque handle to a [`Step`], returned by [`ChatLog::push_tool_call`]
@@ -156,6 +171,14 @@ impl ChatLog {
     pub fn push_user(&mut self, text: impl Into<String>) {
         self.messages
             .push(Message::User(UserMessage { text: text.into() }));
+    }
+
+    /// Appends a session outcome and ends the current tool cluster.
+    pub fn push_session_notice(&mut self, kind: SessionNoticeKind, text: impl Into<String>) {
+        self.messages.push(Message::SessionNotice(SessionNotice {
+            kind,
+            text: text.into(),
+        }));
     }
 
     /// Appends an agent message. Ends whatever tool cluster is currently

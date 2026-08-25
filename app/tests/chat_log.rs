@@ -1,6 +1,6 @@
 //! Contract tests for `ChatLog`.
 
-use kid_agentic_coding::{ChatLog, Message, Status, Step};
+use kid_agentic_coding::{ChatLog, Message, SessionNoticeKind, Status, Step};
 
 #[test]
 fn new_log_is_empty() {
@@ -28,6 +28,20 @@ fn push_agent_appends_agent_message() {
 }
 
 #[test]
+fn push_session_notice_appends_outcome() {
+    let mut log = ChatLog::new();
+    log.push_session_notice(SessionNoticeKind::Error, "Session failed: connection lost");
+
+    assert!(matches!(
+        &log.messages()[0],
+        Message::SessionNotice(notice)
+            if notice.kind == SessionNoticeKind::Error
+                && notice.text == "Session failed: connection lost"
+    ));
+}
+
+
+#[test]
 fn messages_preserve_insertion_order() {
     let mut log = ChatLog::new();
     log.push_user("one");
@@ -40,7 +54,7 @@ fn messages_preserve_insertion_order() {
         .map(|m| match m {
             Message::User(u) => u.text.as_str(),
             Message::Agent(a) => a.text.as_str(),
-            Message::ToolCluster(_) => "",
+            Message::ToolCluster(_) | Message::SessionNotice(_) => "",
         })
         .collect();
 
