@@ -1,7 +1,14 @@
 //! Append-only chat history: user/agent text, thoughts, and tool call
 //! clusters, interleaved in the order they occurred.
 
-use crate::timeline::Status;
+/// Progress of a tool call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Pending,
+    Running,
+    Done,
+    Failed,
+}
 
 /// Text sent by the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
