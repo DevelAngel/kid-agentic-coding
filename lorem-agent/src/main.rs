@@ -24,6 +24,10 @@ struct Args {
     /// Fails the prompt request to exercise the session error path.
     #[arg(long)]
     fail_session: bool,
+
+    /// Exits the agent process to exercise the connection loss path.
+    #[arg(long)]
+    crash: bool,
 }
 
 /// Number of words the fake agent replies with per prompt.
@@ -117,6 +121,11 @@ async fn main() -> Result<()> {
             async |request: PromptRequest, responder, cx| {
                 let prompt_index = NEXT_PROMPT_INDEX.fetch_add(1, Ordering::Relaxed);
                 if args.fail_session {
+                    return Err(agent_client_protocol::Error::from(
+                        agent_client_protocol::ErrorCode::InternalError,
+                    ));
+                }
+                if args.crash {
                     std::process::exit(1);
                 }
                 let seed = NEXT_PROMPT_SEED.fetch_add(REPLY_WORD_COUNT, Ordering::Relaxed);

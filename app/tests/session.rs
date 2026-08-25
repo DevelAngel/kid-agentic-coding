@@ -77,3 +77,30 @@ async fn interactive_session_reports_lorem_agent_failure_mode() {
         }
     }
 }
+
+#[tokio::test]
+async fn interactive_session_survives_lorem_agent_crash() {
+    let agent = AcpAgent::from_args(&[
+        "cargo".to_owned(),
+        "run".to_owned(),
+        "--quiet".to_owned(),
+        "-p".to_owned(),
+        "lorem-agent".to_owned(),
+        "--".to_owned(),
+        "--crash".to_owned(),
+    ])
+    .expect("valid agent command");
+
+    let mut session = start_interactive_session(agent);
+    session
+        .send_prompt("Hello, agent!")
+        .expect("session accepts the prompt");
+
+    let event = session
+        .recv_event()
+        .await
+        .expect("session reports the agent crash");
+    assert!(matches!(event, SessionEvent::Error(_)));
+
+    assert!(session.send_prompt("Still here?").is_err());
+}
