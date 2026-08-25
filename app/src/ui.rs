@@ -10,7 +10,7 @@ use kid_agentic_coding::{
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -57,6 +57,9 @@ struct App {
     pending_permission: Option<PendingPermission>,
     should_quit: bool,
     tool_call_ids: HashMap<ToolCallId, EntryId>,
+    /// Index into `chat_log.messages()` of the `ToolCluster` currently
+    /// navigated via Ctrl+↑/↓, if any. `None` means the prompt has focus.
+    focused_cluster: Option<usize>,
 }
 
 impl App {
@@ -69,6 +72,7 @@ impl App {
             pending_permission: None,
             should_quit: false,
             tool_call_ids: HashMap::new(),
+            focused_cluster: None,
         }
     }
 
@@ -113,7 +117,15 @@ impl App {
             return;
         }
 
+        if let Some(focused) = self.focused_cluster {
+            self.handle_cluster_focus_key(key, focused);
+            return;
+        }
+
         match key.code {
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.focused_cluster = last_cluster_index(&self.chat_log);
+            }
             KeyCode::Enter => {
                 let prompt_text = self.prompt.lines().join(" ").trim().to_owned();
                 if prompt_text.is_empty() {
@@ -142,6 +154,59 @@ impl App {
             }
         }
     }
+
+    /// Applies a key press while a tool cluster has focus (entered via
+    /// Ctrl+↑): Ctrl+↓/Esc return focus to the prompt, ↑/↓ move between
+    /// clusters skipping any other message in between, Enter/Space toggle
+    /// the focused cluster's expanded state. Everything else is ignored —
+    /// typing while a cluster is focused must not reach the prompt.
+    fn handle_cluster_focus_key(&mut self, key: KeyEvent, focused: usize) {
+        match key.code {
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.focused_cluster = None;
+            }
+            KeyCode::Esc => {
+                self.focused_cluster = None;
+            }
+            KeyCode::Up => {
+                if let Some(prev) = cluster_index_before(&self.chat_log, focused) {
+                    self.focused_cluster = Some(prev);
+                }
+            }
+            KeyCode::Down => {
+                if let Some(next) = cluster_index_after(&self.chat_log, focused) {
+                    self.focused_cluster = Some(next);
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.chat_log.toggle_cluster(focused);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Index of the last `ToolCluster` message in `chat_log`, if any.
+fn last_cluster_index(chat_log: &ChatLog) -> Option<usize> {
+    chat_log
+        .messages()
+        .iter()
+        .rposition(|m| matches!(m, Message::ToolCluster(_)))
+}
+
+/// Index of the nearest `ToolCluster` message before `index`, if any.
+fn cluster_index_before(chat_log: &ChatLog, index: usize) -> Option<usize> {
+    chat_log.messages()[..index]
+        .iter()
+        .rposition(|m| matches!(m, Message::ToolCluster(_)))
+}
+
+/// Index of the nearest `ToolCluster` message after `index`, if any.
+fn cluster_index_after(chat_log: &ChatLog, index: usize) -> Option<usize> {
+    chat_log.messages()[index + 1..]
+        .iter()
+        .position(|m| matches!(m, Message::ToolCluster(_)))
+        .map(|offset| index + 1 + offset)
 }
 
 /// Maps an ACP tool call status onto the chat log's protocol-agnostic
@@ -275,7 +340,25 @@ impl DrawApp for Frame<'_> {
             render_log.push_agent(app.agent_buffer.clone());
         }
 
-        let mut layout = BubbleLayout::new(&render_log, area.width, area.height);
+        let layout = BubbleLayout::new(&render_log, area.width, area.height);
+
+        // Keep the focused cluster fully in view before applying the
+        // regular scroll delta, so Ctrl+↑/↓ navigation scrolls the
+        // viewport instead of leaving the selection off-screen.
+        if let Some(focused) = app.focused_cluster
+            && let Some(bubble) = layout.bubbles().get(focused)
+        {
+            let bubble_top = bubble.rect.y;
+            let bubble_bottom = bubble_top.saturating_add(bubble.rect.height);
+            let viewport_bottom = app.scroll_offset.saturating_add(area.height);
+            if bubble_top < app.scroll_offset {
+                app.scroll_offset = bubble_top;
+            } else if bubble_bottom > viewport_bottom {
+                app.scroll_offset = bubble_bottom.saturating_sub(area.height);
+            }
+        }
+
+        let mut layout = layout;
         let delta = (i32::from(app.scroll_offset) - i32::from(layout.scroll_offset()))
             .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
         layout.scroll(delta);
@@ -283,7 +366,7 @@ impl DrawApp for Frame<'_> {
 
         let messages = render_log.messages().iter();
         let visible = layout.visible_bubbles().into_iter();
-        for (message, visible_bubble) in messages.zip(visible) {
+        for (index, (message, visible_bubble)) in messages.zip(visible).enumerate() {
             let Some(visible_bubble) = visible_bubble else {
                 continue;
             };
@@ -328,7 +411,8 @@ impl DrawApp for Frame<'_> {
                     self.render_widget(paragraph, render_rect);
                 }
                 Message::ToolCluster(cluster) => {
-                    let text = render_tool_cluster(cluster);
+                    let is_focused = app.focused_cluster == Some(index);
+                    let text = render_tool_cluster(cluster, is_focused);
                     let paragraph = Paragraph::new(text).scroll((visible_bubble.text_line_skip, 0));
                     self.render_widget(paragraph, render_rect);
                 }
@@ -403,14 +487,23 @@ fn cluster_status(cluster: &ToolCluster) -> Status {
 }
 
 /// Renders a tool cluster as a summary line, or a summary line followed by
-/// a `├─`/`╰─` tree of its entries when expanded.
-fn render_tool_cluster(cluster: &ToolCluster) -> Text<'static> {
+/// a `├─`/`╰─` tree of its entries when expanded. `is_focused` renders the
+/// summary in bold white with a `▸` marker so Ctrl+↑/↓ navigation has a
+/// visible target on an otherwise unframed row.
+fn render_tool_cluster(cluster: &ToolCluster, is_focused: bool) -> Text<'static> {
     let (icon, color, _) = status_style(cluster_status(cluster));
     let count = cluster.entries().len();
     let noun = if count == 1 { "tool" } else { "tools" };
+    let prefix = if is_focused { "\u{25b8} " } else { "  " };
+    let mut summary_style = Style::default().fg(color);
+    if is_focused {
+        summary_style = summary_style
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+    }
     let summary = Span::styled(
-        format!("{icon} Used KID-Text-Editor \u{b7} {count} {noun}"),
-        Style::default().fg(color),
+        format!("{prefix}{icon} Used KID-Text-Editor \u{b7} {count} {noun}"),
+        summary_style,
     );
 
     if !cluster.expanded() {
@@ -496,8 +589,21 @@ pub async fn run(component: impl ConnectTo<Client> + 'static) -> io::Result<()> 
 #[cfg(test)]
 mod handle_key_tests {
     use super::App;
-    use kid_agentic_coding::SessionHandle;
+    use agent_client_protocol::schema::v1::{ToolCallId, ToolCallStatus};
+    use kid_agentic_coding::{Message, SessionEvent, SessionHandle};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    fn push_tool_call(app: &mut App, id: &str, name: &str) {
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: ToolCallId::new(id.to_owned()),
+            title: name.to_owned(),
+            status: ToolCallStatus::Pending,
+        });
+    }
 
     fn test_session() -> SessionHandle {
         SessionHandle::new_disconnected_for_test()
@@ -557,6 +663,125 @@ mod handle_key_tests {
 
         assert!(!app.should_quit);
         assert_eq!(app.chat_log.messages().len(), 1);
+    }
+
+    #[test]
+    fn ctrl_up_without_a_cluster_is_a_no_op() {
+        let mut app = App::new();
+        let session = test_session();
+
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+
+        assert_eq!(app.focused_cluster, None);
+    }
+
+    #[test]
+    fn ctrl_up_focuses_the_last_tool_cluster() {
+        let mut app = App::new();
+        let session = test_session();
+        push_tool_call(&mut app, "call-1", "read_file");
+
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+
+        assert_eq!(app.focused_cluster, Some(0));
+    }
+
+    #[test]
+    fn up_down_navigate_between_clusters_skipping_other_messages() {
+        let mut app = App::new();
+        let session = test_session();
+        push_tool_call(&mut app, "call-1", "read_file");
+        app.chat_log.push_thought("checking existing error handling");
+        push_tool_call(&mut app, "call-2", "write_file");
+
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+        assert_eq!(app.focused_cluster, Some(2));
+
+        app.handle_key(key(KeyCode::Up), &session);
+        assert_eq!(app.focused_cluster, Some(0));
+
+        app.handle_key(key(KeyCode::Down), &session);
+        assert_eq!(app.focused_cluster, Some(2));
+    }
+
+    #[test]
+    fn down_at_the_last_cluster_stays_put() {
+        let mut app = App::new();
+        let session = test_session();
+        push_tool_call(&mut app, "call-1", "read_file");
+
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+        app.handle_key(key(KeyCode::Down), &session);
+
+        assert_eq!(app.focused_cluster, Some(0));
+    }
+
+    #[test]
+    fn enter_toggles_the_focused_cluster() {
+        let mut app = App::new();
+        let session = test_session();
+        push_tool_call(&mut app, "call-1", "read_file");
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+
+        app.handle_key(key(KeyCode::Enter), &session);
+
+        let Message::ToolCluster(cluster) = &app.chat_log.messages()[0] else {
+            panic!("expected a tool cluster");
+        };
+        assert!(cluster.expanded());
+    }
+
+    #[test]
+    fn space_toggles_the_focused_cluster() {
+        let mut app = App::new();
+        let session = test_session();
+        push_tool_call(&mut app, "call-1", "read_file");
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+
+        app.handle_key(key(KeyCode::Char(' ')), &session);
+
+        let Message::ToolCluster(cluster) = &app.chat_log.messages()[0] else {
+            panic!("expected a tool cluster");
+        };
+        assert!(cluster.expanded());
+    }
+
+    #[test]
+    fn ctrl_down_returns_focus_to_the_prompt() {
+        let mut app = App::new();
+        let session = test_session();
+        push_tool_call(&mut app, "call-1", "read_file");
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+
+        app.handle_key(ctrl_key(KeyCode::Down), &session);
+
+        assert_eq!(app.focused_cluster, None);
+    }
+
+    #[test]
+    fn esc_returns_focus_to_the_prompt_without_clearing_it() {
+        let mut app = App::new();
+        let session = test_session();
+        type_text(&mut app, &session, "hello");
+        push_tool_call(&mut app, "call-1", "read_file");
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+
+        app.handle_key(key(KeyCode::Esc), &session);
+
+        assert_eq!(app.focused_cluster, None);
+        assert_eq!(app.prompt.lines().join(" ").trim(), "hello");
+    }
+
+    #[test]
+    fn typing_while_focused_on_a_cluster_does_not_reach_the_prompt() {
+        let mut app = App::new();
+        let session = test_session();
+        push_tool_call(&mut app, "call-1", "read_file");
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+
+        type_text(&mut app, &session, "x");
+
+        assert!(app.prompt.lines().join(" ").trim().is_empty());
     }
 }
 
