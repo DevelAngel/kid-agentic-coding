@@ -8,15 +8,11 @@ mod bubble_layout;
 mod chat_log;
 mod prompt;
 mod session;
-mod timeline;
-mod timeline_layout;
 
 pub use bridge::{SessionClosed, SessionEvent, SessionHandle};
 pub use bubble_layout::{Alignment, Bubble, BubbleLayout, VisibleBubble};
 pub use chat_log::{
-    AgentMessage, ChatLog, EntryId, Message, ToolCallEntry, ToolCluster, UserMessage,
+    AgentMessage, ChatLog, EntryId, Message, Status, ToolCallEntry, ToolCluster, UserMessage,
 };
 pub use prompt::{PromptError, PromptRunner};
 pub use session::start_interactive_session;
-pub use timeline::{EntryKind, Status, TimelineEntry, TimelineLog};
-pub use timeline_layout::{TimelineBlock, TimelineLayout, VisibleBlock};

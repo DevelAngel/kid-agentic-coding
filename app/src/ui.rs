@@ -144,7 +144,7 @@ impl App {
     }
 }
 
-/// Maps an ACP tool call status onto the timeline's protocol-agnostic
+/// Maps an ACP tool call status onto the chat log's protocol-agnostic
 /// [`Status`]. Non-exhaustive future variants default to [`Status::Pending`].
 fn map_tool_call_status(status: ToolCallStatus) -> Status {
     match status {
@@ -437,7 +437,7 @@ fn render_tool_cluster(cluster: &ToolCluster) -> Text<'static> {
     Text::from(lines)
 }
 
-/// Icon, accent color, and status label for a timeline entry's status.
+/// Icon, accent color, and status label for a tool call's status.
 fn status_style(status: Status) -> (&'static str, Color, &'static str) {
     match status {
         Status::Pending => ("\u{25cb}", Color::DarkGray, "pending"),
