@@ -466,17 +466,20 @@ fn bubble_paragraph<'a>(
 /// Renders a tool cluster as a summary line, or a summary line followed by
 /// a `├─`/`╰─` tree of the steps returned by
 /// [`ToolCluster::visible_steps`], with a `⋮` marker if any are hidden.
-/// `is_focused` renders the summary in bold white with a `▸` marker so
-/// Ctrl+↑/↓ navigation has a visible target on an otherwise unframed row.
+/// Every row shares a 3-column left margin (the focus arrow, tree branch,
+/// and truncation marker are all exactly 3 columns wide) so their icons
+/// line up in the same column regardless of row kind. `is_focused`
+/// renders the summary in bold white with a `▸` marker so Ctrl+↑/↓
+/// navigation has a visible target on an otherwise unframed row.
 fn render_tool_cluster(cluster: &ToolCluster, is_focused: bool) -> Text<'static> {
     let (icon, color, _) = status_style(cluster.status());
     let count = cluster.tool_call_count();
     let label = match count {
-        0 => "thinking".to_owned(),
-        1 => "1 tool".to_owned(),
-        n => format!("{n} tools"),
+        0 => "Thinking..".to_owned(),
+        1 => "Calling 1 Tool..".to_owned(),
+        n => format!("Calling {n} Tools.."),
     };
-    let prefix = if is_focused { "\u{25b8} " } else { "  " };
+    let prefix = if is_focused { "\u{25b8}  " } else { "   " };
     let mut summary_style = Style::default().fg(color);
     if is_focused {
         summary_style = summary_style
@@ -493,7 +496,7 @@ fn render_tool_cluster(cluster: &ToolCluster, is_focused: bool) -> Text<'static>
     let mut lines = vec![Line::from(summary)];
     if cluster.steps().len() > shown.len() {
         lines.push(Line::from(Span::styled(
-            "   \u{22ee}",
+            "  \u{22ee}",
             Style::default().fg(Color::DarkGray),
         )));
     }
