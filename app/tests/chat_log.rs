@@ -40,7 +40,6 @@ fn push_session_notice_appends_outcome() {
     ));
 }
 
-
 #[test]
 fn messages_preserve_insertion_order() {
     let mut log = ChatLog::new();

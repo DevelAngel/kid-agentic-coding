@@ -3,6 +3,8 @@
 
 mod lorem;
 
+use clap::Parser;
+
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentNotification, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
@@ -16,6 +18,13 @@ use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
+
+#[derive(Debug, Parser)]
+struct Args {
+    /// Fails the prompt request to exercise the session error path.
+    #[arg(long)]
+    fail_session: bool,
+}
 
 /// Number of words the fake agent replies with per prompt.
 const REPLY_WORD_COUNT: usize = 12;
@@ -84,6 +93,7 @@ fn plan_for(prompt_index: usize) -> Vec<Step> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
     color_eyre::install()?;
     tracing_subscriber::fmt().with_writer(io::stderr).init();
 
@@ -106,6 +116,9 @@ async fn main() -> Result<()> {
         .on_receive_request(
             async |request: PromptRequest, responder, cx| {
                 let prompt_index = NEXT_PROMPT_INDEX.fetch_add(1, Ordering::Relaxed);
+                if args.fail_session {
+                    std::process::exit(1);
+                }
                 let seed = NEXT_PROMPT_SEED.fetch_add(REPLY_WORD_COUNT, Ordering::Relaxed);
                 let text = lorem::generate(seed, REPLY_WORD_COUNT);
 
@@ -235,4 +248,3 @@ mod plan_for_tests {
         assert_eq!(tool_call_names(&plan_for(1)), tool_call_names(&plan_for(4)));
     }
 }
-
