@@ -517,7 +517,7 @@ fn render_tool_cluster(
         let is_last = index + 1 == shown.len();
         let corner = if is_last { "\u{2570}" } else { "\u{251c}" };
         let (line_color, dashes, text) = match step {
-            Step::Thought(text) => (Color::DarkGray, "\u{2500}", text.clone()),
+            Step::Thought(text) => (Color::DarkGray, "\u{2500}\u{2500}", text.clone()),
             Step::ToolCall(entry) => {
                 let (_, color, _) = status_style(entry.status);
                 let result = match entry.status {
