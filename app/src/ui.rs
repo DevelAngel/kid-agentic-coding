@@ -510,7 +510,7 @@ fn render_tool_cluster(
     if cluster.steps().len() > shown.len() {
         lines.push(Line::from(Span::styled(
             "\u{22ee}",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::White),
         )));
     }
     for (index, step) in shown.iter().enumerate() {
@@ -519,7 +519,6 @@ fn render_tool_cluster(
         let (line_color, dashes, text) = match step {
             Step::Thought(text) => (Color::White, "\u{2500}\u{2500}", text.clone()),
             Step::ToolCall(entry) => {
-                let (_, color, _) = status_style(entry.status);
                 let result = match entry.status {
                     Status::Done => "\u{2713}",
                     Status::Failed => "\u{2717}",
@@ -530,7 +529,7 @@ fn render_tool_cluster(
                 } else {
                     format!("{} {result}", entry.name)
                 };
-                (color, "\u{2500}\u{2500}", text)
+                (Color::White, "\u{2500}\u{2500}", text)
             }
         };
         lines.push(Line::from(vec![
