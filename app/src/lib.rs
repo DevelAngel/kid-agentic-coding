@@ -12,7 +12,8 @@ mod session;
 pub use bridge::{SessionClosed, SessionEvent, SessionHandle};
 pub use bubble_layout::{Alignment, Bubble, BubbleLayout, VisibleBubble};
 pub use chat_log::{
-    AgentMessage, ChatLog, EntryId, Message, Status, ToolCallEntry, ToolCluster, UserMessage,
+    AgentMessage, ChatLog, EntryId, Message, Status, Step, ToolCallEntry, ToolCluster,
+    UserMessage,
 };
 pub use prompt::{PromptError, PromptRunner};
 pub use session::start_interactive_session;
