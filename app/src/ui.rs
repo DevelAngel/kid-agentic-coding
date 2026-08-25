@@ -57,6 +57,7 @@ struct App {
     pending_permission: Option<PendingPermission>,
     should_quit: bool,
     tool_call_ids: HashMap<ToolCallId, EntryId>,
+    spinner_phase: usize,
     /// Index into `chat_log.messages()` of the `ToolCluster` currently
     /// navigated via Ctrl+↑/↓, if any. `None` means the prompt has focus.
     focused_cluster: Option<usize>,
@@ -72,6 +73,7 @@ impl App {
             pending_permission: None,
             should_quit: false,
             tool_call_ids: HashMap::new(),
+            spinner_phase: 0,
             focused_cluster: None,
         }
     }
@@ -289,9 +291,15 @@ async fn run_app(
     session: &mut SessionHandle,
     term_events: &mut UnboundedReceiver<Event>,
 ) -> io::Result<()> {
+    let mut spinner = tokio::time::interval(std::time::Duration::from_millis(250));
+    spinner.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     while !app.should_quit {
         terminal.draw(|frame| frame.draw_app(app))?;
         tokio::select! {
+            _ = spinner.tick() => {
+                app.spinner_phase = app.spinner_phase.wrapping_add(1);
+            }
             Some(session_event) = session.recv_event() => {
                 app.handle_session_event(session_event);
             }
@@ -405,7 +413,7 @@ impl DrawApp for Frame<'_> {
                 }
                 Message::ToolCluster(cluster) => {
                     let is_focused = app.focused_cluster == Some(index);
-                    let text = render_tool_cluster(cluster, is_focused);
+                    let text = render_tool_cluster(cluster, is_focused, app.spinner_phase);
                     let paragraph = Paragraph::new(text).scroll((visible_bubble.text_line_skip, 0));
                     self.render_widget(paragraph, render_rect);
                 }
@@ -466,27 +474,32 @@ fn bubble_paragraph<'a>(
 /// Renders a tool cluster as a summary line, or a summary line followed by
 /// a `├─`/`╰─` tree of the steps returned by
 /// [`ToolCluster::visible_steps`], with a `⋮` marker if any are hidden.
-/// Every row shares a 3-column left margin (the focus arrow, tree branch,
-/// and truncation marker are all exactly 3 columns wide) so their icons
-/// line up in the same column regardless of row kind. `is_focused`
-/// renders the summary in bold white with a `▸` marker so Ctrl+↑/↓
-/// navigation has a visible target on an otherwise unframed row.
-fn render_tool_cluster(cluster: &ToolCluster, is_focused: bool) -> Text<'static> {
+/// Renders a tool cluster with the aggregate status aligned to the tree.
+fn render_tool_cluster(
+    cluster: &ToolCluster,
+    is_focused: bool,
+    spinner_phase: usize,
+) -> Text<'static> {
     let (icon, color, _) = status_style(cluster.status());
+    let icon = if cluster.status() == Status::Running {
+        running_icon(spinner_phase)
+    } else {
+        icon
+    };
     let count = cluster.tool_call_count();
     let label = match count {
         0 => "Thinking..".to_owned(),
         1 => "Calling 1 Tool..".to_owned(),
         n => format!("Calling {n} Tools.."),
     };
-    let prefix = if is_focused { "\u{25b8}  " } else { "   " };
+    let marker = if is_focused { "\u{25b8}" } else { icon };
     let mut summary_style = Style::default().fg(color);
     if is_focused {
         summary_style = summary_style
             .fg(Color::White)
             .add_modifier(Modifier::BOLD);
     }
-    let summary = Span::styled(format!("{prefix}{icon} {label}"), summary_style);
+    let summary = Span::styled(format!("{marker} {label}"), summary_style);
 
     let shown = cluster.visible_steps();
     if shown.is_empty() {
@@ -496,30 +509,41 @@ fn render_tool_cluster(cluster: &ToolCluster, is_focused: bool) -> Text<'static>
     let mut lines = vec![Line::from(summary)];
     if cluster.steps().len() > shown.len() {
         lines.push(Line::from(Span::styled(
-            "  \u{22ee}",
+            "\u{22ee}",
             Style::default().fg(Color::DarkGray),
         )));
     }
     for (index, step) in shown.iter().enumerate() {
         let is_last = index + 1 == shown.len();
-        let branch = if is_last {
-            "\u{2570}\u{2500} "
-        } else {
-            "\u{251c}\u{2500} "
-        };
-        let (step_icon, step_color, text) = match step {
-            Step::Thought(text) => ("\u{00b7}", Color::DarkGray, text.clone()),
+        let corner = if is_last { "\u{2570}" } else { "\u{251c}" };
+        let (line_color, dashes, text) = match step {
+            Step::Thought(text) => (Color::DarkGray, "\u{2500}", text.clone()),
             Step::ToolCall(entry) => {
-                let (icon, color, _) = status_style(entry.status);
-                (icon, color, entry.name.clone())
+                let (_, color, _) = status_style(entry.status);
+                let result = match entry.status {
+                    Status::Done => "\u{2713}",
+                    Status::Failed => "\u{2717}",
+                    _ => "",
+                };
+                let text = if result.is_empty() {
+                    entry.name.clone()
+                } else {
+                    format!("{} {result}", entry.name)
+                };
+                (color, "\u{2500}\u{2500}", text)
             }
         };
         lines.push(Line::from(vec![
-            Span::styled(branch, Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{step_icon} {text}"), Style::default().fg(step_color)),
+            Span::styled(format!("{corner}{dashes} "), Style::default().fg(line_color)),
+            Span::raw(text),
         ]));
     }
     Text::from(lines)
+}
+
+fn running_icon(phase: usize) -> &'static str {
+    const SPINNER: [&str; 4] = ["\u{25d0}", "\u{25d3}", "\u{25d1}", "\u{25d2}"];
+    SPINNER[phase % SPINNER.len()]
 }
 
 /// Icon, accent color, and status label for a tool call's status.
