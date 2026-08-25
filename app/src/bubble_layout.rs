@@ -53,6 +53,10 @@ impl BubbleLayout {
                 Message::ToolCluster(cluster) => {
                     unframed_rect(bubble_width, cluster.visible_row_count() as u16)
                 }
+                Message::SessionNotice(m) => {
+                    let text_lines = wrapped_line_count(&m.text, text_width);
+                    unframed_rect(bubble_width, 1 + text_lines)
+                }
             };
 
             bubbles.push(Bubble {

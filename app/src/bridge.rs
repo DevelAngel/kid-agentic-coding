@@ -38,6 +38,9 @@ pub enum SessionEvent {
     /// The current turn ended with the given reason. The session stays open
     /// for further prompts.
     Stopped(StopReason),
+
+    /// The session task ended because of an error.
+    Error(String),
 }
 
 /// Returned by [`SessionHandle::send_prompt`] when the session task has already ended.

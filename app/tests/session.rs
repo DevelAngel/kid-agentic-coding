@@ -37,7 +37,7 @@ async fn interactive_session_relays_thought_and_tool_call_events() {
             SessionEvent::ToolCall { .. } => saw_tool_call = true,
             SessionEvent::ToolCallUpdate { .. } => saw_tool_call_update = true,
             SessionEvent::Stopped(_) => saw_stopped = true,
-            SessionEvent::Chunk(_) | SessionEvent::PermissionRequest { .. } => {}
+            SessionEvent::Chunk(_) | SessionEvent::PermissionRequest { .. } | SessionEvent::Error(_) => {}
         }
     }
 
