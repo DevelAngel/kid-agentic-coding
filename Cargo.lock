@@ -1261,6 +1261,7 @@ dependencies = [
  "color-eyre",
  "ratatui",
  "ratatui-textarea",
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
