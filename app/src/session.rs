@@ -120,14 +120,17 @@ async fn handle_update(
                             tool_call_id,
                             title,
                             status,
+                            raw_input,
                             ..
                         }) => {
                             let _ = event_tx.send(SessionEvent::ToolCall {
                                 id: tool_call_id,
                                 title,
                                 status,
+                                parameters: raw_input.map(|value| value.to_string()),
                             });
                         }
+
                         SessionUpdate::ToolCallUpdate(ToolCallUpdate {
                             tool_call_id,
                             fields,
@@ -136,6 +139,7 @@ async fn handle_update(
                             let _ = event_tx.send(SessionEvent::ToolCallUpdate {
                                 id: tool_call_id,
                                 status: fields.status,
+                                parameters: fields.raw_input.map(|value| value.to_string()),
                             });
                         }
                         sn => {

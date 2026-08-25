@@ -42,6 +42,7 @@ pub struct SessionNotice {
 pub struct ToolCallEntry {
     pub name: String,
     pub status: Status,
+    pub parameters: Option<String>,
 }
 
 /// A single item within a [`ToolCluster`]: either a thought, or a tool
@@ -199,9 +200,19 @@ impl ChatLog {
     /// handle for later status updates via
     /// [`update_tool_call_status`](Self::update_tool_call_status).
     pub fn push_tool_call(&mut self, name: impl Into<String>) -> EntryId {
+        self.push_tool_call_with_parameters(name, None)
+    }
+
+    /// Appends a pending tool call with optional audit parameters.
+    pub fn push_tool_call_with_parameters(
+        &mut self,
+        name: impl Into<String>,
+        parameters: Option<String>,
+    ) -> EntryId {
         self.push_step(Step::ToolCall(ToolCallEntry {
             name: name.into(),
             status: Status::Pending,
+            parameters,
         }))
     }
 
@@ -225,6 +236,26 @@ impl ChatLog {
         }
     }
 
+    /// Updates the parameters of the tool call step identified by `id`.
+    pub fn update_tool_call_parameters(&mut self, id: EntryId, parameters: String) {
+        if let Some(Message::ToolCluster(cluster)) = self.messages.get_mut(id.message_index)
+            && let Some(Step::ToolCall(entry)) = cluster.steps.get_mut(id.step_index)
+        {
+            entry.parameters = Some(parameters);
+        }
+    }
+
+    /// Returns the tool call entry identified by `id`.
+    pub fn tool_call(&self, id: EntryId) -> Option<&ToolCallEntry> {
+        match self.messages.get(id.message_index) {
+            Some(Message::ToolCluster(cluster)) => match cluster.steps.get(id.step_index) {
+                Some(Step::ToolCall(entry)) => Some(entry),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Updates the status of the tool call step identified by `id`.
     /// A no-op if `id` no longer refers to a tool call step.
     pub fn update_tool_call_status(&mut self, id: EntryId, status: Status) {
@@ -233,6 +264,34 @@ impl ChatLog {
         {
             entry.status = status;
         }
+    }
+
+    /// Returns the tool call handles in a cluster in insertion order.
+    pub fn tool_call_ids(&self, message_index: usize) -> Vec<EntryId> {
+        let Some(Message::ToolCluster(cluster)) = self.messages.get(message_index) else {
+            return Vec::new();
+        };
+        cluster
+            .steps
+            .iter()
+            .enumerate()
+            .filter_map(|(step_index, step)| {
+                matches!(step, Step::ToolCall(_)).then_some(EntryId {
+                    message_index,
+                    step_index,
+                })
+            })
+            .collect()
+    }
+
+    /// Returns the step index for a tool call handle in a cluster.
+    pub fn tool_call_step_index(&self, message_index: usize, id: EntryId) -> Option<usize> {
+        (id.message_index == message_index
+            && matches!(
+                self.messages.get(message_index),
+                Some(Message::ToolCluster(_))
+            ))
+        .then_some(id.step_index)
     }
 
     /// Toggles whether the tool cluster at `message_index` shows its
