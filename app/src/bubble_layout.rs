@@ -100,6 +100,12 @@ impl BubbleLayout {
         self.scroll_offset = current.clamp(0, i32::from(max_offset)) as u16;
     }
 
+    /// Jumps the scroll offset to the bottom of the content (or `0` if it
+    /// fits within the viewport).
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = self.total_height.saturating_sub(self.viewport_height);
+    }
+
     /// Bubbles currently within the viewport at the current scroll
     /// offset, one slot per message in [`bubbles`](Self::bubbles) order
     /// (`None` where a bubble is scrolled fully out of view).

@@ -247,3 +247,28 @@ fn thought_row_is_unframed() {
     assert_eq!(layout.bubbles()[0].borders, Borders::NONE);
     assert_eq!(layout.bubbles()[0].alignment, Alignment::Left);
 }
+
+#[test]
+fn scroll_to_bottom_jumps_to_max_offset() {
+    let mut log = ChatLog::new();
+    for i in 0..50 {
+        log.push_user(format!("message {i}"));
+    }
+
+    let mut layout = BubbleLayout::new(&log, 80, 10);
+    layout.scroll_to_bottom();
+
+    let max_offset = layout.total_height().saturating_sub(10);
+    assert_eq!(layout.scroll_offset(), max_offset);
+}
+
+#[test]
+fn scroll_to_bottom_stays_at_zero_when_content_fits_viewport() {
+    let mut log = ChatLog::new();
+    log.push_user("hi");
+
+    let mut layout = BubbleLayout::new(&log, 80, 24);
+    layout.scroll_to_bottom();
+
+    assert_eq!(layout.scroll_offset(), 0);
+}
