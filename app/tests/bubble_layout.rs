@@ -272,3 +272,84 @@ fn scroll_to_bottom_stays_at_zero_when_content_fits_viewport() {
 
     assert_eq!(layout.scroll_offset(), 0);
 }
+
+#[test]
+fn anchor_round_trips_when_layout_is_unchanged() {
+    let mut log = ChatLog::new();
+    for i in 0..20 {
+        log.push_user(format!("message {i}"));
+    }
+
+    let mut layout = BubbleLayout::new(&log, 80, 7);
+    layout.scroll(5);
+    let anchor = layout.anchor().expect("log is not empty");
+
+    let mut rebuilt = BubbleLayout::new(&log, 80, 7);
+    rebuilt.scroll_to_anchor(anchor);
+
+    assert_eq!(rebuilt.scroll_offset(), layout.scroll_offset());
+}
+
+#[test]
+fn anchor_keeps_a_later_bubble_pinned_when_an_earlier_cluster_shrinks() {
+    let mut log = ChatLog::new();
+    let a = log.push_tool_call("git_status");
+    let b = log.push_tool_call("git_switch_branch");
+    let running = log.push_tool_call("git_pull");
+    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(running, kid_agentic_coding::Status::Running);
+    log.push_user("hi");
+
+    // Cluster is 4 rows while running, user bubble is 3 rows: total 7.
+    // A 3-row viewport scrolled to the bottom lands exactly on the user
+    // bubble.
+    let mut layout = BubbleLayout::new(&log, 80, 3);
+    layout.scroll_to_bottom();
+    let anchor = layout.anchor().expect("log is not empty");
+    assert_eq!(anchor.message_index, 1);
+    assert_eq!(anchor.row_offset, 0);
+
+    // Cluster settles and collapses to a single summary row.
+    log.update_tool_call_status(running, kid_agentic_coding::Status::Done);
+    let mut settled = BubbleLayout::new(&log, 80, 3);
+    settled.scroll_to_anchor(anchor);
+
+    let visible = settled.visible_bubbles();
+    let user_bubble = visible[1].expect("user bubble stays visible");
+    assert_eq!(
+        user_bubble.screen_rect.y, 0,
+        "anchored bubble stays pinned to the same screen row"
+    );
+}
+
+#[test]
+fn anchor_clamps_when_its_own_bubble_shrinks_past_the_row_offset() {
+    let mut log = ChatLog::new();
+    let a = log.push_tool_call("git_status");
+    let b = log.push_tool_call("git_switch_branch");
+    let running = log.push_tool_call("git_pull");
+    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(running, kid_agentic_coding::Status::Running);
+
+    // A 1-row viewport scrolled all the way down lands on the cluster's
+    // last step row (row 3 of the 4-row running cluster).
+    let mut layout = BubbleLayout::new(&log, 80, 1);
+    layout.scroll(3);
+    let anchor = layout.anchor().expect("log is not empty");
+    assert_eq!(anchor.message_index, 0);
+    assert_eq!(anchor.row_offset, 3);
+
+    // Cluster settles and collapses to a single summary row (height 1),
+    // which no longer has a row 3 to anchor to.
+    log.update_tool_call_status(running, kid_agentic_coding::Status::Done);
+    let mut settled = BubbleLayout::new(&log, 80, 1);
+    settled.scroll_to_anchor(anchor);
+
+    assert_eq!(
+        settled.scroll_offset(),
+        0,
+        "clamped to the shrunk bubble's last row instead of an unrelated bubble"
+    );
+}
