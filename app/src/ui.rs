@@ -4,8 +4,8 @@ use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId
 use agent_client_protocol::{Client, ConnectTo};
 use kid_agentic_coding::start_interactive_session;
 use kid_agentic_coding::{
-    BubbleLayout, ChatLog, EntryId, Message, PromptRunner, SessionEvent, SessionHandle,
-    SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
+    BubbleLayout, ChatLog, EntryId, Message, PromptRunner, ScrollAnchor, SessionEvent,
+    SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
 };
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -53,7 +53,13 @@ struct App {
     chat_log: ChatLog,
     prompt: TextArea<'static>,
     agent_buffer: String,
-    scroll_offset: u16,
+    /// Where the viewport was anchored at the last redraw, resolved
+    /// against the current layout so it survives bubble height changes
+    /// (e.g. a tool cluster settling and collapsing) without jumping.
+    scroll_anchor: Option<ScrollAnchor>,
+    /// Unapplied row delta from PageUp/PageDown, consumed on the next
+    /// redraw.
+    pending_scroll_delta: i16,
     pending_permission: Option<PendingPermission>,
     /// Whether the view tracks new messages automatically. Disabled by
     /// navigating to older content; re-enabled via [`KeyCode::End`].
@@ -75,7 +81,8 @@ impl App {
             chat_log: ChatLog::new(),
             prompt: new_prompt_textarea(),
             agent_buffer: String::new(),
-            scroll_offset: 0,
+            scroll_anchor: None,
+            pending_scroll_delta: 0,
             pending_permission: None,
             autoscroll: true,
             should_quit: false,
@@ -197,11 +204,13 @@ impl App {
                 }
             }
             KeyCode::PageUp => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(SCROLL_STEP);
+                self.pending_scroll_delta =
+                    self.pending_scroll_delta.saturating_sub(SCROLL_STEP as i16);
                 self.autoscroll = false;
             }
             KeyCode::PageDown => {
-                self.scroll_offset = self.scroll_offset.saturating_add(SCROLL_STEP);
+                self.pending_scroll_delta =
+                    self.pending_scroll_delta.saturating_add(SCROLL_STEP as i16);
             }
             KeyCode::End => {
                 self.autoscroll = true;
@@ -525,29 +534,42 @@ impl DrawApp for Frame<'_> {
 
         if app.autoscroll {
             layout.scroll_to_bottom();
-            app.scroll_offset = layout.scroll_offset();
         } else {
-            // Keep the focused cluster fully in view before applying the
-            // regular scroll delta, so Ctrl+↑/↓ navigation scrolls the
-            // viewport instead of leaving the selection off-screen.
+            if let Some(anchor) = app.scroll_anchor {
+                layout.scroll_to_anchor(anchor);
+            }
+            if app.pending_scroll_delta != 0 {
+                layout.scroll(app.pending_scroll_delta);
+                app.pending_scroll_delta = 0;
+            }
+
+            // Keep the focused cluster fully in view, so Ctrl+↑/↓
+            // navigation scrolls the viewport instead of leaving the
+            // selection off-screen.
             if let Some(focused) = app.focused_cluster
                 && let Some(bubble) = layout.bubbles().get(focused)
             {
                 let bubble_top = bubble.rect.y;
                 let bubble_bottom = bubble_top.saturating_add(bubble.rect.height);
-                let viewport_bottom = app.scroll_offset.saturating_add(area.height);
-                if bubble_top < app.scroll_offset {
-                    app.scroll_offset = bubble_top;
+                let current = layout.scroll_offset();
+                let viewport_bottom = current.saturating_add(area.height);
+                let target = if bubble_top < current {
+                    Some(bubble_top)
                 } else if bubble_bottom > viewport_bottom {
-                    app.scroll_offset = bubble_bottom.saturating_sub(area.height);
+                    Some(bubble_bottom.saturating_sub(area.height))
+                } else {
+                    None
+                };
+                if let Some(target) = target {
+                    let delta = (i32::from(target) - i32::from(current))
+                        .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
+                        as i16;
+                    layout.scroll(delta);
                 }
             }
-
-            let delta = (i32::from(app.scroll_offset) - i32::from(layout.scroll_offset()))
-                .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-            layout.scroll(delta);
-            app.scroll_offset = layout.scroll_offset();
         }
+
+        app.scroll_anchor = layout.anchor();
 
         if let Some(banner_area) = banner_area {
             self.render_widget(

@@ -10,7 +10,7 @@ mod prompt;
 mod session;
 
 pub use bridge::{SessionClosed, SessionEvent, SessionHandle};
-pub use bubble_layout::{Alignment, Bubble, BubbleLayout, VisibleBubble};
+pub use bubble_layout::{Alignment, Bubble, BubbleLayout, ScrollAnchor, VisibleBubble};
 pub use chat_log::{
     AgentMessage, ChatLog, EntryId, Message, SessionNotice, SessionNoticeKind, Status, Step,
     ToolCallEntry, ToolCluster, UserMessage,

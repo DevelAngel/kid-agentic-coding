@@ -160,6 +160,44 @@ impl BubbleLayout {
             alignment: bubble.alignment,
         })
     }
+
+    /// The bubble currently at the top of the viewport, and how many of
+    /// its rows are scrolled past. `None` if the log is empty.
+    pub fn anchor(&self) -> Option<ScrollAnchor> {
+        let (message_index, bubble) = self
+            .bubbles
+            .iter()
+            .enumerate()
+            .find(|(_, b)| b.rect.y.saturating_add(b.rect.height) > self.scroll_offset)?;
+        Some(ScrollAnchor {
+            message_index,
+            row_offset: self.scroll_offset.saturating_sub(bubble.rect.y),
+        })
+    }
+
+    /// Moves the scroll offset so the row identified by `anchor` sits at
+    /// the top of the viewport, clamped to valid bounds. If the anchor's
+    /// bubble has shrunk past `row_offset`, clamps to its last row
+    /// instead of jumping to an unrelated bubble.
+    pub fn scroll_to_anchor(&mut self, anchor: ScrollAnchor) {
+        let max_offset = self.total_height.saturating_sub(self.viewport_height);
+        let Some(bubble) = self.bubbles.get(anchor.message_index) else {
+            self.scroll_offset = max_offset;
+            return;
+        };
+        let row_offset = anchor.row_offset.min(bubble.rect.height.saturating_sub(1));
+        let target = bubble.rect.y.saturating_add(row_offset);
+        self.scroll_offset = target.min(max_offset);
+    }
+}
+
+/// A row within a specific message's bubble, used to keep the viewport
+/// glued to content across layout recomputation instead of an absolute
+/// offset that drifts when an earlier bubble changes height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollAnchor {
+    pub message_index: usize,
+    pub row_offset: u16,
 }
 
 /// The visible slice of a [`Bubble`] at the current scroll offset. See
