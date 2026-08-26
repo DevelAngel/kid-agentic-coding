@@ -176,18 +176,28 @@ impl BubbleLayout {
     }
 
     /// Moves the scroll offset so the row identified by `anchor` sits at
-    /// the top of the viewport, clamped to valid bounds. If the anchor's
-    /// bubble has shrunk past `row_offset`, clamps to its last row
-    /// instead of jumping to an unrelated bubble.
+    /// the top of the viewport. If the anchor's bubble has shrunk past
+    /// `row_offset`, clamps to its last row instead of jumping to an
+    /// unrelated bubble; otherwise never forces the viewport to pack
+    /// against the bottom, so shrinking content leaves blank space
+    /// there rather than reflowing bubbles above it.
     pub fn scroll_to_anchor(&mut self, anchor: ScrollAnchor) {
-        let max_offset = self.total_height.saturating_sub(self.viewport_height);
         let Some(bubble) = self.bubbles.get(anchor.message_index) else {
-            self.scroll_offset = max_offset;
+            self.scroll_to_bottom();
             return;
         };
         let row_offset = anchor.row_offset.min(bubble.rect.height.saturating_sub(1));
-        let target = bubble.rect.y.saturating_add(row_offset);
-        self.scroll_offset = target.min(max_offset);
+        self.scroll_offset = bubble.rect.y.saturating_add(row_offset);
+    }
+
+    /// Advances the scroll offset just far enough to reveal the newest
+    /// content, without ever scrolling back up. Applied after
+    /// [`Self::scroll_to_anchor`] to make autoscroll follow growth (new
+    /// messages, streaming text) while still tolerating shrinkage
+    /// elsewhere without snapping back down to force-fill the viewport.
+    pub fn extend_to_bottom(&mut self) {
+        let max_offset = self.total_height.saturating_sub(self.viewport_height);
+        self.scroll_offset = self.scroll_offset.max(max_offset);
     }
 }
 

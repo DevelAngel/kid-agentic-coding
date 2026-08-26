@@ -353,3 +353,59 @@ fn anchor_clamps_when_its_own_bubble_shrinks_past_the_row_offset() {
         "clamped to the shrunk bubble's last row instead of an unrelated bubble"
     );
 }
+
+#[test]
+fn extend_to_bottom_does_not_force_pack_when_last_bubble_shrinks() {
+    let mut log = ChatLog::new();
+    log.push_user("one");
+    log.push_user("two");
+    log.push_user("three");
+    let a = log.push_tool_call("git_status");
+    let b = log.push_tool_call("git_switch_branch");
+    let running = log.push_tool_call("git_pull");
+    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(running, kid_agentic_coding::Status::Running);
+
+    // 3 padding bubbles (3 rows each = 9) + a running cluster (4 rows) = 13.
+    let mut layout = BubbleLayout::new(&log, 80, 2);
+    layout.scroll_to_bottom();
+    let anchor = layout.anchor().expect("log is not empty");
+
+    // Cluster settles and collapses to a single summary row: total shrinks
+    // from 13 to 10. Packing fully against the new bottom (offset 8) would
+    // reflow the padding bubbles above it into view differently than
+    // before the collapse.
+    log.update_tool_call_status(running, kid_agentic_coding::Status::Done);
+    let mut settled = BubbleLayout::new(&log, 80, 2);
+    settled.scroll_to_anchor(anchor);
+    settled.extend_to_bottom();
+
+    assert_eq!(
+        settled.scroll_offset(),
+        9,
+        "keeps the anchor position instead of packing the viewport to the new bottom"
+    );
+}
+
+#[test]
+fn extend_to_bottom_follows_growth_of_the_last_bubble() {
+    let mut log = ChatLog::new();
+    log.push_user("one");
+
+    let mut layout = BubbleLayout::new(&log, 80, 2);
+    layout.scroll_to_bottom();
+    let anchor = layout.anchor().expect("log is not empty");
+
+    log.push_agent("word ".repeat(20).trim().to_owned());
+    let mut grown = BubbleLayout::new(&log, 80, 2);
+    grown.scroll_to_anchor(anchor);
+    grown.extend_to_bottom();
+
+    let max_offset = grown.total_height() - 2;
+    assert_eq!(
+        grown.scroll_offset(),
+        max_offset,
+        "advances to reveal the newly appended message"
+    );
+}

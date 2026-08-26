@@ -57,9 +57,6 @@ struct App {
     /// against the current layout so it survives bubble height changes
     /// (e.g. a tool cluster settling and collapsing) without jumping.
     scroll_anchor: Option<ScrollAnchor>,
-    /// Previous content height while autoscroll is active, used to avoid
-    /// reversing the viewport when transient tool rows disappear.
-    autoscroll_content_height: Option<u16>,
     /// Unapplied row delta from PageUp/PageDown, consumed on the next
     /// redraw.
     pending_scroll_delta: i16,
@@ -83,7 +80,6 @@ impl App {
         Self {
             chat_log: ChatLog::new(),
             prompt: new_prompt_textarea(),
-            autoscroll_content_height: None,
             agent_buffer: String::new(),
             scroll_anchor: None,
             pending_scroll_delta: 0,
@@ -190,7 +186,6 @@ impl App {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.focused_cluster = last_cluster_index(&self.chat_log);
                 self.autoscroll = false;
-                self.autoscroll_content_height = None;
             }
             KeyCode::Enter => {
                 let prompt_text = self.prompt.lines().join(" ").trim().to_owned();
@@ -212,7 +207,6 @@ impl App {
                 self.pending_scroll_delta =
                     self.pending_scroll_delta.saturating_sub(SCROLL_STEP as i16);
                 self.autoscroll = false;
-                self.autoscroll_content_height = None;
             }
             KeyCode::PageDown => {
                 self.pending_scroll_delta =
@@ -220,7 +214,6 @@ impl App {
             }
             KeyCode::End => {
                 self.autoscroll = true;
-                self.autoscroll_content_height = None;
             }
             KeyCode::Esc => self.prompt = new_prompt_textarea(),
             _ => {
@@ -540,18 +533,10 @@ impl DrawApp for Frame<'_> {
         let mut layout = BubbleLayout::new(&render_log, area.width, area.height);
 
         if app.autoscroll {
-            let content_height = layout.total_height();
-            let viewport_height = match app.autoscroll_content_height {
-                Some(previous) if content_height < previous => {
-                    area.height.saturating_sub(previous - content_height).max(1)
-                }
-                _ => area.height,
-            };
-            if viewport_height != area.height {
-                layout = BubbleLayout::new(&render_log, area.width, viewport_height);
+            if let Some(anchor) = app.scroll_anchor {
+                layout.scroll_to_anchor(anchor);
             }
-            layout.scroll_to_bottom();
-            app.autoscroll_content_height = Some(content_height);
+            layout.extend_to_bottom();
         } else {
             if let Some(anchor) = app.scroll_anchor {
                 layout.scroll_to_anchor(anchor);
