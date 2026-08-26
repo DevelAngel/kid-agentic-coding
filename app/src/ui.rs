@@ -55,6 +55,9 @@ struct App {
     agent_buffer: String,
     scroll_offset: u16,
     pending_permission: Option<PendingPermission>,
+    /// Whether the view tracks new messages automatically. Disabled by
+    /// navigating to older content; re-enabled via [`KeyCode::End`].
+    autoscroll: bool,
     should_quit: bool,
     tool_call_ids: HashMap<ToolCallId, EntryId>,
     spinner_phase: usize,
@@ -74,6 +77,7 @@ impl App {
             agent_buffer: String::new(),
             scroll_offset: 0,
             pending_permission: None,
+            autoscroll: true,
             should_quit: false,
             tool_call_ids: HashMap::new(),
             spinner_phase: 0,
@@ -174,6 +178,7 @@ impl App {
         match key.code {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.focused_cluster = last_cluster_index(&self.chat_log);
+                self.autoscroll = false;
             }
             KeyCode::Enter => {
                 let prompt_text = self.prompt.lines().join(" ").trim().to_owned();
@@ -193,9 +198,13 @@ impl App {
             }
             KeyCode::PageUp => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(SCROLL_STEP);
+                self.autoscroll = false;
             }
             KeyCode::PageDown => {
                 self.scroll_offset = self.scroll_offset.saturating_add(SCROLL_STEP);
+            }
+            KeyCode::End => {
+                self.autoscroll = true;
             }
             KeyCode::Esc => self.prompt = new_prompt_textarea(),
             _ => {
@@ -499,34 +508,54 @@ impl DrawApp for Frame<'_> {
     }
 
     fn draw_chat_log(&mut self, app: &mut App, area: Rect) {
+        let (area, banner_area) = if app.autoscroll {
+            (area, None)
+        } else {
+            let [log_area, banner_area] =
+                Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+            (log_area, Some(banner_area))
+        };
+
         let mut render_log = app.chat_log.clone();
         if !app.agent_buffer.is_empty() {
             render_log.push_agent(app.agent_buffer.clone());
         }
 
-        let layout = BubbleLayout::new(&render_log, area.width, area.height);
+        let mut layout = BubbleLayout::new(&render_log, area.width, area.height);
 
-        // Keep the focused cluster fully in view before applying the
-        // regular scroll delta, so Ctrl+↑/↓ navigation scrolls the
-        // viewport instead of leaving the selection off-screen.
-        if let Some(focused) = app.focused_cluster
-            && let Some(bubble) = layout.bubbles().get(focused)
-        {
-            let bubble_top = bubble.rect.y;
-            let bubble_bottom = bubble_top.saturating_add(bubble.rect.height);
-            let viewport_bottom = app.scroll_offset.saturating_add(area.height);
-            if bubble_top < app.scroll_offset {
-                app.scroll_offset = bubble_top;
-            } else if bubble_bottom > viewport_bottom {
-                app.scroll_offset = bubble_bottom.saturating_sub(area.height);
+        if app.autoscroll {
+            layout.scroll_to_bottom();
+            app.scroll_offset = layout.scroll_offset();
+        } else {
+            // Keep the focused cluster fully in view before applying the
+            // regular scroll delta, so Ctrl+↑/↓ navigation scrolls the
+            // viewport instead of leaving the selection off-screen.
+            if let Some(focused) = app.focused_cluster
+                && let Some(bubble) = layout.bubbles().get(focused)
+            {
+                let bubble_top = bubble.rect.y;
+                let bubble_bottom = bubble_top.saturating_add(bubble.rect.height);
+                let viewport_bottom = app.scroll_offset.saturating_add(area.height);
+                if bubble_top < app.scroll_offset {
+                    app.scroll_offset = bubble_top;
+                } else if bubble_bottom > viewport_bottom {
+                    app.scroll_offset = bubble_bottom.saturating_sub(area.height);
+                }
             }
+
+            let delta = (i32::from(app.scroll_offset) - i32::from(layout.scroll_offset()))
+                .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+            layout.scroll(delta);
+            app.scroll_offset = layout.scroll_offset();
         }
 
-        let mut layout = layout;
-        let delta = (i32::from(app.scroll_offset) - i32::from(layout.scroll_offset()))
-            .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-        layout.scroll(delta);
-        app.scroll_offset = layout.scroll_offset();
+        if let Some(banner_area) = banner_area {
+            self.render_widget(
+                Paragraph::new("\u{2193} New messages \u{b7} End to jump to latest")
+                    .style(Style::default().fg(Color::Black).bg(Color::Yellow)),
+                banner_area,
+            );
+        }
 
         let messages = render_log.messages().iter();
         let visible = layout.visible_bubbles().into_iter();
@@ -949,6 +978,56 @@ mod handle_key_tests {
         app.handle_key(ctrl_key(KeyCode::Up), &session);
 
         assert_eq!(app.focused_cluster, Some(0));
+    }
+
+    #[test]
+    fn autoscroll_is_active_by_default() {
+        let app = App::new();
+
+        assert!(app.autoscroll);
+    }
+
+    #[test]
+    fn page_up_disables_autoscroll() {
+        let mut app = App::new();
+        let session = test_session();
+
+        app.handle_key(key(KeyCode::PageUp), &session);
+
+        assert!(!app.autoscroll);
+    }
+
+    #[test]
+    fn ctrl_up_disables_autoscroll() {
+        let mut app = App::new();
+        let session = test_session();
+        push_tool_call(&mut app, "call-1", "read_file");
+
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+
+        assert!(!app.autoscroll);
+    }
+
+    #[test]
+    fn end_reenables_autoscroll() {
+        let mut app = App::new();
+        let session = test_session();
+        app.handle_key(key(KeyCode::PageUp), &session);
+
+        app.handle_key(key(KeyCode::End), &session);
+
+        assert!(app.autoscroll);
+    }
+
+    #[test]
+    fn page_down_does_not_reenable_autoscroll() {
+        let mut app = App::new();
+        let session = test_session();
+        app.handle_key(key(KeyCode::PageUp), &session);
+
+        app.handle_key(key(KeyCode::PageDown), &session);
+
+        assert!(!app.autoscroll);
     }
 
     #[test]
