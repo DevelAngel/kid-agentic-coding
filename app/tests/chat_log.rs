@@ -252,8 +252,8 @@ fn visible_steps_are_empty_for_a_settled_collapsed_cluster() {
     let id = log.push_tool_call("git_status");
     log.update_tool_call_status(id, Status::Done);
 
-    assert!(tool_cluster(&log, 0).visible_steps().is_empty());
-    assert_eq!(tool_cluster(&log, 0).visible_row_count(), 1);
+    assert!(tool_cluster(&log, 0).visible_steps(false).is_empty());
+    assert_eq!(tool_cluster(&log, 0).visible_row_count(false), 1);
 }
 
 #[test]
@@ -266,13 +266,29 @@ fn visible_steps_show_a_live_tail_while_still_running() {
     log.update_tool_call_status(running, Status::Running);
 
     let cluster = tool_cluster(&log, 0);
-    assert_eq!(cluster.visible_steps().len(), 3);
-    let Step::ToolCall(last_shown) = &cluster.visible_steps()[2] else {
+    assert_eq!(cluster.visible_steps(false).len(), 3);
+    let Step::ToolCall(last_shown) = &cluster.visible_steps(false)[2] else {
         panic!("expected a tool call");
     };
     assert_eq!(last_shown.name, "d");
     // summary + truncation marker + 3 shown steps
-    assert_eq!(cluster.visible_row_count(), 5);
+    assert_eq!(cluster.visible_row_count(false), 5);
+}
+
+#[test]
+fn visible_steps_stay_live_when_keep_live_is_set_even_once_settled() {
+    let mut log = ChatLog::new();
+    let a = log.push_tool_call("a");
+    let b = log.push_tool_call("b");
+    let c = log.push_tool_call("c");
+    log.update_tool_call_status(a, Status::Done);
+    log.update_tool_call_status(b, Status::Done);
+    log.update_tool_call_status(c, Status::Done);
+
+    let cluster = tool_cluster(&log, 0);
+    assert!(cluster.visible_steps(false).is_empty());
+    assert_eq!(cluster.visible_steps(true).len(), 3);
+    assert_eq!(cluster.visible_row_count(true), 4);
 }
 
 #[test]
@@ -285,7 +301,7 @@ fn visible_steps_show_everything_once_expanded_even_if_settled() {
     log.toggle_cluster(0);
 
     let cluster = tool_cluster(&log, 0);
-    assert_eq!(cluster.visible_steps().len(), 2);
+    assert_eq!(cluster.visible_steps(false).len(), 2);
     // summary + 2 steps, no truncation marker since nothing is hidden
-    assert_eq!(cluster.visible_row_count(), 3);
+    assert_eq!(cluster.visible_row_count(false), 3);
 }

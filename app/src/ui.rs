@@ -624,12 +624,18 @@ impl DrawApp for Frame<'_> {
 
                 Message::ToolCluster(cluster) => {
                     let is_focused = app.focused_cluster == Some(index);
+                    let keep_live = index + 1 == render_log.len();
 
                     let selected_step = app
                         .focused_tool_call
                         .and_then(|id| app.chat_log.tool_call_step_index(index, id));
-                    let text =
-                        render_tool_cluster(cluster, is_focused, selected_step, app.spinner_phase);
+                    let text = render_tool_cluster(
+                        cluster,
+                        is_focused,
+                        keep_live,
+                        selected_step,
+                        app.spinner_phase,
+                    );
                     let paragraph = Paragraph::new(text).scroll((visible_bubble.text_line_skip, 0));
                     self.render_widget(paragraph, render_rect);
                 }
@@ -732,9 +738,12 @@ fn bubble_paragraph<'a>(
 }
 
 /// Renders a tool cluster as a summary line followed by its visible steps.
+/// `keep_live` defers the collapse of a just-settled cluster while it is
+/// still the newest message (see [`ToolCluster::visible_steps`]).
 fn render_tool_cluster(
     cluster: &ToolCluster,
     is_focused: bool,
+    keep_live: bool,
     selected_step: Option<usize>,
     spinner_phase: usize,
 ) -> Text<'static> {
@@ -757,7 +766,7 @@ fn render_tool_cluster(
     }
     let summary = Span::styled(format!("{marker} {label}"), summary_style);
 
-    let shown = cluster.visible_steps();
+    let shown = cluster.visible_steps(keep_live);
     if shown.is_empty() {
         return Text::from(Line::from(summary));
     }
