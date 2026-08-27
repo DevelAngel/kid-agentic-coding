@@ -1,6 +1,6 @@
 //! Contract tests for `BubbleLayout`.
 
-use kid_agentic_coding::{Alignment, BubbleLayout, ChatLog};
+use kid_agentic_coding::{Alignment, BubbleLayout, ChatLog, Status};
 use ratatui::widgets::Borders;
 
 #[test]
@@ -196,8 +196,8 @@ fn collapsed_settled_tool_cluster_is_a_single_unframed_row() {
     let mut log = ChatLog::new();
     let a = log.push_tool_call("git_status");
     let b = log.push_tool_call("git_switch_branch");
-    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
-    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(a, Status::Done);
+    log.update_tool_call_status(b, Status::Done);
     // A settled cluster only collapses once it's no longer the newest
     // message (see keep_live in `ToolCluster::visible_steps`).
     log.push_user("hi");
@@ -215,8 +215,8 @@ fn settled_tool_cluster_stays_live_while_it_is_still_the_last_message() {
     let mut log = ChatLog::new();
     let a = log.push_tool_call("git_status");
     let b = log.push_tool_call("git_switch_branch");
-    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
-    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(a, Status::Done);
+    log.update_tool_call_status(b, Status::Done);
 
     let layout = BubbleLayout::new(&log, 80, 24);
 
@@ -230,7 +230,7 @@ fn still_running_tool_cluster_shows_a_live_tail() {
     log.push_tool_call("git_status");
     log.push_tool_call("git_switch_branch");
     let running = log.push_tool_call("git_pull");
-    log.update_tool_call_status(running, kid_agentic_coding::Status::Running);
+    log.update_tool_call_status(running, Status::Running);
 
     let layout = BubbleLayout::new(&log, 80, 24);
 
@@ -244,9 +244,9 @@ fn expanded_tool_cluster_reserves_one_row_per_step_plus_summary() {
     let a = log.push_tool_call("git_status");
     let b = log.push_tool_call("git_switch_branch");
     let c = log.push_tool_call("git_pull");
-    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
-    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
-    log.update_tool_call_status(c, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(a, Status::Done);
+    log.update_tool_call_status(b, Status::Done);
+    log.update_tool_call_status(c, Status::Done);
     log.toggle_cluster(0);
 
     let layout = BubbleLayout::new(&log, 80, 24);
@@ -313,9 +313,9 @@ fn anchor_keeps_a_later_bubble_pinned_when_an_earlier_cluster_shrinks() {
     let a = log.push_tool_call("git_status");
     let b = log.push_tool_call("git_switch_branch");
     let running = log.push_tool_call("git_pull");
-    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
-    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
-    log.update_tool_call_status(running, kid_agentic_coding::Status::Running);
+    log.update_tool_call_status(a, Status::Done);
+    log.update_tool_call_status(b, Status::Done);
+    log.update_tool_call_status(running, Status::Running);
     log.push_user("hi");
 
     // Cluster is 4 rows while running, user bubble is 3 rows: total 7.
@@ -328,7 +328,7 @@ fn anchor_keeps_a_later_bubble_pinned_when_an_earlier_cluster_shrinks() {
     assert_eq!(anchor.row_offset, 0);
 
     // Cluster settles and collapses to a single summary row.
-    log.update_tool_call_status(running, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(running, Status::Done);
     let mut settled = BubbleLayout::new(&log, 80, 3);
     settled.scroll_to_anchor(anchor);
 
@@ -346,9 +346,9 @@ fn anchor_clamps_when_its_own_bubble_shrinks_past_the_row_offset() {
     let a = log.push_tool_call("git_status");
     let b = log.push_tool_call("git_switch_branch");
     let running = log.push_tool_call("git_pull");
-    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
-    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
-    log.update_tool_call_status(running, kid_agentic_coding::Status::Running);
+    log.update_tool_call_status(a, Status::Done);
+    log.update_tool_call_status(b, Status::Done);
+    log.update_tool_call_status(running, Status::Running);
     log.push_user("hi"); // pushes the cluster out of the "still last" slot
 
     // A 1-row viewport scrolled all the way down lands on the cluster's
@@ -361,7 +361,7 @@ fn anchor_clamps_when_its_own_bubble_shrinks_past_the_row_offset() {
 
     // Cluster settles and collapses to a single summary row (height 1),
     // which no longer has a row 3 to anchor to.
-    log.update_tool_call_status(running, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(running, Status::Done);
     let mut settled = BubbleLayout::new(&log, 80, 1);
     settled.scroll_to_anchor(anchor);
 
@@ -381,9 +381,9 @@ fn extend_to_bottom_follows_the_message_that_pushes_a_settled_cluster_off_the_bo
     let a = log.push_tool_call("git_status");
     let b = log.push_tool_call("git_switch_branch");
     let running = log.push_tool_call("git_pull");
-    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
-    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
-    log.update_tool_call_status(running, kid_agentic_coding::Status::Running);
+    log.update_tool_call_status(a, Status::Done);
+    log.update_tool_call_status(b, Status::Done);
+    log.update_tool_call_status(running, Status::Running);
 
     // 3 padding bubbles (3 rows each = 9) + a running cluster (4 rows) = 13.
     let mut layout = BubbleLayout::new(&log, 80, 2);
@@ -394,7 +394,7 @@ fn extend_to_bottom_follows_the_message_that_pushes_a_settled_cluster_off_the_bo
     // `keep_live`) and a new message arrives: total is 9 + 1 + 3 = 13
     // again. extend_to_bottom must follow down to reveal the new
     // message instead of getting stuck at the anchor's old position.
-    log.update_tool_call_status(running, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(running, Status::Done);
     log.push_user("done");
     let mut settled = BubbleLayout::new(&log, 80, 2);
     settled.scroll_to_anchor(anchor);
