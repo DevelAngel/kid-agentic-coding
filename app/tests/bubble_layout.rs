@@ -198,13 +198,30 @@ fn collapsed_settled_tool_cluster_is_a_single_unframed_row() {
     let b = log.push_tool_call("git_switch_branch");
     log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
     log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
+    // A settled cluster only collapses once it's no longer the newest
+    // message (see keep_live in `ToolCluster::visible_steps`).
+    log.push_user("hi");
 
     let layout = BubbleLayout::new(&log, 80, 24);
 
-    assert_eq!(layout.bubbles().len(), 1);
+    assert_eq!(layout.bubbles().len(), 2);
     assert_eq!(layout.bubbles()[0].rect.height, 1);
     assert_eq!(layout.bubbles()[0].borders, Borders::NONE);
     assert_eq!(layout.bubbles()[0].alignment, Alignment::Left);
+}
+
+#[test]
+fn settled_tool_cluster_stays_live_while_it_is_still_the_last_message() {
+    let mut log = ChatLog::new();
+    let a = log.push_tool_call("git_status");
+    let b = log.push_tool_call("git_switch_branch");
+    log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
+    log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
+
+    let layout = BubbleLayout::new(&log, 80, 24);
+
+    // summary + 2 steps, no truncation marker since nothing is hidden
+    assert_eq!(layout.bubbles()[0].rect.height, 3);
 }
 
 #[test]
@@ -332,6 +349,7 @@ fn anchor_clamps_when_its_own_bubble_shrinks_past_the_row_offset() {
     log.update_tool_call_status(a, kid_agentic_coding::Status::Done);
     log.update_tool_call_status(b, kid_agentic_coding::Status::Done);
     log.update_tool_call_status(running, kid_agentic_coding::Status::Running);
+    log.push_user("hi"); // pushes the cluster out of the "still last" slot
 
     // A 1-row viewport scrolled all the way down lands on the cluster's
     // last step row (row 3 of the 4-row running cluster).
@@ -355,7 +373,7 @@ fn anchor_clamps_when_its_own_bubble_shrinks_past_the_row_offset() {
 }
 
 #[test]
-fn extend_to_bottom_does_not_force_pack_when_last_bubble_shrinks() {
+fn extend_to_bottom_follows_the_message_that_pushes_a_settled_cluster_off_the_bottom() {
     let mut log = ChatLog::new();
     log.push_user("one");
     log.push_user("two");
@@ -372,19 +390,20 @@ fn extend_to_bottom_does_not_force_pack_when_last_bubble_shrinks() {
     layout.scroll_to_bottom();
     let anchor = layout.anchor().expect("log is not empty");
 
-    // Cluster settles and collapses to a single summary row: total shrinks
-    // from 13 to 10. Packing fully against the new bottom (offset 8) would
-    // reflow the padding bubbles above it into view differently than
-    // before the collapse.
+    // Cluster settles (collapsing to 1 row once it's no longer last, see
+    // `keep_live`) and a new message arrives: total is 9 + 1 + 3 = 13
+    // again. extend_to_bottom must follow down to reveal the new
+    // message instead of getting stuck at the anchor's old position.
     log.update_tool_call_status(running, kid_agentic_coding::Status::Done);
+    log.push_user("done");
     let mut settled = BubbleLayout::new(&log, 80, 2);
     settled.scroll_to_anchor(anchor);
     settled.extend_to_bottom();
 
     assert_eq!(
         settled.scroll_offset(),
-        9,
-        "keeps the anchor position instead of packing the viewport to the new bottom"
+        settled.total_height() - 2,
+        "follows the new message to the bottom instead of staying at the anchor"
     );
 }
 

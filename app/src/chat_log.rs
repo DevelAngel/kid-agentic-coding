@@ -107,15 +107,20 @@ impl ToolCluster {
     }
 
     /// The steps that should currently be rendered as a tree under the
-    /// summary line: all of them when [`Self::expanded`], the last three
-    /// while the cluster is still [`Status::Pending`]/[`Status::Running`]
-    /// (so it stays legible mid-flight without needing to expand it), or
-    /// none once it has settled into a terminal status and the user has
-    /// not asked to expand it.
-    pub fn visible_steps(&self) -> &[Step] {
+    /// summary line: all of them when [`Self::expanded`], the last
+    /// three while the cluster is still [`Status::Pending`]/
+    /// [`Status::Running`] or `keep_live` is set, or none once it has
+    /// settled into a terminal status (with `keep_live` false) and the
+    /// user has not asked to expand it.
+    ///
+    /// `keep_live` lets a caller defer the collapse of a just-settled
+    /// cluster while it is still the newest message being watched (see
+    /// [`crate::bubble_layout::BubbleLayout`]), so the collapse only
+    /// happens once a later message has already moved the viewport on.
+    pub fn visible_steps(&self, keep_live: bool) -> &[Step] {
         if self.expanded {
             &self.steps
-        } else if matches!(self.status(), Status::Pending | Status::Running) {
+        } else if keep_live || matches!(self.status(), Status::Pending | Status::Running) {
             let start = self.steps.len().saturating_sub(3);
             &self.steps[start..]
         } else {
@@ -126,8 +131,8 @@ impl ToolCluster {
     /// Number of rows this cluster renders as: 1 for a plain summary, or
     /// summary + a truncation marker (if any steps are hidden) + one row
     /// per step returned by [`Self::visible_steps`].
-    pub fn visible_row_count(&self) -> usize {
-        let shown = self.visible_steps();
+    pub fn visible_row_count(&self, keep_live: bool) -> usize {
+        let shown = self.visible_steps(keep_live);
         if shown.is_empty() {
             1
         } else {
