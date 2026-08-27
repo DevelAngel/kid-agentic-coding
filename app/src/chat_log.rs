@@ -106,17 +106,12 @@ impl ToolCluster {
         aggregate
     }
 
-    /// The steps that should currently be rendered as a tree under the
-    /// summary line: all of them when [`Self::expanded`], the last
-    /// three while the cluster is still [`Status::Pending`]/
-    /// [`Status::Running`] or `keep_live` is set, or none once it has
-    /// settled into a terminal status (with `keep_live` false) and the
-    /// user has not asked to expand it.
-    ///
-    /// `keep_live` lets a caller defer the collapse of a just-settled
-    /// cluster while it is still the newest message being watched (see
-    /// [`crate::bubble_layout::BubbleLayout`]), so the collapse only
-    /// happens once a later message has already moved the viewport on.
+    /// The steps rendered under the summary line: all of them when
+    /// [`Self::expanded`], the last three while
+    /// [`Status::Pending`]/[`Status::Running`] or `keep_live` is set,
+    /// otherwise none. `keep_live` defers the collapse of a just-settled
+    /// cluster while it is still the newest message (see
+    /// [`crate::bubble_layout::BubbleLayout`]).
     pub fn visible_steps(&self, keep_live: bool) -> &[Step] {
         if self.expanded {
             &self.steps

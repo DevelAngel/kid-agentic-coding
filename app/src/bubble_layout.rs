@@ -192,11 +192,10 @@ impl BubbleLayout {
         self.scroll_offset = bubble.rect.y.saturating_add(row_offset);
     }
 
-    /// Advances the scroll offset just far enough to reveal the newest
-    /// content, without ever scrolling back up. Applied after
-    /// [`Self::scroll_to_anchor`] to make autoscroll follow growth (new
-    /// messages, streaming text) while still tolerating shrinkage
-    /// elsewhere without snapping back down to force-fill the viewport.
+    /// Advances the scroll offset to reveal newly grown content, without
+    /// ever scrolling back up. Combined with [`Self::scroll_to_anchor`],
+    /// this lets autoscroll follow growth (new messages, streaming text)
+    /// while still tolerating shrinkage elsewhere.
     pub fn extend_to_bottom(&mut self) {
         let max_offset = self.total_height.saturating_sub(self.viewport_height);
         self.scroll_offset = self.scroll_offset.max(max_offset);
