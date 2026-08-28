@@ -40,6 +40,7 @@ async fn main() -> Result<()> {
         .with_env_filter(env_filter(&args.verbosity, args.log_baseline))
         .with_writer(log_buffer.clone())
         .init();
+    tracing::debug!("logging initialized");
 
     let agent = PromptRunner::parse_agent_args(&args.agent_args)?;
 

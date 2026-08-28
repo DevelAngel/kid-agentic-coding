@@ -1,5 +1,7 @@
 //! Interactive terminal UI for an ACP session.
 
+use ansi_to_tui::IntoText;
+
 use crate::log_buffer::LogBuffer;
 use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
 use agent_client_protocol::{Client, ConnectTo};
@@ -775,10 +777,18 @@ impl DrawApp for Frame<'_> {
     fn draw_log_popup(&mut self, lines: &[String], scroll: u16, area: Rect) {
         let popup_area = centered_rect(90, 85, area);
         let text = if lines.is_empty() {
-            "No log output yet.".to_owned()
+            Text::raw("No log output yet.")
         } else {
-            lines.join("\n")
+            let mut text = Text::default();
+            for line in lines {
+                match line.as_bytes().to_vec().into_text() {
+                    Ok(parsed) => text.extend(parsed),
+                    Err(_) => text.push_line(Line::raw(line.clone())),
+                }
+            }
+            text
         };
+
         let paragraph = Paragraph::new(text)
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0))
