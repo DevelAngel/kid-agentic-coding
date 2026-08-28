@@ -55,6 +55,37 @@ async fn interactive_session_relays_thought_and_tool_call_events() {
 }
 
 #[tokio::test]
+async fn interactive_session_registers_confetti_tool_when_agent_supports_mcp() {
+    let agent = AcpAgent::from_args(&[
+        "cargo".to_owned(),
+        "run".to_owned(),
+        "--quiet".to_owned(),
+        "-p".to_owned(),
+        "lorem-agent".to_owned(),
+        "--".to_owned(),
+        "--supports-mcp".to_owned(),
+    ])
+    .expect("valid agent command");
+
+    let mut session = start_interactive_session(agent);
+    session
+        .send_prompt("Hello, agent!")
+        .expect("session accepts the prompt");
+
+    let mut saw_stopped = false;
+    while !saw_stopped {
+        let event = session
+            .recv_event()
+            .await
+            .expect("session stays open normally with MCP tool registration attached");
+
+        if let SessionEvent::Stopped(_) = event {
+            saw_stopped = true;
+        }
+    }
+}
+
+#[tokio::test]
 async fn interactive_session_reports_lorem_agent_failure_mode() {
     let agent = AcpAgent::from_args(&[
         "cargo".to_owned(),
