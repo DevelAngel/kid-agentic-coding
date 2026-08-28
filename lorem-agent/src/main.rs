@@ -33,6 +33,11 @@ struct Args {
     /// failure message, to exercise the failure-result display path.
     #[arg(long)]
     fail_tool: bool,
+
+    /// Advertises MCP-over-ACP support in the initialize response, so a
+    /// connecting client attempts confetti MCP tool registration.
+    #[arg(long)]
+    supports_mcp: bool,
 }
 
 /// Number of words the fake agent replies with per prompt.
@@ -110,7 +115,11 @@ async fn main() -> Result<()> {
         .builder()
         .on_receive_request(
             async |_request: InitializeRequest, responder, _cx| {
-                responder.respond(InitializeResponse::new(ProtocolVersion::V1))
+                let mut response = InitializeResponse::new(ProtocolVersion::V1);
+                if args.supports_mcp {
+                    response.agent_capabilities.mcp_capabilities.acp = true;
+                }
+                responder.respond(response)
             },
             agent_client_protocol::on_receive_request!(),
         )
