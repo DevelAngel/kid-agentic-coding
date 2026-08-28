@@ -10,6 +10,7 @@ use kid_agentic_coding::PromptRunner;
 use log_buffer::LogBuffer;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::time::ChronoLocal;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -37,6 +38,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let log_buffer = LogBuffer::default();
     tracing_subscriber::fmt()
+        .with_timer(ChronoLocal::new("%Y-%m-%d %H:%M:%S%.6f".to_owned()))
         .with_env_filter(env_filter(&args.verbosity, args.log_baseline))
         .with_writer(log_buffer.clone())
         .init();
