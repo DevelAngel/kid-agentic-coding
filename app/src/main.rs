@@ -1,12 +1,13 @@
 //! Entry point for the interactive ACP terminal UI.
 
+mod log_buffer;
 mod ui;
 
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::Result;
 use kid_agentic_coding::PromptRunner;
-use std::io;
+use log_buffer::LogBuffer;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
@@ -34,15 +35,15 @@ struct Args {
 async fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
+    let log_buffer = LogBuffer::default();
     tracing_subscriber::fmt()
         .with_env_filter(env_filter(&args.verbosity, args.log_baseline))
-        .with_writer(io::stderr)
+        .with_writer(log_buffer.clone())
         .init();
 
     let agent = PromptRunner::parse_agent_args(&args.agent_args)?;
 
-    ui::run(agent).await?;
-
+    ui::run(agent, log_buffer).await?;
     Ok(())
 }
 

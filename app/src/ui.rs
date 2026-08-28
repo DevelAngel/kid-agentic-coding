@@ -1,5 +1,6 @@
 //! Interactive terminal UI for an ACP session.
 
+use crate::log_buffer::LogBuffer;
 use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
 use agent_client_protocol::{Client, ConnectTo};
 use kid_agentic_coding::start_interactive_session;
@@ -72,6 +73,9 @@ struct App {
     focused_cluster: Option<usize>,
     focused_tool_call: Option<EntryId>,
     tool_call_popup: Option<EntryId>,
+    log_buffer: LogBuffer,
+    log_popup: bool,
+    log_popup_scroll: u16,
     tool_call_popup_scroll: u16,
 }
 
@@ -92,6 +96,18 @@ impl App {
             focused_tool_call: None,
             tool_call_popup: None,
             tool_call_popup_scroll: 0,
+            log_buffer: LogBuffer::default(),
+            log_popup: false,
+            log_popup_scroll: 0,
+        }
+    }
+
+    /// Like [`App::new`], but backed by an existing, externally shared
+    /// [`LogBuffer`] instead of a fresh one.
+    fn with_log_buffer(log_buffer: LogBuffer) -> Self {
+        Self {
+            log_buffer,
+            ..Self::new()
         }
     }
 
@@ -177,6 +193,11 @@ impl App {
             return;
         }
 
+        if self.log_popup {
+            self.handle_log_popup_key(key);
+            return;
+        }
+
         if let Some(focused) = self.focused_cluster {
             self.handle_cluster_focus_key(key, focused);
             return;
@@ -186,6 +207,10 @@ impl App {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.focused_cluster = last_cluster_index(&self.chat_log);
                 self.autoscroll = false;
+            }
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.log_popup = true;
+                self.log_popup_scroll = 0;
             }
             KeyCode::Enter => {
                 let prompt_text = self.prompt.lines().join(" ").trim().to_owned();
@@ -310,6 +335,32 @@ impl App {
             KeyCode::PageDown => {
                 self.tool_call_popup_scroll =
                     self.tool_call_popup_scroll.saturating_add(SCROLL_STEP);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_log_popup_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.log_popup = false;
+                self.log_popup_scroll = 0;
+            }
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.log_popup = false;
+                self.log_popup_scroll = 0;
+            }
+            KeyCode::Up => {
+                self.log_popup_scroll = self.log_popup_scroll.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                self.log_popup_scroll = self.log_popup_scroll.saturating_add(1);
+            }
+            KeyCode::PageUp => {
+                self.log_popup_scroll = self.log_popup_scroll.saturating_sub(SCROLL_STEP);
+            }
+            KeyCode::PageDown => {
+                self.log_popup_scroll = self.log_popup_scroll.saturating_add(SCROLL_STEP);
             }
             _ => {}
         }
@@ -495,6 +546,9 @@ trait DrawApp {
         scroll: u16,
         area: Rect,
     );
+
+    /// Renders the log popup over the given area.
+    fn draw_log_popup(&mut self, lines: &[String], scroll: u16, area: Rect);
 }
 
 impl DrawApp for Frame<'_> {
@@ -513,6 +567,10 @@ impl DrawApp for Frame<'_> {
             && let Some(entry) = app.chat_log.tool_call(entry_id)
         {
             self.draw_tool_call_popup(entry, app.tool_call_popup_scroll, self.area());
+        }
+
+        if app.log_popup {
+            self.draw_log_popup(&app.log_buffer.lines(), app.log_popup_scroll, self.area());
         }
     }
 
@@ -713,6 +771,25 @@ impl DrawApp for Frame<'_> {
         self.render_widget(Clear, popup_area);
         self.render_widget(paragraph, popup_area);
     }
+
+    fn draw_log_popup(&mut self, lines: &[String], scroll: u16, area: Rect) {
+        let popup_area = centered_rect(90, 85, area);
+        let text = if lines.is_empty() {
+            "No log output yet.".to_owned()
+        } else {
+            lines.join("\n")
+        };
+        let paragraph = Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0))
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .title(" Logs (Esc or Ctrl+L to close) "),
+            );
+        self.render_widget(Clear, popup_area);
+        self.render_widget(paragraph, popup_area);
+    }
 }
 /// Builds the framed paragraph for a User/Agent bubble.
 fn bubble_paragraph<'a>(
@@ -862,11 +939,14 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 
 /// Runs the interactive terminal UI against the given agent component until
 /// the user quits, restoring the terminal afterwards regardless of outcome.
-pub async fn run(component: impl ConnectTo<Client> + 'static) -> io::Result<()> {
+pub async fn run(
+    component: impl ConnectTo<Client> + 'static,
+    log_buffer: LogBuffer,
+) -> io::Result<()> {
     let mut session = start_interactive_session(component);
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
-    let mut app = App::new();
+    let mut app = App::with_log_buffer(log_buffer);
 
     let result = run_app(&mut terminal, &mut app, &mut session, &mut term_events).await;
 
@@ -1220,6 +1300,59 @@ mod handle_key_tests {
         type_text(&mut app, &session, "x");
 
         assert!(app.prompt.lines().join(" ").trim().is_empty());
+    }
+
+    #[test]
+    fn ctrl_l_opens_the_log_popup() {
+        let mut app = App::new();
+        let session = test_session();
+
+        app.handle_key(ctrl_key(KeyCode::Char('l')), &session);
+
+        assert!(app.log_popup);
+    }
+
+    #[test]
+    fn esc_closes_the_log_popup() {
+        let mut app = App::new();
+        let session = test_session();
+        app.handle_key(ctrl_key(KeyCode::Char('l')), &session);
+
+        app.handle_key(key(KeyCode::Esc), &session);
+
+        assert!(!app.log_popup);
+    }
+
+    #[test]
+    fn ctrl_l_again_closes_the_log_popup() {
+        let mut app = App::new();
+        let session = test_session();
+        app.handle_key(ctrl_key(KeyCode::Char('l')), &session);
+
+        app.handle_key(ctrl_key(KeyCode::Char('l')), &session);
+
+        assert!(!app.log_popup);
+    }
+
+    #[test]
+    fn page_down_scrolls_the_log_popup() {
+        let mut app = App::new();
+        let session = test_session();
+        app.handle_key(ctrl_key(KeyCode::Char('l')), &session);
+
+        app.handle_key(key(KeyCode::PageDown), &session);
+
+        assert_eq!(app.log_popup_scroll, SCROLL_STEP);
+    }
+
+    #[test]
+    fn page_down_does_not_scroll_when_log_popup_is_closed() {
+        let mut app = App::new();
+        let session = test_session();
+
+        app.handle_key(key(KeyCode::PageDown), &session);
+
+        assert_eq!(app.log_popup_scroll, 0);
     }
 }
 
