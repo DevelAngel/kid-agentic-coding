@@ -39,6 +39,8 @@ pub enum SessionEvent {
         options: Vec<PermissionOption>,
         reply: Sender<Option<String>>,
     },
+    /// The confetti MCP tool was invoked successfully.
+    Confetti,
     /// The current turn ended with the given reason. The session stays open
     /// for further prompts.
     Stopped(StopReason),

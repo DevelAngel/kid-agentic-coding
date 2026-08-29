@@ -7,18 +7,24 @@ use clap::Parser;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentNotification, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
+    AgentNotification, ConnectMcpRequest, ContentBlock, ContentChunk, InitializeRequest,
+    InitializeResponse, McpServer, McpServerAcpId, MessageMcpNotification, MessageMcpRequest,
     NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId,
     SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall, ToolCallId,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
-use agent_client_protocol::{Agent, Stdio};
+use agent_client_protocol::{
+    Agent, Client, ConnectionTo, Error, ErrorCode, Stdio, on_receive_request,
+};
 use color_eyre::Result;
 use std::io;
+use std::process;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
 
+use serde_json::{Map, json};
 #[derive(Debug, Parser)]
 struct Args {
     /// Fails the prompt request to exercise the session error path.
@@ -36,7 +42,7 @@ struct Args {
 
     /// Advertises MCP-over-ACP support in the initialize response, so a
     /// connecting client attempts confetti MCP tool registration.
-    #[arg(long)]
+    #[arg(long = "mcp")]
     supports_mcp: bool,
 }
 
@@ -61,6 +67,7 @@ static NEXT_PROMPT_SEED: AtomicUsize = AtomicUsize::new(0);
 /// Assigns increasing indices so the fake agent can vary its thought/tool
 /// call plan per request instead of repeating the same simple round-trip.
 static NEXT_PROMPT_INDEX: AtomicUsize = AtomicUsize::new(0);
+static CONFETTI_SERVER_ID: OnceLock<McpServerAcpId> = OnceLock::new();
 
 /// One step in a fake agent's simulated reasoning: either a thought, or a
 /// tool call that goes `InProgress` then `Completed`.
@@ -78,8 +85,8 @@ enum Step {
 /// still in progress. Since a thought no longer ends the cluster it
 /// belongs to (only a following user/agent message does), every step in
 /// one plan renders as a single growing tool cluster.
-fn plan_for(prompt_index: usize) -> Vec<Step> {
-    match prompt_index % 3 {
+fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
+    let mut steps = match prompt_index % 3 {
         0 => vec![
             Step::Thought("Generating lorem ipsum"),
             Step::ToolCall("generate_lorem_ipsum"),
@@ -102,7 +109,49 @@ fn plan_for(prompt_index: usize) -> Vec<Step> {
             Step::ToolCall("write_file"),
             Step::ToolCall("run_tests"),
         ],
+    };
+    if supports_mcp && prompt_index % 3 == 2 {
+        steps.push(Step::ToolCall("confetti"));
     }
+    steps
+}
+
+async fn invoke_confetti(
+    connection: ConnectionTo<Client>,
+    server_id: McpServerAcpId,
+) -> Result<()> {
+    let response = connection
+        .send_request(ConnectMcpRequest::new(server_id))
+        .block_task()
+        .await?;
+    let connection_id = response.connection_id;
+    let mut initialize_params = Map::new();
+    initialize_params.insert("protocolVersion".into(), json!("2025-11-25"));
+    initialize_params.insert("capabilities".into(), json!({}));
+    initialize_params.insert(
+        "clientInfo".into(),
+        json!({"name": "lorem-agent", "version": env!("CARGO_PKG_VERSION")}),
+    );
+    connection
+        .send_request(
+            MessageMcpRequest::new(connection_id.clone(), "initialize").params(initialize_params),
+        )
+        .block_task()
+        .await?;
+    connection.send_notification(MessageMcpNotification::new(
+        connection_id.clone(),
+        "notifications/initialized",
+    ))?;
+
+    let mut params = Map::new();
+    params.insert("name".into(), json!("confetti"));
+    params.insert("arguments".into(), json!({}));
+    tracing::debug!("calling confetti MCP tool");
+    connection
+        .send_request(MessageMcpRequest::new(connection_id, "tools/call").params(params))
+        .block_task()
+        .await?;
+    Ok(())
 }
 
 #[tokio::main]
@@ -121,105 +170,167 @@ async fn main() -> Result<()> {
                 }
                 responder.respond(response)
             },
-            agent_client_protocol::on_receive_request!(),
+            on_receive_request!(),
         )
         .on_receive_request(
-            async |_request: NewSessionRequest, responder, _cx| {
+            async |request: NewSessionRequest, responder, _cx| {
                 let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
                 let session_id: SessionId = format!("lorem-session-{id}").into();
+                let server_id = request.mcp_servers.iter().find_map(|server| match server {
+                    McpServer::Acp(server) => Some(server.server_id.clone()),
+                    _ => None,
+                });
+                if let (true, Some(server_id)) = (args.supports_mcp, server_id) {
+                    let _ = CONFETTI_SERVER_ID.set(server_id);
+                }
+
                 responder.respond(NewSessionResponse::new(session_id))
             },
-            agent_client_protocol::on_receive_request!(),
+            on_receive_request!(),
         )
         .on_receive_request(
             async |request: PromptRequest, responder, cx| {
                 let prompt_index = NEXT_PROMPT_INDEX.fetch_add(1, Ordering::Relaxed);
+
                 if args.fail_session {
-                    return Err(agent_client_protocol::Error::from(
-                        agent_client_protocol::ErrorCode::InternalError,
-                    ));
+                    return Err(Error::from(ErrorCode::InternalError));
                 }
                 if args.crash {
-                    std::process::exit(1);
+                    process::exit(1);
                 }
-                let seed = NEXT_PROMPT_SEED.fetch_add(REPLY_WORD_COUNT, Ordering::Relaxed);
-                let text = lorem::generate(seed, REPLY_WORD_COUNT);
+                let supports_mcp = args.supports_mcp;
+                let fail_tool = args.fail_tool;
 
-                // Walk the plan for this request so downstream code
-                // exercising SessionUpdate::AgentThoughtChunk/ToolCall/
-                // ToolCallUpdate has something real, and varied, to
-                // observe. Delays are deliberate: without them every
-                // status flashes by within the same tick and never
-                // renders as actually running.
-                for (step_index, step) in plan_for(prompt_index).into_iter().enumerate() {
-                    match step {
-                        Step::Thought(thought) => {
-                            sleep(THINKING_DELAY).await;
-                            cx.send_notification(AgentNotification::SessionNotification(
-                                SessionNotification::new(
-                                    request.session_id.clone(),
-                                    SessionUpdate::AgentThoughtChunk(ContentChunk::new(
-                                        ContentBlock::Text(TextContent::new(thought.to_owned())),
-                                    )),
-                                ),
-                            ))?;
-                        }
-                        Step::ToolCall(name) => {
-                            let tool_call_id =
-                                ToolCallId::new(format!("lorem-tool-{seed}-{step_index}"));
-                            cx.send_notification(AgentNotification::SessionNotification(
-                                SessionNotification::new(
-                                    request.session_id.clone(),
-                                    SessionUpdate::ToolCall(
-                                        ToolCall::new(tool_call_id.clone(), name)
-                                            .status(ToolCallStatus::InProgress)
-                                            .raw_input(serde_json::json!({
-                                                "tool": name,
-                                                "prompt_seed": seed,
-                                                "step_index": step_index,
-                                            })),
+                let _ = cx.clone().spawn(async move {
+                    let seed = NEXT_PROMPT_SEED.fetch_add(REPLY_WORD_COUNT, Ordering::Relaxed);
+                    let text = lorem::generate(seed, REPLY_WORD_COUNT);
+                    for (step_index, step) in
+                        plan_for(prompt_index, supports_mcp).into_iter().enumerate()
+                    {
+                        match step {
+                            Step::Thought(thought) => {
+                                sleep(THINKING_DELAY).await;
+                                cx.send_notification(AgentNotification::SessionNotification(
+                                    SessionNotification::new(
+                                        request.session_id.clone(),
+                                        SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                                            ContentBlock::Text(TextContent::new(
+                                                thought.to_owned(),
+                                            )),
+                                        )),
                                     ),
-                                ),
-                            ))?;
+                                ))?;
+                            }
+                            Step::ToolCall(name) => {
+                                let tool_call_id =
+                                    ToolCallId::new(format!("lorem-tool-{seed}-{step_index}"));
+                                cx.send_notification(AgentNotification::SessionNotification(
+                                    SessionNotification::new(
+                                        request.session_id.clone(),
+                                        SessionUpdate::ToolCall(
+                                            ToolCall::new(tool_call_id.clone(), name)
+                                                .status(ToolCallStatus::InProgress)
+                                                .raw_input(serde_json::json!({
+                                                    "tool": name,
+                                                    "prompt_seed": seed,
+                                                    "step_index": step_index,
+                                                })),
+                                        ),
+                                    ),
+                                ))?;
 
-                            sleep(TOOL_CALL_DELAY).await;
-                            let fail = args.fail_tool && step_index == 0;
-                            let (status, result_text) = if fail {
-                                (ToolCallStatus::Failed, format!("{name}: simulated failure"))
-                            } else {
-                                (
-                                    ToolCallStatus::Completed,
-                                    format!("{name}: ok ({} words)", REPLY_WORD_COUNT),
-                                )
-                            };
-                            cx.send_notification(AgentNotification::SessionNotification(
-                                SessionNotification::new(
-                                    request.session_id.clone(),
-                                    SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                                        tool_call_id,
-                                        ToolCallUpdateFields::new().status(status).content(vec![
-                                            ContentBlock::Text(TextContent::new(result_text))
-                                                .into(),
-                                        ]),
-                                    )),
-                                ),
-                            ))?;
+                                if name == "confetti" {
+                                    sleep(TOOL_CALL_DELAY).await;
+                                    let (status, result_text) =
+                                        match CONFETTI_SERVER_ID.get().cloned() {
+                                            Some(server_id) => {
+                                                match invoke_confetti(cx.clone(), server_id).await {
+                                                    Ok(()) => (
+                                                        ToolCallStatus::Completed,
+                                                        "confetti: ok".to_owned(),
+                                                    ),
+                                                    Err(error) => {
+                                                        tracing::debug!(
+                                                            ?error,
+                                                            "confetti MCP invocation failed"
+                                                        );
+                                                        (
+                                                            ToolCallStatus::Failed,
+                                                            "confetti: failed".to_owned(),
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            None => (
+                                                ToolCallStatus::Failed,
+                                                "confetti: MCP server unavailable".to_owned(),
+                                            ),
+                                        };
+                                    cx.send_notification(AgentNotification::SessionNotification(
+                                        SessionNotification::new(
+                                            request.session_id.clone(),
+                                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                                tool_call_id,
+                                                ToolCallUpdateFields::new().status(status).content(
+                                                    vec![
+                                                        ContentBlock::Text(TextContent::new(
+                                                            result_text,
+                                                        ))
+                                                        .into(),
+                                                    ],
+                                                ),
+                                            )),
+                                        ),
+                                    ))?;
+                                } else {
+                                    sleep(TOOL_CALL_DELAY).await;
+                                    let (status, result_text) = if fail_tool && step_index == 0 {
+                                        (
+                                            ToolCallStatus::Failed,
+                                            format!("{name}: simulated failure"),
+                                        )
+                                    } else {
+                                        (
+                                            ToolCallStatus::Completed,
+                                            format!("{name}: ok ({} words)", REPLY_WORD_COUNT),
+                                        )
+                                    };
+                                    cx.send_notification(AgentNotification::SessionNotification(
+                                        SessionNotification::new(
+                                            request.session_id.clone(),
+                                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                                tool_call_id,
+                                                ToolCallUpdateFields::new().status(status).content(
+                                                    vec![
+                                                        ContentBlock::Text(TextContent::new(
+                                                            result_text,
+                                                        ))
+                                                        .into(),
+                                                    ],
+                                                ),
+                                            )),
+                                        ),
+                                    ))?;
+                                }
+                            }
                         }
                     }
-                }
 
-                cx.send_notification(AgentNotification::SessionNotification(
-                    SessionNotification::new(
-                        request.session_id.clone(),
-                        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                            TextContent::new(text),
-                        ))),
-                    ),
-                ))?;
+                    cx.send_notification(AgentNotification::SessionNotification(
+                        SessionNotification::new(
+                            request.session_id.clone(),
+                            SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                ContentBlock::Text(TextContent::new(text)),
+                            )),
+                        ),
+                    ))?;
 
-                responder.respond(PromptResponse::new(StopReason::EndTurn))
+                    responder.respond(PromptResponse::new(StopReason::EndTurn))
+                });
+
+                Ok(())
             },
-            agent_client_protocol::on_receive_request!(),
+            on_receive_request!(),
         )
         .connect_to(Stdio::new())
         .await?;
@@ -243,14 +354,20 @@ mod plan_for_tests {
 
     #[test]
     fn first_request_has_a_single_thought_and_tool_call() {
-        let steps = plan_for(0);
+        let steps = plan_for(0, false);
         assert_eq!(tool_call_names(&steps), vec!["generate_lorem_ipsum"]);
         assert!(matches!(steps[0], Step::Thought(_)));
     }
 
     #[test]
+    fn third_request_with_mcp_ends_with_confetti() {
+        let steps = plan_for(2, true);
+        assert!(matches!(steps.last(), Some(Step::ToolCall("confetti"))));
+    }
+
+    #[test]
     fn second_request_has_two_consecutive_tool_calls() {
-        let steps = plan_for(1);
+        let steps = plan_for(1, false);
         assert_eq!(
             tool_call_names(&steps),
             vec!["search_files", "read_file", "list_directory"]
@@ -264,7 +381,7 @@ mod plan_for_tests {
 
     #[test]
     fn third_request_has_more_than_three_tool_calls() {
-        let steps = plan_for(2);
+        let steps = plan_for(2, false);
         // More than the inline UI's 3-step live tail, so this request
         // exercises the truncation marker while the turn is still running.
         assert!(tool_call_names(&steps).len() > 3);
@@ -272,7 +389,7 @@ mod plan_for_tests {
 
     #[test]
     fn third_request_interleaves_thoughts_between_tool_calls() {
-        let steps = plan_for(2);
+        let steps = plan_for(2, false);
         let thought_count = steps
             .iter()
             .filter(|step| matches!(step, Step::Thought(_)))
@@ -283,7 +400,13 @@ mod plan_for_tests {
 
     #[test]
     fn plan_cycles_every_three_requests() {
-        assert_eq!(tool_call_names(&plan_for(0)), tool_call_names(&plan_for(3)));
-        assert_eq!(tool_call_names(&plan_for(1)), tool_call_names(&plan_for(4)));
+        assert_eq!(
+            tool_call_names(&plan_for(0, false)),
+            tool_call_names(&plan_for(3, false))
+        );
+        assert_eq!(
+            tool_call_names(&plan_for(1, false)),
+            tool_call_names(&plan_for(4, false))
+        );
     }
 }
