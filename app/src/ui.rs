@@ -115,6 +115,8 @@ impl App {
 
     fn handle_session_event(&mut self, event: SessionEvent) {
         match event {
+            SessionEvent::Confetti => tracing::info!("confetti celebration triggered"),
+
             SessionEvent::Chunk(block) => {
                 self.agent_buffer
                     .push_str(&PromptRunner::content_block_to_string(&block));

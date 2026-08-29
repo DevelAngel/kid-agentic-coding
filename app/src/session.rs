@@ -12,9 +12,7 @@ use agent_client_protocol::schema::v1::{
     ToolCall, ToolCallContent, ToolCallUpdate,
 };
 use agent_client_protocol::util::MatchDispatch;
-use agent_client_protocol::{
-    Agent, Client, ConnectTo, ConnectionTo, Dispatch, Handled, SessionMessage, UntypedMessage,
-};
+use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
 use std::path::PathBuf;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
@@ -51,16 +49,6 @@ async fn run_session(
     let session_event_tx = event_tx.clone();
     let result = Client
         .builder()
-        .on_receive_dispatch(
-            async |message: Dispatch<UntypedMessage, UntypedMessage>, _cx| {
-                tracing::trace!("received: {:?}", message.message());
-                Ok(Handled::No {
-                    message,
-                    retry: false,
-                })
-            },
-            agent_client_protocol::on_receive_dispatch!(),
-        )
         .connect_with(component, |cx: ConnectionTo<Agent>| async move {
             let init_response = cx
                 .send_request(InitializeRequest::new(ProtocolVersion::V1))
@@ -70,7 +58,7 @@ async fn run_session(
             let mut session = if crate::mcp::supports_mcp(&init_response) {
                 match cx
                     .build_session(PathBuf::from(SESSION_ROOT))
-                    .with_mcp_server(crate::mcp::confetti_mcp_server())
+                    .with_mcp_server(crate::mcp::confetti_mcp_server(session_event_tx.clone()))
                 {
                     Ok(builder) => builder.block_task().start_session().await?,
                     Err(err) => {
@@ -119,7 +107,7 @@ async fn run_session(
 async fn handle_update(
     update: SessionMessage,
     event_tx: &UnboundedSender<SessionEvent>,
-) -> Result<(), agent_client_protocol::Error> {
+) -> Result<(), Error> {
     match update {
         SessionMessage::SessionMessage(message) => {
             MatchDispatch::new(message)
