@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tracing_subscriber::fmt::MakeWriter;
 
 /// Number of log lines kept; older lines are dropped once exceeded.
@@ -24,7 +24,7 @@ impl LogBuffer {
         lines.iter().cloned().collect()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<String>> {
+    fn lock(&self) -> MutexGuard<'_, VecDeque<String>> {
         self.lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -65,11 +65,12 @@ impl<'a> MakeWriter<'a> for LogBuffer {
 mod tests {
     use super::LogBuffer;
     use std::io::Write;
+    use tracing_subscriber::fmt::MakeWriter;
 
     #[test]
     fn write_appends_a_line() {
         let buffer = LogBuffer::default();
-        let mut writer = tracing_subscriber::fmt::MakeWriter::make_writer(&buffer);
+        let mut writer = MakeWriter::make_writer(&buffer);
         writer.write_all(b"hello\n").expect("write succeeds");
 
         assert_eq!(buffer.lines(), vec!["hello".to_owned()]);
@@ -78,7 +79,7 @@ mod tests {
     #[test]
     fn write_splits_multiple_lines_in_one_call() {
         let buffer = LogBuffer::default();
-        let mut writer = tracing_subscriber::fmt::MakeWriter::make_writer(&buffer);
+        let mut writer = MakeWriter::make_writer(&buffer);
         writer
             .write_all(b"first\nsecond\n")
             .expect("write succeeds");
@@ -92,7 +93,7 @@ mod tests {
     #[test]
     fn oldest_line_is_dropped_once_capacity_is_exceeded() {
         let buffer = LogBuffer::default();
-        let mut writer = tracing_subscriber::fmt::MakeWriter::make_writer(&buffer);
+        let mut writer = MakeWriter::make_writer(&buffer);
         for i in 0..super::CAPACITY + 1 {
             writer
                 .write_all(format!("line {i}\n").as_bytes())
@@ -109,7 +110,7 @@ mod tests {
     fn clones_share_the_same_buffer() {
         let buffer = LogBuffer::default();
         let clone = buffer.clone();
-        let mut writer = tracing_subscriber::fmt::MakeWriter::make_writer(&clone);
+        let mut writer = MakeWriter::make_writer(&clone);
         writer.write_all(b"shared\n").expect("write succeeds");
 
         assert_eq!(buffer.lines(), vec!["shared".to_owned()]);
