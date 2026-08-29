@@ -6,6 +6,7 @@
 mod bridge;
 mod bubble_layout;
 mod chat_log;
+mod mcp;
 mod prompt;
 mod session;
 

@@ -62,16 +62,32 @@ async fn run_session(
             agent_client_protocol::on_receive_dispatch!(),
         )
         .connect_with(component, |cx: ConnectionTo<Agent>| async move {
-            let _init_response = cx
+            let init_response = cx
                 .send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
 
-            let mut session = cx
-                .build_session(PathBuf::from(SESSION_ROOT))
-                .block_task()
-                .start_session()
-                .await?;
+            let mut session = if crate::mcp::supports_mcp(&init_response) {
+                match cx
+                    .build_session(PathBuf::from(SESSION_ROOT))
+                    .with_mcp_server(crate::mcp::confetti_mcp_server())
+                {
+                    Ok(builder) => builder.block_task().start_session().await?,
+                    Err(err) => {
+                        tracing::warn!(?err, "confetti MCP tool registration failed");
+                        cx.build_session(PathBuf::from(SESSION_ROOT))
+                            .block_task()
+                            .start_session()
+                            .await?
+                    }
+                }
+            } else {
+                tracing::warn!("agent lacks MCP tool registration support");
+                cx.build_session(PathBuf::from(SESSION_ROOT))
+                    .block_task()
+                    .start_session()
+                    .await?
+            };
 
             loop {
                 tokio::select! {
