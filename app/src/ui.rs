@@ -1,15 +1,16 @@
 //! Interactive terminal UI for an ACP session.
 
-use ansi_to_tui::IntoText;
-
 use crate::log_buffer::LogBuffer;
+
 use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
 use agent_client_protocol::{Client, ConnectTo};
+use ansi_to_tui::IntoText;
 use kid_agentic_coding::start_interactive_session;
 use kid_agentic_coding::{
     BubbleLayout, ChatLog, EntryId, Message, PromptRunner, ScrollAnchor, SessionEvent,
     SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
 };
+use rand::RngExt;
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -26,11 +27,15 @@ use ratatui::widgets::{
     ScrollbarState, Wrap,
 };
 use ratatui_textarea::TextArea;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task;
+use tokio::time::{self, MissedTickBehavior};
+
 use std::collections::HashMap;
 use std::io::{self, Stdout};
 use std::mem;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::{mpsc, oneshot};
+use std::time::Duration;
 
 /// Nerd Font glyph and accent color for the user (mage).
 const USER_ICON: &str = "\u{f0d0}";
@@ -51,6 +56,48 @@ struct PendingPermission {
     reply: oneshot::Sender<Option<String>>,
 }
 
+struct Confetti {
+    frame: u8,
+    particles: Vec<(u16, u16, char)>,
+}
+
+impl Confetti {
+    const DURATION: u8 = 60;
+    const PARTICLES: usize = 128;
+
+    fn new() -> Self {
+        let mut rng = rand::rng();
+        let particles = (0..Self::PARTICLES)
+            .map(|_| {
+                let x = rng.random_range(0..=1000);
+                let y = rng.random_range(0..=1000);
+                let symbol = match rng.random_range(0..3) {
+                    0 => '*',
+                    1 => '+',
+                    _ => '·',
+                };
+                (x, y, symbol)
+            })
+            .collect();
+        Self {
+            frame: 0,
+            particles,
+        }
+    }
+
+    fn tick(&mut self) -> bool {
+        let mut rng = rand::rng();
+        for (x, _, _) in &mut self.particles {
+            match rng.random_range(0..3) {
+                0 => *x = x.saturating_sub(1),
+                1 => *x = x.saturating_add(1).min(1000),
+                _ => {}
+            }
+        }
+        self.frame = self.frame.saturating_add(1);
+        self.frame < Self::DURATION
+    }
+}
 /// TUI application state.
 struct App {
     chat_log: ChatLog,
@@ -69,6 +116,7 @@ struct App {
     autoscroll: bool,
     should_quit: bool,
     tool_call_ids: HashMap<ToolCallId, EntryId>,
+    confetti: Option<Confetti>,
     spinner_phase: usize,
     /// Index into `chat_log.messages()` of the `ToolCluster` currently
     /// navigated via Ctrl+↑/↓, if any. `None` means the prompt has focus.
@@ -93,6 +141,7 @@ impl App {
             autoscroll: true,
             should_quit: false,
             tool_call_ids: HashMap::new(),
+            confetti: None,
             spinner_phase: 0,
             focused_cluster: None,
             focused_tool_call: None,
@@ -115,7 +164,7 @@ impl App {
 
     fn handle_session_event(&mut self, event: SessionEvent) {
         match event {
-            SessionEvent::Confetti => tracing::info!("confetti celebration triggered"),
+            SessionEvent::Confetti => self.confetti = Some(Confetti::new()),
 
             SessionEvent::Chunk(block) => {
                 self.agent_buffer
@@ -490,7 +539,7 @@ fn handle_permission_key(key: KeyCode, pending: &mut Option<PendingPermission>) 
 /// unbounded channel, so the async loop can `select!` on them.
 fn spawn_terminal_events() -> UnboundedReceiver<Event> {
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::task::spawn_blocking(move || {
+    task::spawn_blocking(move || {
         while let Ok(ev) = event::read() {
             if tx.send(ev).is_err() {
                 break;
@@ -506,14 +555,21 @@ async fn run_app(
     session: &mut SessionHandle,
     term_events: &mut UnboundedReceiver<Event>,
 ) -> io::Result<()> {
-    let mut spinner = tokio::time::interval(std::time::Duration::from_millis(250));
-    spinner.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut spinner = time::interval(Duration::from_millis(250));
+    spinner.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut confetti = time::interval(Duration::from_millis(50));
+    confetti.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     while !app.should_quit {
         terminal.draw(|frame| frame.draw_app(app))?;
         tokio::select! {
             _ = spinner.tick() => {
                 app.spinner_phase = app.spinner_phase.wrapping_add(1);
+            }
+            _ = confetti.tick() => {
+                if let Some(confetti) = app.confetti.as_mut() && !confetti.tick() {
+                    app.confetti = None;
+                }
             }
             Some(session_event) = session.recv_event() => {
                 app.handle_session_event(session_event);
@@ -536,13 +592,13 @@ trait DrawApp {
     /// Renders the chat bubbles, prompt textarea, and permission popup
     /// (if any).
     fn draw_app(&mut self, app: &mut App);
+    fn draw_confetti(&mut self, confetti: &Confetti, area: Rect);
 
     /// Renders the chat log as scrollable speech bubbles.
     fn draw_chat_log(&mut self, app: &mut App, area: Rect);
 
     /// Renders the permission popup over the given area.
     fn draw_permission_popup(&mut self, pending: &PendingPermission, area: Rect);
-
     /// Renders a tool call audit popup over the given area.
     fn draw_tool_call_popup(
         &mut self,
@@ -556,9 +612,34 @@ trait DrawApp {
 }
 
 impl DrawApp for Frame<'_> {
+    fn draw_confetti(&mut self, confetti: &Confetti, area: Rect) {
+        for (index, &(base_x, base_y, symbol)) in confetti.particles.iter().enumerate() {
+            let x = u32::from(base_x) * u32::from(area.width.max(1)) / 1001;
+            let upper_height = area.height.max(1).div_ceil(2);
+            let y = u32::from(base_y) * u32::from(upper_height) / 1001 + u32::from(confetti.frame);
+            if y >= u32::from(area.height) {
+                continue;
+            }
+            let color = match index % 4 {
+                0 => Color::Yellow,
+                1 => Color::Green,
+                2 => Color::Cyan,
+                _ => Color::Magenta,
+            };
+            let particle_area = Rect::new(area.x + x as u16, area.y + y as u16, 1, 1);
+            self.render_widget(
+                Paragraph::new(symbol.to_string()).style(Style::default().fg(color)),
+                particle_area,
+            );
+        }
+    }
+
     fn draw_app(&mut self, app: &mut App) {
         let [log_area, input_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(self.area());
+        if let Some(confetti) = app.confetti.as_ref() {
+            self.draw_confetti(confetti, self.area());
+        }
 
         self.draw_chat_log(app, log_area);
         self.render_widget(&app.prompt, input_area);
@@ -1608,5 +1689,37 @@ mod session_event_tests {
             Status::Done
         );
         assert_eq!(map_tool_call_status(ToolCallStatus::Failed), Status::Failed);
+    }
+}
+
+#[cfg(test)]
+mod confetti_tests {
+    use super::*;
+
+    #[test]
+    fn confetti_advances_and_expires() {
+        let mut confetti = Confetti::new();
+        assert!(confetti.tick());
+        assert_eq!(confetti.frame, 1);
+
+        for _ in 1..Confetti::DURATION {
+            confetti.tick();
+        }
+
+        assert_eq!(confetti.frame, Confetti::DURATION);
+        assert!(!confetti.tick());
+    }
+
+    #[test]
+    fn confetti_event_starts_animation() {
+        let mut app = App::new();
+        assert!(app.confetti.is_none());
+
+        app.handle_session_event(SessionEvent::Confetti);
+
+        assert_eq!(
+            app.confetti.as_ref().map(|confetti| confetti.frame),
+            Some(0)
+        );
     }
 }
