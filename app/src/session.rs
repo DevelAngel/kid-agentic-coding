@@ -64,22 +64,30 @@ async fn run_session(
                 .block_task()
                 .await?;
 
-            let mut session = if crate::mcp::supports_mcp(&init_response) && !disable_confetti {
-                match cx
-                    .build_session(PathBuf::from(SESSION_ROOT))
-                    .with_mcp_server(crate::mcp::confetti_mcp_server(session_event_tx.clone()))
-                {
-                    Ok(builder) => builder.block_task().start_session().await?,
-                    Err(err) => {
-                        tracing::warn!(?err, "confetti MCP tool registration failed");
-                        cx.build_session(PathBuf::from(SESSION_ROOT))
-                            .block_task()
-                            .start_session()
-                            .await?
+            let mut session = if crate::mcp::supports_mcp(&init_response) {
+                if disable_confetti {
+                    tracing::debug!("confetti MCP tool registration disabled");
+                    cx.build_session(PathBuf::from(SESSION_ROOT))
+                        .block_task()
+                        .start_session()
+                        .await?
+                } else {
+                    match cx
+                        .build_session(PathBuf::from(SESSION_ROOT))
+                        .with_mcp_server(crate::mcp::confetti_mcp_server(session_event_tx.clone()))
+                    {
+                        Ok(builder) => builder.block_task().start_session().await?,
+                        Err(err) => {
+                            tracing::warn!(?err, "confetti MCP tool registration failed");
+                            cx.build_session(PathBuf::from(SESSION_ROOT))
+                                .block_task()
+                                .start_session()
+                                .await?
+                        }
                     }
                 }
             } else {
-                tracing::warn!("confetti MCP tool registration skipped");
+                tracing::warn!("agent lacks MCP tool registration support");
                 cx.build_session(PathBuf::from(SESSION_ROOT))
                     .block_task()
                     .start_session()
