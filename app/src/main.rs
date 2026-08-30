@@ -30,6 +30,10 @@ struct Args {
     /// Log level for dependencies outside this crate
     #[clap(long, default_value = "warn")]
     log_baseline: LevelFilter,
+
+    /// Skips confetti MCP tool registration even when the agent supports it.
+    #[arg(long)]
+    disable_confetti: bool,
 }
 
 #[tokio::main]
@@ -46,7 +50,7 @@ async fn main() -> Result<()> {
 
     let agent = PromptRunner::parse_agent_args(&args.agent_args)?;
 
-    ui::run(agent, log_buffer).await?;
+    ui::run(agent, log_buffer, args.disable_confetti).await?;
     Ok(())
 }
 

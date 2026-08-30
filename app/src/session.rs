@@ -27,11 +27,19 @@ const SESSION_ROOT: &str = ".";
 /// this spawns the agent connection as a background task and returns a
 /// [`SessionHandle`] immediately. Send prompts and read [`SessionEvent`]s through
 /// the handle for as long as needed; dropping the handle shuts the session down.
-pub fn start_interactive_session(component: impl ConnectTo<Client> + 'static) -> SessionHandle {
+pub fn start_interactive_session(
+    component: impl ConnectTo<Client> + 'static,
+    disable_confetti: bool,
+) -> SessionHandle {
     let (prompt_tx, prompt_rx) = unbounded_channel::<String>();
     let (event_tx, event_rx) = unbounded_channel::<SessionEvent>();
 
-    tokio::spawn(run_session(component, prompt_rx, event_tx));
+    tokio::spawn(run_session(
+        component,
+        prompt_rx,
+        event_tx,
+        disable_confetti,
+    ));
 
     SessionHandle {
         prompt_tx,
@@ -45,6 +53,7 @@ async fn run_session(
     component: impl ConnectTo<Client> + 'static,
     mut prompt_rx: UnboundedReceiver<String>,
     event_tx: UnboundedSender<SessionEvent>,
+    disable_confetti: bool,
 ) {
     let session_event_tx = event_tx.clone();
     let result = Client
@@ -55,7 +64,7 @@ async fn run_session(
                 .block_task()
                 .await?;
 
-            let mut session = if crate::mcp::supports_mcp(&init_response) {
+            let mut session = if crate::mcp::supports_mcp(&init_response) && !disable_confetti {
                 match cx
                     .build_session(PathBuf::from(SESSION_ROOT))
                     .with_mcp_server(crate::mcp::confetti_mcp_server(session_event_tx.clone()))
@@ -70,7 +79,7 @@ async fn run_session(
                     }
                 }
             } else {
-                tracing::warn!("agent lacks MCP tool registration support");
+                tracing::warn!("confetti MCP tool registration skipped");
                 cx.build_session(PathBuf::from(SESSION_ROOT))
                     .block_task()
                     .start_session()
