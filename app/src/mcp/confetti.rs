@@ -5,7 +5,6 @@
 
 use crate::bridge::SessionEvent;
 use agent_client_protocol::mcp_server::McpServer;
-use agent_client_protocol::schema::v1::InitializeResponse;
 use agent_client_protocol::tool_fn;
 use agent_client_protocol_rmcp::McpServerExt;
 
@@ -20,11 +19,6 @@ pub const CONFETTI_TOOL_NAME: &str = "confetti";
 /// Empty input contract: the confetti tool takes no parameters.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ConfettiParams {}
-
-/// Whether the connected agent advertises MCP-over-ACP support.
-pub fn supports_mcp(init_response: &InitializeResponse) -> bool {
-    init_response.agent_capabilities.mcp_capabilities.acp
-}
 
 fn emit_confetti(event_tx: &UnboundedSender<SessionEvent>) -> Result<(), Error> {
     event_tx
@@ -74,27 +68,5 @@ mod confetti_tests {
         drop(event_rx);
 
         assert!(emit_confetti(&event_tx).is_err());
-    }
-}
-
-#[cfg(test)]
-mod supports_mcp_tests {
-    use super::supports_mcp;
-    use agent_client_protocol::schema::ProtocolVersion;
-    use agent_client_protocol::schema::v1::InitializeResponse;
-
-    #[test]
-    fn true_when_agent_advertises_mcp_acp_capability() {
-        let mut response = InitializeResponse::new(ProtocolVersion::V1);
-        response.agent_capabilities.mcp_capabilities.acp = true;
-
-        assert!(supports_mcp(&response));
-    }
-
-    #[test]
-    fn false_when_agent_does_not_advertise_mcp_acp_capability() {
-        let response = InitializeResponse::new(ProtocolVersion::V1);
-
-        assert!(!supports_mcp(&response));
     }
 }
