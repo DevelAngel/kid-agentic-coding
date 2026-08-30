@@ -41,9 +41,10 @@ struct Args {
     fail_tool: bool,
 
     /// Advertises MCP-over-ACP support in the initialize response, so a
-    /// connecting client attempts confetti MCP tool registration.
-    #[arg(long = "mcp")]
-    supports_mcp: bool,
+    /// connecting client attempts confetti MCP tool registration. Active
+    /// by default; pass this flag to opt out.
+    #[arg(long = "disable-mcp")]
+    disable_mcp: bool,
 }
 
 /// Number of words the fake agent replies with per prompt.
@@ -165,7 +166,7 @@ async fn main() -> Result<()> {
         .on_receive_request(
             async |_request: InitializeRequest, responder, _cx| {
                 let mut response = InitializeResponse::new(ProtocolVersion::V1);
-                if args.supports_mcp {
+                if !args.disable_mcp {
                     response.agent_capabilities.mcp_capabilities.acp = true;
                 }
                 responder.respond(response)
@@ -180,7 +181,7 @@ async fn main() -> Result<()> {
                     McpServer::Acp(server) => Some(server.server_id.clone()),
                     _ => None,
                 });
-                if let (true, Some(server_id)) = (args.supports_mcp, server_id) {
+                if let (true, Some(server_id)) = (!args.disable_mcp, server_id) {
                     let _ = CONFETTI_SERVER_ID.set(server_id);
                 }
 
@@ -198,7 +199,7 @@ async fn main() -> Result<()> {
                 if args.crash {
                     process::exit(1);
                 }
-                let supports_mcp = args.supports_mcp;
+                let supports_mcp = !args.disable_mcp;
                 let fail_tool = args.fail_tool;
 
                 let _ = cx.clone().spawn(async move {
