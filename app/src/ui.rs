@@ -1035,8 +1035,9 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 pub async fn run(
     component: impl ConnectTo<Client> + 'static,
     log_buffer: LogBuffer,
+    disable_confetti: bool,
 ) -> io::Result<()> {
-    let mut session = start_interactive_session(component);
+    let mut session = start_interactive_session(component, disable_confetti);
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
     let mut app = App::with_log_buffer(log_buffer);
