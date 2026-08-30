@@ -41,6 +41,14 @@ pub enum SessionEvent {
     },
     /// The confetti MCP tool was invoked successfully.
     Confetti,
+    /// The milestone-list tool's prerequisites (gh CLI, milestone extension)
+    /// are not met. Reply to choose whether to abort or start without it.
+    MilestoneToolUnavailable {
+        reason: String,
+        hint: String,
+        reply: Sender<crate::mcp::ToolUnavailableChoice>,
+    },
+
     /// The current turn ended with the given reason. The session stays open
     /// for further prompts.
     Stopped(StopReason),

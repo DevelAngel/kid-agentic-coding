@@ -1,8 +1,13 @@
 //! MCP tools registered with the agent when it advertises MCP-over-ACP support.
 
 mod confetti;
+mod milestone;
 
 pub use confetti::confetti_mcp_server;
+pub use milestone::{
+    GhAvailability, MilestoneCli, SystemGhCli, ToolUnavailableChoice,
+    ask_user_about_unavailable_tool, milestone_mcp_server,
+};
 
 use agent_client_protocol::schema::v1::InitializeResponse;
 

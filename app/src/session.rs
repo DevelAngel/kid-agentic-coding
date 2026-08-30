@@ -65,24 +65,75 @@ async fn run_session(
                 .await?;
 
             let mut session = if crate::mcp::supports_mcp(&init_response) {
-                if disable_confetti {
-                    tracing::debug!("confetti MCP tool registration disabled");
-                    cx.build_session(PathBuf::from(SESSION_ROOT))
-                        .block_task()
-                        .start_session()
-                        .await?
-                } else {
-                    match cx
-                        .build_session(PathBuf::from(SESSION_ROOT))
-                        .with_mcp_server(crate::mcp::confetti_mcp_server(session_event_tx.clone()))
-                    {
-                        Ok(builder) => builder.block_task().start_session().await?,
-                        Err(err) => {
-                            tracing::warn!(?err, "confetti MCP tool registration failed");
-                            cx.build_session(PathBuf::from(SESSION_ROOT))
-                                .block_task()
-                                .start_session()
-                                .await?
+                let milestone_cli = milestone_tool_decision(&session_event_tx).await?;
+
+                match (disable_confetti, milestone_cli) {
+                    (true, None) => {
+                        tracing::debug!("confetti MCP tool registration disabled");
+                        cx.build_session(PathBuf::from(SESSION_ROOT))
+                            .block_task()
+                            .start_session()
+                            .await?
+                    }
+                    (true, Some(cli)) => {
+                        tracing::debug!("confetti MCP tool registration disabled");
+                        match cx
+                            .build_session(PathBuf::from(SESSION_ROOT))
+                            .with_mcp_server(crate::mcp::milestone_mcp_server(
+                                cli,
+                                session_event_tx.clone(),
+                            )) {
+                            Ok(builder) => builder.block_task().start_session().await?,
+                            Err(err) => {
+                                tracing::warn!(?err, "milestone MCP tool registration failed");
+                                cx.build_session(PathBuf::from(SESSION_ROOT))
+                                    .block_task()
+                                    .start_session()
+                                    .await?
+                            }
+                        }
+                    }
+                    (false, None) => {
+                        match cx
+                            .build_session(PathBuf::from(SESSION_ROOT))
+                            .with_mcp_server(crate::mcp::confetti_mcp_server(
+                                session_event_tx.clone(),
+                            )) {
+                            Ok(builder) => builder.block_task().start_session().await?,
+                            Err(err) => {
+                                tracing::warn!(?err, "confetti MCP tool registration failed");
+                                cx.build_session(PathBuf::from(SESSION_ROOT))
+                                    .block_task()
+                                    .start_session()
+                                    .await?
+                            }
+                        }
+                    }
+                    (false, Some(cli)) => {
+                        match cx
+                            .build_session(PathBuf::from(SESSION_ROOT))
+                            .with_mcp_server(crate::mcp::confetti_mcp_server(
+                                session_event_tx.clone(),
+                            )) {
+                            Ok(builder) => match builder.with_mcp_server(
+                                crate::mcp::milestone_mcp_server(cli, session_event_tx.clone()),
+                            ) {
+                                Ok(builder) => builder.block_task().start_session().await?,
+                                Err(err) => {
+                                    tracing::warn!(?err, "milestone MCP tool registration failed");
+                                    cx.build_session(PathBuf::from(SESSION_ROOT))
+                                        .block_task()
+                                        .start_session()
+                                        .await?
+                                }
+                            },
+                            Err(err) => {
+                                tracing::warn!(?err, "confetti MCP tool registration failed");
+                                cx.build_session(PathBuf::from(SESSION_ROOT))
+                                    .block_task()
+                                    .start_session()
+                                    .await?
+                            }
                         }
                     }
                 }
@@ -118,6 +169,31 @@ async fn run_session(
     }
 }
 
+/// Checks whether the milestone-list tool's prerequisites (gh CLI, gh
+/// milestone extension) are met and, if not, asks the user whether to abort
+/// the session or continue without the tool.
+///
+/// Returns `Ok(Some(cli))` to attach the tool, `Ok(None)` to continue
+/// without it, or `Err` to abort the session per the user's choice.
+async fn milestone_tool_decision(
+    event_tx: &UnboundedSender<SessionEvent>,
+) -> Result<Option<Box<dyn crate::mcp::MilestoneCli + Send + Sync>>, Error> {
+    use crate::mcp::{GhAvailability, MilestoneCli, SystemGhCli, ToolUnavailableChoice};
+
+    match SystemGhCli.check_availability() {
+        GhAvailability::Available => Ok(Some(Box::new(SystemGhCli))),
+        GhAvailability::Unavailable { reason, hint } => {
+            tracing::warn!(%reason, %hint, "milestone-list tool prerequisites not met");
+            match crate::mcp::ask_user_about_unavailable_tool(reason, hint, event_tx.clone()).await
+            {
+                ToolUnavailableChoice::Abort => {
+                    Err(Error::from(agent_client_protocol::ErrorCode::InternalError))
+                }
+                ToolUnavailableChoice::Ignore => Ok(None),
+            }
+        }
+    }
+}
 /// Dispatches one session update: forwards message chunks and permission
 /// requests to the event channel, and reports stop reasons without ending
 /// the session.

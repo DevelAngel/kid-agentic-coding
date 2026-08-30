@@ -8,7 +8,8 @@ use ansi_to_tui::IntoText;
 use kid_agentic_coding::start_interactive_session;
 use kid_agentic_coding::{
     BubbleLayout, ChatLog, EntryId, Message, PromptRunner, ScrollAnchor, SessionEvent,
-    SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
+    SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, ToolUnavailableChoice,
+    VisibleBubble,
 };
 use rand::RngExt;
 use ratatui::Frame;
@@ -54,6 +55,13 @@ const SCROLL_STEP: u16 = 3;
 struct PendingPermission {
     options: Vec<PermissionOption>,
     reply: oneshot::Sender<Option<String>>,
+}
+
+/// The milestone-list tool is unavailable; the user must choose to abort or continue.
+struct PendingToolUnavailable {
+    reason: String,
+    hint: String,
+    reply: oneshot::Sender<ToolUnavailableChoice>,
 }
 
 struct Confetti {
@@ -111,6 +119,8 @@ struct App {
     /// redraw.
     pending_scroll_delta: i16,
     pending_permission: Option<PendingPermission>,
+    pending_tool_unavailable: Option<PendingToolUnavailable>,
+
     /// Whether the view tracks new messages automatically. Disabled by
     /// navigating to older content; re-enabled via [`KeyCode::End`].
     autoscroll: bool,
@@ -138,6 +148,8 @@ impl App {
             scroll_anchor: None,
             pending_scroll_delta: 0,
             pending_permission: None,
+            pending_tool_unavailable: None,
+
             autoscroll: true,
             should_quit: false,
             tool_call_ids: HashMap::new(),
@@ -173,6 +185,18 @@ impl App {
             SessionEvent::PermissionRequest { options, reply } => {
                 self.pending_permission = Some(PendingPermission { options, reply });
             }
+            SessionEvent::MilestoneToolUnavailable {
+                reason,
+                hint,
+                reply,
+            } => {
+                self.pending_tool_unavailable = Some(PendingToolUnavailable {
+                    reason,
+                    hint,
+                    reply,
+                });
+            }
+
             SessionEvent::Stopped(reason) => {
                 if !self.agent_buffer.is_empty() {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
@@ -238,6 +262,10 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent, session: &SessionHandle) {
         if self.pending_permission.is_some() {
             handle_permission_key(key.code, &mut self.pending_permission);
+            return;
+        }
+        if self.pending_tool_unavailable.is_some() {
+            handle_tool_unavailable_key(key.code, &mut self.pending_tool_unavailable);
             return;
         }
 
@@ -535,6 +563,26 @@ fn handle_permission_key(key: KeyCode, pending: &mut Option<PendingPermission>) 
     }
 }
 
+/// Applies a key press while the milestone-list tool is unavailable.
+fn handle_tool_unavailable_key(key: KeyCode, pending: &mut Option<PendingToolUnavailable>) {
+    let Some(tool) = pending.take() else {
+        return;
+    };
+
+    let choice = match key {
+        KeyCode::Char('a' | 'A') => Some(ToolUnavailableChoice::Abort),
+        KeyCode::Char('i' | 'I') => Some(ToolUnavailableChoice::Ignore),
+        KeyCode::Esc => Some(ToolUnavailableChoice::Abort),
+        _ => None,
+    };
+
+    if let Some(choice) = choice {
+        let _ = tool.reply.send(choice);
+    } else {
+        *pending = Some(tool);
+    }
+}
+
 /// Reads terminal events on a blocking task and forwards them to an
 /// unbounded channel, so the async loop can `select!` on them.
 fn spawn_terminal_events() -> UnboundedReceiver<Event> {
@@ -599,6 +647,8 @@ trait DrawApp {
 
     /// Renders the permission popup over the given area.
     fn draw_permission_popup(&mut self, pending: &PendingPermission, area: Rect);
+    /// Renders the milestone-list availability dialog over the given area.
+    fn draw_tool_unavailable_popup(&mut self, pending: &PendingToolUnavailable, area: Rect);
     /// Renders a tool call audit popup over the given area.
     fn draw_tool_call_popup(
         &mut self,
@@ -646,6 +696,10 @@ impl DrawApp for Frame<'_> {
 
         if let Some(pending) = &app.pending_permission {
             self.draw_permission_popup(pending, self.area());
+        }
+
+        if let Some(pending) = &app.pending_tool_unavailable {
+            self.draw_tool_unavailable_popup(pending, self.area());
         }
 
         if let Some(entry_id) = app.tool_call_popup
@@ -797,6 +851,23 @@ impl DrawApp for Frame<'_> {
             .position(layout.scroll_offset() as usize);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         self.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
+
+    fn draw_tool_unavailable_popup(&mut self, pending: &PendingToolUnavailable, area: Rect) {
+        let popup_area = centered_rect(70, 45, area);
+        let text = format!(
+            "Milestone-list tool is unavailable.\n\n{}\n\n{}\n\n[A] Abort    [I] Ignore",
+            pending.reason, pending.hint
+        );
+        let popup = Paragraph::new(text).wrap(Wrap { trim: false }).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title(" Milestone tool unavailable ")
+                .style(Style::default().fg(Color::Yellow)),
+        );
+
+        self.render_widget(Clear, popup_area);
+        self.render_widget(popup, popup_area);
     }
 
     fn draw_permission_popup(&mut self, pending: &PendingPermission, area: Rect) {
@@ -1053,7 +1124,10 @@ pub async fn run(
 mod handle_key_tests {
     use super::{App, SCROLL_STEP};
     use agent_client_protocol::schema::v1::{StopReason, ToolCallId, ToolCallStatus};
+    use kid_agentic_coding::ToolUnavailableChoice;
     use kid_agentic_coding::{Message, SessionEvent, SessionHandle, SessionNoticeKind};
+    use tokio::sync::oneshot;
+
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
@@ -1082,6 +1156,44 @@ mod handle_key_tests {
         for c in text.chars() {
             app.handle_key(key(KeyCode::Char(c)), session);
         }
+    }
+
+    #[test]
+    fn tool_unavailable_abort_choice_is_sent() {
+        let mut app = App::new();
+        let (reply, receiver) = oneshot::channel();
+        app.handle_session_event(SessionEvent::MilestoneToolUnavailable {
+            reason: "gh is not installed".to_owned(),
+            hint: "Install GitHub CLI.".to_owned(),
+            reply,
+        });
+
+        app.handle_key(key(KeyCode::Char('a')), &test_session());
+
+        assert_eq!(
+            receiver.blocking_recv().expect("choice is sent"),
+            ToolUnavailableChoice::Abort
+        );
+        assert!(app.pending_tool_unavailable.is_none());
+    }
+
+    #[test]
+    fn tool_unavailable_ignore_choice_is_sent() {
+        let mut app = App::new();
+        let (reply, receiver) = oneshot::channel();
+        app.handle_session_event(SessionEvent::MilestoneToolUnavailable {
+            reason: "gh is not installed".to_owned(),
+            hint: "Install GitHub CLI.".to_owned(),
+            reply,
+        });
+
+        app.handle_key(key(KeyCode::Char('i')), &test_session());
+
+        assert_eq!(
+            receiver.blocking_recv().expect("choice is sent"),
+            ToolUnavailableChoice::Ignore
+        );
+        assert!(app.pending_tool_unavailable.is_none());
     }
 
     #[test]
