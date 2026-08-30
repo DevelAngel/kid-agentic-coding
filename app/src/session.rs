@@ -69,21 +69,24 @@ async fn run_session(
 
                 match (disable_confetti, milestone_cli) {
                     (true, None) => {
-                        tracing::debug!("confetti MCP tool registration disabled");
+                        tracing::warn!("confetti MCP tool disabled");
                         cx.build_session(PathBuf::from(SESSION_ROOT))
                             .block_task()
                             .start_session()
                             .await?
                     }
                     (true, Some(cli)) => {
-                        tracing::debug!("confetti MCP tool registration disabled");
+                        tracing::warn!("confetti MCP tool disabled");
                         match cx
                             .build_session(PathBuf::from(SESSION_ROOT))
                             .with_mcp_server(crate::mcp::milestone_mcp_server(
                                 cli,
                                 session_event_tx.clone(),
                             )) {
-                            Ok(builder) => builder.block_task().start_session().await?,
+                            Ok(builder) => {
+                                tracing::info!("milestone_list MCP tool registered");
+                                builder.block_task().start_session().await?
+                            }
                             Err(err) => {
                                 tracing::warn!(?err, "milestone MCP tool registration failed");
                                 cx.build_session(PathBuf::from(SESSION_ROOT))
@@ -99,7 +102,10 @@ async fn run_session(
                             .with_mcp_server(crate::mcp::confetti_mcp_server(
                                 session_event_tx.clone(),
                             )) {
-                            Ok(builder) => builder.block_task().start_session().await?,
+                            Ok(builder) => {
+                                tracing::info!("confetti MCP tool registered");
+                                builder.block_task().start_session().await?
+                            }
                             Err(err) => {
                                 tracing::warn!(?err, "confetti MCP tool registration failed");
                                 cx.build_session(PathBuf::from(SESSION_ROOT))
@@ -118,7 +124,11 @@ async fn run_session(
                             Ok(builder) => match builder.with_mcp_server(
                                 crate::mcp::milestone_mcp_server(cli, session_event_tx.clone()),
                             ) {
-                                Ok(builder) => builder.block_task().start_session().await?,
+                                Ok(builder) => {
+                                    tracing::info!("confetti MCP tool registered");
+                                    tracing::info!("milestone_list MCP tool registered");
+                                    builder.block_task().start_session().await?
+                                }
                                 Err(err) => {
                                     tracing::warn!(?err, "milestone MCP tool registration failed");
                                     cx.build_session(PathBuf::from(SESSION_ROOT))
@@ -189,7 +199,10 @@ async fn milestone_tool_decision(
                 ToolUnavailableChoice::Abort => {
                     Err(Error::from(agent_client_protocol::ErrorCode::InternalError))
                 }
-                ToolUnavailableChoice::Ignore => Ok(None),
+                ToolUnavailableChoice::Ignore => {
+                    tracing::warn!("milestone_list MCP tool not registered");
+                    Ok(None)
+                }
             }
         }
     }
