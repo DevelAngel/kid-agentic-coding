@@ -4,15 +4,22 @@
 //! a fixed placeholder result.
 
 use crate::bridge::SessionEvent;
+
 use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::schema::v1::InitializeResponse;
+use agent_client_protocol::schema::v1::{McpServer as SchemaMcpServer, McpServerStdio};
 use agent_client_protocol::tool_fn;
-use agent_client_protocol_rmcp::McpServerExt;
-
 use agent_client_protocol::{Agent, Error, ErrorCode, RunWithConnectionTo};
+use agent_client_protocol_rmcp::McpServerExt;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedSender;
+
+use std::env;
+use std::io;
+use std::os::linux::net::SocketAddrExt;
+use std::os::unix::net::{SocketAddr, UnixListener};
+use std::process;
 
 /// Stable name of the confetti tool, as advertised to the agent.
 pub const CONFETTI_TOOL_NAME: &str = "confetti";
@@ -48,6 +55,28 @@ pub fn confetti_mcp_server(
             tool_fn!(),
         )
         .build()
+}
+
+/// Builds the stdio MCP server configuration used by agents without
+/// MCP-over-ACP support.
+pub fn confetti_stdio_mcp_server(socket_name: &str) -> io::Result<SchemaMcpServer> {
+    let command = env::current_exe()?.with_file_name("confetti-mcp");
+    Ok(SchemaMcpServer::Stdio(
+        McpServerStdio::new("confetti-tools", command)
+            .args(vec!["--socket".to_owned(), socket_name.to_owned()]),
+    ))
+}
+
+/// Creates a Linux abstract-namespace Unix socket for the stdio MCP bridge.
+pub fn confetti_socket_name() -> String {
+    format!("kid-agentic-coding-confetti-{}", process::id())
+}
+
+pub fn bind_confetti_socket(socket_name: &str) -> io::Result<UnixListener> {
+    let address = SocketAddr::from_abstract_name(socket_name.as_bytes())?;
+    let listener = UnixListener::bind_addr(&address)?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
 }
 
 #[cfg(test)]
