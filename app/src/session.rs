@@ -4,18 +4,24 @@
 //! [`crate::bridge`].
 
 use crate::bridge::{SessionEvent, SessionHandle};
+use crate::mcp;
 use crate::prompt::PromptRunner;
+
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    InitializeRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    InitializeRequest, NewSessionRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
     ToolCall, ToolCallContent, ToolCallUpdate,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
-use std::path::PathBuf;
+use tokio::io::AsyncReadExt;
+use tokio::net::UnixListener;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
+
+use std::future;
+use std::path::PathBuf;
 
 /// Working directory the agent session operates in. `.` ties the session to
 /// the current process's working directory.
@@ -63,35 +69,62 @@ async fn run_session(
                 .send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
-
-            let mut session = if crate::mcp::supports_mcp(&init_response) {
-                if disable_confetti {
-                    tracing::debug!("confetti MCP tool registration disabled");
-                    cx.build_session(PathBuf::from(SESSION_ROOT))
-                        .block_task()
-                        .start_session()
-                        .await?
-                } else {
-                    match cx
-                        .build_session(PathBuf::from(SESSION_ROOT))
-                        .with_mcp_server(crate::mcp::confetti_mcp_server(session_event_tx.clone()))
-                    {
-                        Ok(builder) => builder.block_task().start_session().await?,
-                        Err(err) => {
-                            tracing::warn!(?err, "confetti MCP tool registration failed");
-                            cx.build_session(PathBuf::from(SESSION_ROOT))
-                                .block_task()
-                                .start_session()
-                                .await?
-                        }
-                    }
-                }
-            } else {
-                tracing::warn!("agent lacks MCP tool registration support");
+            let mut confetti_listener: Option<UnixListener> = None;
+            let mut session = if disable_confetti {
+                tracing::info!("confetti MCP tool registration disabled");
                 cx.build_session(PathBuf::from(SESSION_ROOT))
                     .block_task()
                     .start_session()
                     .await?
+            } else if mcp::supports_mcp(&init_response) {
+                match cx
+                    .build_session(PathBuf::from(SESSION_ROOT))
+                    .with_mcp_server(mcp::confetti_mcp_server(session_event_tx.clone()))
+                {
+                    Ok(builder) => {
+                        tracing::info!("registered confetti MCP tool via ACP");
+                        builder.block_task().start_session().await?
+                    }
+                    Err(err) => {
+                        tracing::error!(?err, "confetti MCP tool registration via ACP failed");
+                        cx.build_session(PathBuf::from(SESSION_ROOT))
+                            .block_task()
+                            .start_session()
+                            .await?
+                    }
+                }
+            } else {
+                tracing::warn!("agent lacks MCP-over-ACP support");
+                let socket_name = mcp::confetti_socket_name();
+                match (
+                    mcp::bind_confetti_socket(&socket_name),
+                    mcp::confetti_stdio_mcp_server(&socket_name),
+                ) {
+                    (Ok(listener), Ok(mcp_server)) => {
+                        tracing::info!("registered confetti MCP tool via stdio");
+                        confetti_listener = Some(
+                            UnixListener::from_std(listener).map_err(Error::into_internal_error)?,
+                        );
+                        cx.build_session_from(
+                            NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
+                                .mcp_servers(vec![mcp_server]),
+                        )
+                        .block_task()
+                        .start_session()
+                        .await?
+                    }
+                    (listener_result, server_result) => {
+                        tracing::error!(
+                            ?listener_result,
+                            ?server_result,
+                            "confetti MCP tool registration via stdio failed"
+                        );
+                        cx.build_session(PathBuf::from(SESSION_ROOT))
+                            .block_task()
+                            .start_session()
+                            .await?
+                    }
+                }
             };
 
             loop {
@@ -100,6 +133,21 @@ async fn run_session(
                         match prompt {
                             Some(text) => session.send_prompt(text)?,
                             None => break,
+                        }
+                    }
+                    bridge = async {
+                        match confetti_listener.as_ref() {
+                            Some(listener) => Some(listener.accept().await),
+                            None => future::pending().await,
+                        }
+                    } => {
+                        if let Some(Ok((mut stream, _))) = bridge {
+                            let mut message = Vec::new();
+                            if stream.read_to_end(&mut message).await.is_ok()
+                                && message == b"confetti\n"
+                            {
+                                let _ = session_event_tx.send(SessionEvent::Confetti);
+                            }
                         }
                     }
                     update = session.read_update() => {
@@ -114,7 +162,7 @@ async fn run_session(
 
     if let Err(err) = result {
         let _ = event_tx.send(SessionEvent::Error(err.to_string()));
-        tracing::warn!(?err, "interactive session task ended with error");
+        tracing::error!(?err, "interactive session task ended with error");
     }
 }
 
