@@ -68,7 +68,11 @@ fn env_filter(verbosity: &Verbosity<InfoLevel>, log_baseline: LevelFilter) -> En
     let directive = format!("kid_agentic_coding={verbosity}")
         .parse()
         .expect("crate name and level filter always form a valid directive");
+    let agent_stderr = "agent_stderr=debug"
+        .parse()
+        .expect("static log target is valid");
     EnvFilter::default()
         .add_directive(baseline.into())
         .add_directive(directive)
+        .add_directive(agent_stderr)
 }

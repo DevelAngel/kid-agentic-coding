@@ -160,6 +160,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     color_eyre::install()?;
     tracing_subscriber::fmt().with_writer(io::stderr).init();
+    tracing::info!("agent logging initialized");
 
     Agent
         .builder()
