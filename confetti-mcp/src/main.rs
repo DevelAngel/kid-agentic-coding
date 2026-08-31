@@ -78,7 +78,8 @@ impl ConfettiTools {
 impl ServerHandler for ConfettiTools {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
-            Implementation::new("confetti-mcp", env!("CARGO_PKG_VERSION")).with_title("Confetti"),
+            Implementation::new("kid-agentic-coding-confetti", env!("CARGO_PKG_VERSION"))
+                .with_title("Confetti"),
         )
     }
 }
@@ -98,7 +99,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_writer(io::stderr)
         .try_init()
         .ok();
-    tracing::debug!("confetti-mcp logging initialized");
+    tracing::debug!("confetti logging initialized");
 
     let args = Args::parse();
     let server = ConfettiTools::new(args.socket);
