@@ -60,7 +60,7 @@ pub fn confetti_mcp_server(
 /// Builds the stdio MCP server configuration used by agents without
 /// MCP-over-ACP support.
 pub fn confetti_stdio_mcp_server(socket_name: &str) -> io::Result<SchemaMcpServer> {
-    let command = env::current_exe()?.with_file_name("confetti-mcp");
+    let command = env::current_exe()?.with_file_name("kid-agentic-coding-confetti");
     Ok(SchemaMcpServer::Stdio(
         McpServerStdio::new("confetti-tools", command)
             .args(vec!["--socket".to_owned(), socket_name.to_owned()]),

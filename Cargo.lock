@@ -573,18 +573,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "confetti-mcp"
-version = "0.1.0"
-dependencies = [
- "clap",
- "rmcp 3.1.4",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1366,6 +1354,19 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kid-agentic-coding-confetti"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "rmcp 3.1.4",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
