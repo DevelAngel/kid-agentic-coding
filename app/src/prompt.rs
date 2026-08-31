@@ -9,9 +9,11 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{
-    AcpAgent, Agent, Client, ConnectTo, ConnectionTo, Dispatch, Handled, SessionMessage,
-    UntypedMessage,
+    AcpAgent, Agent, Client, ConnectTo, ConnectionTo, Dispatch, Handled, LineDirection,
+    SessionMessage, UntypedMessage,
 };
+use ansi_to_tui::IntoText;
+
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -262,6 +264,25 @@ impl PromptRunner {
             }
             arguments => AcpAgent::from_args(arguments)?,
         };
+        let agent = agent.with_debug(|line, direction| {
+            if direction == LineDirection::Stderr {
+                let clean_line = match line.as_bytes().to_vec().into_text() {
+                    Ok(text) => text
+                        .lines
+                        .iter()
+                        .map(|line| {
+                            line.spans
+                                .iter()
+                                .map(|span| span.content.as_ref())
+                                .collect::<String>()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    Err(_) => line.to_string(),
+                };
+                tracing::debug!(target: "agent_stderr", "{clean_line}");
+            }
+        });
         Ok(agent)
     }
 }
