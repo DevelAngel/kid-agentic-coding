@@ -22,9 +22,25 @@ enum Command {
         #[arg(long)]
         disable_confetti: bool,
 
+        /// Runs the agent inside a Linux namespace sandbox exposing the
+        /// current directory at /projects
+        #[arg(long)]
+        sandbox: bool,
+
         /// Agent command and arguments, or a single JSON configuration
         #[arg(required = true, num_args = 1..)]
         agent_args: Vec<String>,
+    },
+
+    /// Internal: enters the namespace sandbox and execs the given command.
+    #[command(hide = true)]
+    SandboxExec {
+        /// Host path exposed inside the sandbox at /projects
+        project_path: OsString,
+
+        /// Command and arguments to exec inside the sandbox
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
     },
 
     /// Dispatches unknown commands to `kid-agentic-coding-*` binaries.
@@ -66,10 +82,23 @@ async fn main() -> Result<()> {
     match args.command {
         Command::Tui {
             disable_confetti,
+            sandbox,
             agent_args,
         } => {
+            let agent_args = if sandbox {
+                sandboxed_agent_args(&agent_args)?
+            } else {
+                agent_args
+            };
             let agent = PromptRunner::parse_agent_args(&agent_args)?;
             ui::run(agent, log_buffer, disable_confetti).await?;
+        }
+        Command::SandboxExec {
+            project_path,
+            command,
+        } => {
+            kid_sandbox::enter_and_exec(project_path.as_ref(), &command)
+                .wrap_err("sandbox setup failed")?;
         }
         Command::External(mut args) => {
             let command = args.remove(0);
@@ -82,6 +111,24 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Rewrites `agent_args` into a command line that re-invokes this binary's
+/// `sandbox-exec` subcommand, which enters the namespace sandbox before
+/// exec'ing the original agent command.
+fn sandboxed_agent_args(agent_args: &[String]) -> Result<Vec<String>> {
+    let current_exe =
+        std::env::current_exe().wrap_err("failed to resolve current executable path")?;
+    let project_path =
+        std::env::current_dir().wrap_err("failed to resolve current project directory")?;
+
+    let mut args = vec![
+        current_exe.to_string_lossy().into_owned(),
+        "sandbox-exec".to_owned(),
+        project_path.to_string_lossy().into_owned(),
+    ];
+    args.extend(agent_args.iter().cloned());
+    Ok(args)
 }
 
 fn env_filter(verbosity: &Verbosity<InfoLevel>, log_baseline: LevelFilter) -> EnvFilter {

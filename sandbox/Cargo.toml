@@ -1,0 +1,8 @@
+[package]
+name = "kid-sandbox"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nix.workspace = true
+thiserror.workspace = true
