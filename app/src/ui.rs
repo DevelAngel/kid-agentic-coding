@@ -914,6 +914,17 @@ fn bubble_paragraph<'a>(
         .block(block)
 }
 
+/// Strips a leading `name` from `comment`, along with an optional `:`
+/// and surrounding whitespace, so a self-labeled tool result like
+/// `"run_tests: ok"` doesn't repeat the name already shown next to it.
+fn strip_redundant_name<'a>(comment: &'a str, name: &str) -> &'a str {
+    let Some(rest) = comment.strip_prefix(name) else {
+        return comment;
+    };
+    let rest = rest.trim_start();
+    rest.strip_prefix(':').unwrap_or(rest).trim_start()
+}
+
 /// Renders a tool cluster as a summary line followed by its visible steps.
 /// `keep_live` defers the collapse of a just-settled cluster while it is
 /// still the newest message (see [`ToolCluster::visible_steps`]).
@@ -966,7 +977,14 @@ fn render_tool_cluster(
             Step::ToolCall(entry) => {
                 let (status_icon, _, _) = status_style(entry.status);
                 let status_icon = animated_status_icon(entry.status, spinner_phase, status_icon);
-                let text = format!("\u{1f527} {} {status_icon}", entry.name);
+                let comment = entry.result.as_deref().and_then(|r| r.lines().next());
+                let comment = comment.map(|c| strip_redundant_name(c, &entry.name));
+                let text = match comment {
+                    Some(comment) if !comment.is_empty() => {
+                        format!("\u{1f527} {} {status_icon} \u{2014} {comment}", entry.name)
+                    }
+                    _ => format!("\u{1f527} {} {status_icon}", entry.name),
+                };
                 (Color::White, "\u{2500}\u{2500}", text)
             }
         };
@@ -981,16 +999,6 @@ fn render_tool_cluster(
             Span::styled(format!("{corner}{dashes} "), style),
             Span::styled(text, style),
         ]));
-        if let Step::ToolCall(entry) = step
-            && let Some(result) = &entry.result
-        {
-            lines.extend(result.lines().map(|line| {
-                Line::from(Span::styled(
-                    format!("  {line}"),
-                    Style::default().fg(Color::DarkGray),
-                ))
-            }));
-        }
     }
     Text::from(lines)
 }
@@ -1505,7 +1513,7 @@ mod handle_key_tests {
 
 #[cfg(test)]
 mod session_event_tests {
-    use super::{App, map_tool_call_status, render_tool_cluster};
+    use super::{App, map_tool_call_status, render_tool_cluster, strip_redundant_name};
     use agent_client_protocol::schema::v1::{
         ContentBlock, TextContent, ToolCallId, ToolCallStatus,
     };
@@ -1750,7 +1758,7 @@ mod session_event_tests {
     }
 
     #[test]
-    fn tool_cluster_renders_completed_tool_results_inline() {
+    fn tool_cluster_renders_result_on_the_same_line_as_the_tool_call() {
         let mut app = App::new();
         app.handle_session_event(SessionEvent::ToolCall {
             id: ToolCallId::new("call-1".to_owned()),
@@ -1761,11 +1769,41 @@ mod session_event_tests {
         });
 
         let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0);
-        assert!(
-            rendered
-                .lines
-                .iter()
-                .any(|line| line.to_string().contains("command output"))
+        assert!(rendered.lines.iter().any(|line| {
+            let text = line.to_string();
+            text.contains("Shell command") && text.contains("command output")
+        }));
+
+        let entry = nth_tool_call(tool_cluster(&app, 0), 0);
+        assert_eq!(entry.result.as_deref(), Some("command output"));
+    }
+
+    #[test]
+    fn tool_cluster_strips_redundant_name_prefix_from_result_comment() {
+        let mut app = App::new();
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: ToolCallId::new("call-1".to_owned()),
+            title: "run_tests".to_owned(),
+            parameters: None,
+            status: ToolCallStatus::Completed,
+            result: Some("run_tests: ok (12 words)".to_owned()),
+        });
+
+        let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0);
+        assert!(rendered.lines.iter().any(|line| {
+            let text = line.to_string();
+            text.contains("ok (12 words)") && text.matches("run_tests").count() == 1
+        }));
+    }
+
+    #[test]
+    fn strip_redundant_name_handles_colon_and_plain_prefixes() {
+        assert_eq!(strip_redundant_name("run_tests: ok", "run_tests"), "ok");
+        assert_eq!(strip_redundant_name("run_tests ok", "run_tests"), "ok");
+        assert_eq!(strip_redundant_name("run_tests:ok", "run_tests"), "ok");
+        assert_eq!(
+            strip_redundant_name("other message", "run_tests"),
+            "other message"
         );
     }
 
