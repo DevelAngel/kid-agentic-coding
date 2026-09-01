@@ -827,12 +827,7 @@ impl DrawApp for Frame<'_> {
         area: Rect,
     ) {
         let popup_area = centered_rect(90, 85, area);
-        let status = match entry.status {
-            Status::Pending => "pending",
-            Status::Running => "running",
-            Status::Done => "done",
-            Status::Failed => "failed",
-        };
+        let (status_icon, _, status) = status_style(entry.status);
         let parameters = entry
             .parameters
             .as_deref()
@@ -843,8 +838,9 @@ impl DrawApp for Frame<'_> {
             "Result"
         };
         let result = entry.result.as_deref().unwrap_or("Not available yet.");
-        let text =
-            format!("Status: {status}\n\nParameters\n{parameters}\n\n{result_label}\n{result}");
+        let text = format!(
+            "Status: {status_icon} {status}\n\nParameters\n{parameters}\n\n{result_label}\n{result}"
+        );
         let paragraph = Paragraph::new(text)
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0))
@@ -961,16 +957,8 @@ fn render_tool_cluster(
                 format!("\u{1f914} {text}"),
             ),
             Step::ToolCall(entry) => {
-                let status_icon = match entry.status {
-                    Status::Done => "\u{2713}",
-                    Status::Failed => "\u{2717}",
-                    _ => "",
-                };
-                let text = if status_icon.is_empty() {
-                    format!("\u{1f527} {}", entry.name)
-                } else {
-                    format!("\u{1f527} {} {status_icon}", entry.name)
-                };
+                let (status_icon, _, _) = status_style(entry.status);
+                let text = format!("\u{1f527} {} {status_icon}", entry.name);
                 (Color::White, "\u{2500}\u{2500}", text)
             }
         };
@@ -996,10 +984,10 @@ fn running_icon(phase: usize) -> &'static str {
 
 fn status_style(status: Status) -> (&'static str, Color, &'static str) {
     match status {
-        Status::Pending => ("\u{25cb}", Color::DarkGray, "pending"),
-        Status::Running => ("\u{29d6}", Color::Yellow, "running"),
-        Status::Done => ("\u{25cf}", Color::Green, "done"),
-        Status::Failed => ("\u{2717}", Color::Red, "failed"),
+        Status::Pending => ("◌", Color::DarkGray, "pending"),
+        Status::Running => ("⧖", Color::Yellow, "running"),
+        Status::Done => ("✓", Color::Green, "done"),
+        Status::Failed => ("✗", Color::Red, "failed"),
     }
 }
 
