@@ -314,7 +314,8 @@ impl App {
     /// Applies a key press while a tool cluster has focus. Ctrl+↑/↓ moves
     /// between clusters; Enter/Space expands or collapses the selected
     /// cluster. Once expanded, ↑/↓ selects tool calls and Enter opens their
-    /// audit details while Space collapses the cluster.
+    /// audit details while Space collapses the cluster. Esc leaves cluster
+    /// focus and resumes autoscroll, since Ctrl+↑/↓ disabled it to enter.
     fn handle_cluster_focus_key(&mut self, key: KeyEvent, focused: usize) {
         let expanded = matches!(
             self.chat_log.messages().get(focused),
@@ -326,6 +327,7 @@ impl App {
             KeyCode::Esc => {
                 self.focused_cluster = None;
                 self.focused_tool_call = None;
+                self.autoscroll = true;
             }
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(prev) = cluster_index_before(&self.chat_log, focused) {
@@ -1383,6 +1385,19 @@ mod handle_key_tests {
 
         assert_eq!(app.focused_cluster, None);
         assert_eq!(app.prompt.lines().join(" ").trim(), "hello");
+    }
+
+    #[test]
+    fn esc_reenables_autoscroll_when_leaving_cluster_focus() {
+        let mut app = App::new();
+        let session = test_session();
+        push_tool_call(&mut app, "call-1", "read_file");
+        app.handle_key(ctrl_key(KeyCode::Up), &session);
+        assert!(!app.autoscroll);
+
+        app.handle_key(key(KeyCode::Esc), &session);
+
+        assert!(app.autoscroll);
     }
 
     #[test]
