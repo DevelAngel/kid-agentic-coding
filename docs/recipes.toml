@@ -1,0 +1,778 @@
+# --- Rust ---
+
+[recipe.rust-check]
+description = "Check that the whole project still compiles, including tests"
+run = ["change-dir", "{project}", "cargo", "check", "--quiet", "--all-targets"]
+
+[recipe.rust-check.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.rust-check.annotations]
+title = "Rust Check"
+read_only = true
+destructive = false
+idempotent = true
+open_world = false
+
+[recipe.rust-lint]
+description = "Run the linter (Clippy) and report style/correctness issues"
+run = ["change-dir", "{project}", "cargo", "clippy"]
+
+[recipe.rust-lint.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.rust-lint.annotations]
+title = "Rust Lint"
+read_only = true
+destructive = false
+idempotent = true
+open_world = false
+
+[recipe.rust-test]
+description = "Run the full test suite"
+run = ["change-dir", "{project}", "cargo", "nextest", "run", "--cargo-quiet"]
+
+[recipe.rust-test.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.rust-test.annotations]
+title = "Rust Test"
+read_only = true
+destructive = false
+idempotent = true
+open_world = false
+
+# --- Git ---
+
+[recipe.git-status]
+description = "Show which files have uncommitted changes"
+run = ["git", "-C", "{project}", "status"]
+
+[recipe.git-status.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-status.annotations]
+title = "Git Status"
+read_only = true
+destructive = false
+idempotent = true
+open_world = false
+
+[recipe.git-diff]
+description = "Show what changed, line by line, since the last commit"
+run = ["git", "-C", "{project}", "diff"]
+
+[recipe.git-diff.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-diff.annotations]
+title = "Git Diff"
+read_only = true
+destructive = false
+idempotent = true
+open_world = false
+
+[recipe.git-log]
+description = "Show recent commit history"
+run = ["git", "-C", "{project}", "log", "--no-color", "--graph", "--pretty=format:%h • %s (%(decorate:prefix=,suffix= • )%cr)"]
+
+[recipe.git-log.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-log.annotations]
+title = "Git Log"
+read_only = true
+destructive = false
+idempotent = true
+open_world = false
+
+[recipe.git-branch]
+description = "Create and switch to a new branch"
+run = ["git", "-C", "{project}", "switch", "-c", "{name}"]
+
+[recipe.git-branch.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-branch.args.name]
+help = "name of the new branch"
+level = "info"
+
+[recipe.git-branch.annotations]
+title = "Git Create Branch"
+read_only = false
+destructive = false
+idempotent = false
+open_world = false
+
+[recipe.git-switch]
+description = "Switch to an existing branch"
+run = ["git", "-C", "{project}", "switch", "{name}"]
+
+[recipe.git-switch.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-switch.args.name]
+help = "name of the branch to switch to"
+level = "info"
+
+[recipe.git-switch.annotations]
+title = "Git Switch Branch"
+read_only = false
+destructive = false
+idempotent = true
+open_world = false
+
+[recipe.git-pull]
+description = "Fetch and integrate changes from the remote for the current branch"
+run = ["git", "-C", "{project}", "pull", "--rebase"]
+
+[recipe.git-pull.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-pull.annotations]
+title = "Git Pull"
+read_only = false
+destructive = false
+idempotent = true
+open_world = true
+
+[recipe.git-add]
+description = "Stage a file's changes so the next commit includes them"
+run = ["git", "-C", "{project}", "add", "{path}"]
+
+[recipe.git-add.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-add.args.path]
+help = "file or directory to stage"
+level = "info"
+type = "path"
+
+[recipe.git-add.annotations]
+title = "Git Stage File"
+read_only = false
+destructive = false
+idempotent = true
+open_world = false
+
+[recipe.git-mv]
+description = "Rename or move a tracked file, staging the change"
+run = ["git", "-C", "{project}", "mv", "{source}", "{destination}"]
+
+[recipe.git-mv.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-mv.args.source]
+help = "current path of the tracked file"
+level = "info"
+type = "path"
+
+[recipe.git-mv.args.destination]
+help = "new path for the file"
+level = "info"
+type = "path"
+
+[recipe.git-mv.annotations]
+title = "Git Move File"
+read_only = false
+destructive = false
+idempotent = false
+open_world = false
+
+[recipe.git-rm]
+description = "Remove a tracked file, staging the deletion"
+run = ["git", "-C", "{project}", "rm", "{path}"]
+
+[recipe.git-rm.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-rm.args.path]
+help = "file or directory to remove"
+level = "info"
+type = "path"
+
+[recipe.git-rm.annotations]
+title = "Git Remove File"
+read_only = false
+destructive = true
+idempotent = false
+open_world = false
+
+[recipe.git-restore]
+description = "Unstage a file, keeping its working-tree changes"
+run = ["git", "-C", "{project}", "restore", "--staged", "{path}"]
+
+[recipe.git-restore.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-restore.args.path]
+help = "file or directory to unstage"
+level = "info"
+type = "path"
+
+[recipe.git-restore.annotations]
+title = "Git Unstage File"
+read_only = false
+destructive = false
+idempotent = true
+open_world = false
+
+[recipe.git-reset-soft]
+description = "Undo the last commit, keeping its changes staged"
+run = ["git", "-C", "{project}", "reset", "--soft", "HEAD~1"]
+
+[recipe.git-reset-soft.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-reset-soft.annotations]
+title = "Git Undo Last Commit"
+read_only = false
+destructive = true
+idempotent = false
+open_world = false
+
+[recipe.git-commit]
+description = "Save all staged changes as a new commit, authored by DevelAngel. Each commit is a release note!"
+# TODO: adapt the hardcoded --author identity below when reusing this
+# recipes.toml for a different project or committer.
+run = ["git", "-C", "{project}", "commit", "--author", "Angelos Drossos <develangel@mail.drossos.de>", "--message", "{type}({scope}){breaking_change_marker}: {description}\n\n{body}"]
+
+[recipe.git-commit.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-commit.args.type]
+help = "conventional commit type, e.g. feat,fix,refactor,chore,build,ci"
+level = "info"
+
+[recipe.git-commit.args.scope]
+help = "conventional commit scope (no type, not empty)"
+level = "info"
+
+[recipe.git-commit.args.breaking_change_marker]
+help = "\"!\" for a breaking change; an empty string otherwise."
+level = "info"
+
+[recipe.git-commit.args.description]
+help = "commit message description (<=35 characters, use imperative mood, written release-note friendly, begin lowercase)"
+level = "info"
+
+[recipe.git-commit.args.body]
+help = "commit message body (line length <=72 characters, descriptive, no files)"
+level = "debug"
+type = "text"
+
+[recipe.git-commit.annotations]
+title = "Git Commit"
+read_only = false
+destructive = false
+idempotent = false
+open_world = false
+
+[recipe.git-rebase]
+description = "Replay this branch's commits on top of another branch"
+run = ["git", "-C", "{project}", "rebase", "{target}"]
+
+[recipe.git-rebase.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-rebase.args.target]
+help = "branch or commit to rebase onto"
+level = "info"
+
+[recipe.git-rebase.annotations]
+title = "Git Rebase"
+read_only = false
+destructive = true
+idempotent = false
+open_world = false
+
+[recipe.git-rebase-continue]
+description = "Continue a rebase after fixing a conflict"
+run = ["git", "-C", "{project}", "rebase", "--continue"]
+
+[recipe.git-rebase-continue.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-rebase-continue.annotations]
+title = "Git Continue Rebase"
+read_only = false
+destructive = true
+idempotent = false
+open_world = false
+
+[recipe.git-rebase-abort]
+description = "Cancel an in-progress rebase and return to the previous state"
+run = ["git", "-C", "{project}", "rebase", "--abort"]
+
+[recipe.git-rebase-abort.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-rebase-abort.annotations]
+title = "Git Abort Rebase"
+read_only = false
+destructive = true
+idempotent = false
+open_world = false
+
+[recipe.git-push]
+description = "Push the current branch to origin, setting upstream if needed"
+run = ["git", "-C", "{project}", "push", "--set-upstream", "origin", "HEAD"]
+
+[recipe.git-push.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-push.annotations]
+title = "Git Push"
+read_only = false
+destructive = false
+idempotent = true
+open_world = true
+
+[recipe.git-push-force]
+description = "Force-push the current branch, overwriting remote history"
+run = ["git", "-C", "{project}", "push", "--force-with-lease", "origin", "HEAD"]
+
+[recipe.git-push-force.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.git-push-force.annotations]
+title = "Git Force Push"
+read_only = false
+destructive = true
+idempotent = true
+open_world = true
+
+# --- GitHub ---
+
+[recipe.gh-milestone-list]
+description = "List all open milestones."
+run = ["change-dir", "{project}", "gh", "milestone", "list", "--state", "open", "--json", "number,title,issues"]
+
+[recipe.gh-milestone-list.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-milestone-list.annotations]
+title = "List Milestones"
+read_only = true
+destructive = false
+idempotent = true
+open_world = true
+
+[recipe.gh-milestone-create]
+description = "Create a new milestone."
+run = ["change-dir", "{project}", "gh", "milestone", "create", "--title", "{title}", "--description", "{user_story}\n\n## Acceptance Criterias\n\n{acceptance_criterias}\n\n## Out of Scope\n\n{out_of_scope}"]
+
+[recipe.gh-milestone-create.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-milestone-create.args.title]
+help = "Milestone title"
+level = "debug"
+type = "text"
+
+[recipe.gh-milestone-create.args.user_story]
+help = "User Story (story telling; do not use newlines to break long lines)"
+level = "debug"
+type = "text"
+
+[recipe.gh-milestone-create.args.acceptance_criterias]
+help = "Acceptance Criterias (gherkin style without Feature-Line)"
+level = "debug"
+type = "text"
+
+[recipe.gh-milestone-create.args.out_of_scope]
+help = "Out of Scope (item list)"
+level = "debug"
+type = "text"
+
+[recipe.gh-milestone-create.annotations]
+title = "Create Milestone"
+read_only = false
+destructive = false
+idempotent = false
+open_world = true
+
+[recipe.gh-milestone-edit]
+description = "Edit a Milestone."
+run = ["change-dir", "{project}", "gh", "milestone", "edit", "{number}", "--title", "{title}", "--description", "{user_story}\n\n## Acceptance Criterias\n\n{acceptance_criterias}\n\n## Out of Scope\n\n{out_of_scope}"]
+
+[recipe.gh-milestone-edit.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-milestone-edit.args.number]
+help = "Milestone number"
+level = "info"
+
+[recipe.gh-milestone-edit.args.title]
+help = "Milestone title (use imperative mood)"
+level = "debug"
+type = "text"
+
+[recipe.gh-milestone-edit.args.user_story]
+help = "User Story (story telling; do not use newlines to break long lines)"
+level = "debug"
+type = "text"
+
+[recipe.gh-milestone-edit.args.acceptance_criterias]
+help = "Acceptance Criterias (gherkin style without Feature-Line)"
+level = "debug"
+type = "text"
+
+[recipe.gh-milestone-edit.args.out_of_scope]
+help = "Out of Scope (item list)"
+level = "debug"
+type = "text"
+
+[recipe.gh-milestone-edit.annotations]
+title = "Edit Milestone"
+read_only = false
+destructive = true
+idempotent = true
+open_world = true
+
+[recipe.gh-milestone-view]
+description = "Display the title, body, and other information about a milestone."
+run = ["change-dir", "{project}", "gh", "milestone", "view", "{number}"]
+
+[recipe.gh-milestone-view.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-milestone-view.args.number]
+help = "Milestone number"
+level = "info"
+
+[recipe.gh-milestone-view.annotations]
+title = "View Milestone"
+read_only = true
+destructive = false
+idempotent = true
+open_world = true
+
+[recipe.gh-issue-list]
+description = "List all open Issues."
+run = ["change-dir", "{project}", "gh", "issue", "list", "--state", "open", "--json", "number,issueType,title"]
+
+[recipe.gh-issue-list.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-issue-list.annotations]
+title = "List Issues"
+read_only = true
+destructive = false
+idempotent = true
+open_world = true
+
+[recipe.gh-issue-create]
+description = "Create a new Issue."
+run = ["change-dir", "{project}", "gh", "issue", "create", "--milestone", "{milestone}", "--type", "{type}", "--title", "{title}", "--body", "{user_story}\n\n## Acceptance Criterias\n\n{acceptance_criterias}\n\n## Out of Scope\n\n{out_of_scope}"]
+
+[recipe.gh-issue-create.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-issue-create.args.milestone]
+help = "Milestone name"
+level = "info"
+
+[recipe.gh-issue-create.args.type]
+help = "Issue type name"
+level = "info"
+
+[recipe.gh-issue-create.args.title]
+help = "Issue title (use imperative mood)"
+level = "debug"
+type = "text"
+
+[recipe.gh-issue-create.args.user_story]
+help = "User Story (story telling; do not use newlines to break long lines)"
+level = "debug"
+type = "text"
+
+[recipe.gh-issue-create.args.acceptance_criterias]
+help = "Acceptance Criterias (gherkin style without Feature-Line)"
+level = "debug"
+type = "text"
+
+[recipe.gh-issue-create.args.out_of_scope]
+help = "Out of Scope (item list)"
+level = "debug"
+type = "text"
+
+[recipe.gh-issue-create.annotations]
+title = "Create issue"
+read_only = false
+destructive = false
+idempotent = false
+open_world = true
+
+[recipe.gh-issue-edit]
+description = "Edit an Issue."
+run = ["change-dir", "{project}", "gh", "issue", "edit", "{number}", "--title", "{title}", "--body", "{user_story}\n\n## Acceptance Criterias\n\n{acceptance_criterias}\n\n## Out of Scope\n\n{out_of_scope}"]
+
+[recipe.gh-issue-edit.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-issue-edit.args.number]
+help = "Milestone number"
+level = "info"
+
+[recipe.gh-issue-edit.args.title]
+help = "Issue title (use imperative mood)"
+level = "debug"
+type = "text"
+
+[recipe.gh-issue-edit.args.user_story]
+help = "User Story (story telling; do not use newlines to break long lines)"
+level = "debug"
+type = "text"
+
+[recipe.gh-issue-edit.args.acceptance_criterias]
+help = "Acceptance Criterias (gherkin style without Feature-Line)"
+level = "debug"
+type = "text"
+
+[recipe.gh-issue-edit.args.out_of_scope]
+help = "Out of Scope (item list)"
+level = "debug"
+type = "text"
+
+[recipe.gh-issue-edit.annotations]
+title = "Edit Issue"
+read_only = false
+destructive = true
+idempotent = true
+open_world = true
+
+[recipe.gh-issue-view]
+description = "Display the title, body, and other information about an issue including comments."
+run = ["change-dir", "{project}", "gh", "issue", "view", "{number}", "--json", "number,state,title,body,milestone,comments"]
+
+[recipe.gh-issue-view.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-issue-view.args.number]
+help = "Issue number"
+level = "info"
+
+[recipe.gh-issue-view.annotations]
+title = "View Issue"
+read_only = true
+destructive = false
+idempotent = true
+open_world = true
+
+[recipe.gh-pr-create]
+description = "Open a pull request for the current branch. Write the body per the code-review-request-writing-guide skill (TL;DR, Why/What/How, Breaking changes)."
+run = ["change-dir", "{project}", "gh", "pr", "create", "--base", "main", "--title", "{title}", "--body", "## TL;DR\n\n{tldr}\n\n## Why is this change needed?\n\n{why}\n\n## What does this change do?\n\n{what}\n\n## How was it tested?\n\n{how}\n\n## Breaking Changes\n\n{breaking_changes}"]
+
+[recipe.gh-pr-create.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-pr-create.args.title]
+help = "PR title"
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-create.args.tldr]
+help = "TL;DR section"
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-create.args.why]
+help = "Why is this change needed?"
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-create.args.what]
+help = "What does the changes do?"
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-create.args.how]
+help = "How was it tested?"
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-create.args.breaking_changes]
+help = "Describe if there are breaking changes, begin with None or Yes."
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-create.annotations]
+title = "Create Pull Request"
+read_only = false
+destructive = false
+idempotent = false
+open_world = true
+
+[recipe.gh-pr-edit]
+description = "Update an existing pull request's title and/or description. Follow the code-review-request-writing-guide skill when rewriting the body."
+run = ["change-dir", "{project}", "gh", "pr", "edit", "{number}", "--title", "{title}", "--body", "## TL;DR\n\n{tldr}\n\n## Why is this change needed?\n\n{why}\n\n## What does this change do?\n\n{what}\n\n## How was it tested?\n\n{how}\n\n## Breaking Changes\n\n{breaking_changes}"]
+
+[recipe.gh-pr-edit.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-pr-edit.args.number]
+help = "PR number"
+level = "info"
+
+[recipe.gh-pr-edit.args.title]
+help = "new PR title"
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-edit.args.tldr]
+help = "TL;DR section"
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-edit.args.why]
+help = "Why is this change needed?"
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-edit.args.what]
+help = "What does the changes do?"
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-edit.args.how]
+help = "How was it tested?"
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-edit.args.breaking_changes]
+help = "Describe if there are breaking changes, begin with None or Yes."
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-edit.annotations]
+title = "Edit Pull Request"
+read_only = false
+destructive = false
+idempotent = true
+open_world = true
+
+[recipe.gh-pr-view]
+description = "Show PR metadata and issue-level comments"
+run = ["change-dir", "{project}", "gh", "pr", "view", "{number}", "--json", "title,body,comments,reviews"]
+
+[recipe.gh-pr-view.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-pr-view.args.number]
+help = "PR number"
+level = "info"
+
+[recipe.gh-pr-view.annotations]
+title = "View Pull Request"
+read_only = true
+destructive = false
+idempotent = true
+open_world = true
+
+[recipe.gh-pr-review-comments]
+description = "List unresolved, non-outdated inline review comments on a PR"
+run = ["change-dir", "{project}", "gh", "monitor", "review", "view", "{number}", "--unresolved", "--not_outdated"]
+
+[recipe.gh-pr-review-comments.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-pr-review-comments.args.number]
+help = "PR number"
+level = "info"
+
+[recipe.gh-pr-review-comments.annotations]
+title = "List Review Comments"
+read_only = true
+destructive = false
+idempotent = true
+open_world = true
+
+[recipe.gh-pr-comment]
+description = "Post an issue-level reply on a PR"
+run = ["change-dir", "{project}", "gh", "pr", "comment", "{number}", "--body", "{body}"]
+
+[recipe.gh-pr-comment.args.project]
+help = "project directory"
+level = "info"
+type = "path"
+
+[recipe.gh-pr-comment.args.number]
+help = "PR number"
+level = "info"
+
+[recipe.gh-pr-comment.args.body]
+help = "reply text"
+level = "debug"
+type = "text"
+
+[recipe.gh-pr-comment.annotations]
+title = "Comment on Pull Request"
+read_only = false
+destructive = false
+idempotent = false
+open_world = true
