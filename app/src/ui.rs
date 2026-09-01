@@ -925,11 +925,7 @@ fn render_tool_cluster(
     spinner_phase: usize,
 ) -> Text<'static> {
     let (icon, color, _) = status_style(cluster.status());
-    let icon = if cluster.status() == Status::Running {
-        running_icon(spinner_phase)
-    } else {
-        icon
-    };
+    let icon = animated_status_icon(cluster.status(), spinner_phase, icon);
     let count = cluster.tool_call_count();
     let label = match count {
         0 => "Thinking..".to_owned(),
@@ -969,6 +965,7 @@ fn render_tool_cluster(
             ),
             Step::ToolCall(entry) => {
                 let (status_icon, _, _) = status_style(entry.status);
+                let status_icon = animated_status_icon(entry.status, spinner_phase, status_icon);
                 let text = format!("\u{1f527} {} {status_icon}", entry.name);
                 (Color::White, "\u{2500}\u{2500}", text)
             }
@@ -993,12 +990,55 @@ fn running_icon(phase: usize) -> &'static str {
     SPINNER[phase % SPINNER.len()]
 }
 
+/// Uses the same spinner for every running tool status in the live view.
+fn animated_status_icon(
+    status: Status,
+    spinner_phase: usize,
+    static_icon: &'static str,
+) -> &'static str {
+    if status == Status::Running {
+        running_icon(spinner_phase)
+    } else {
+        static_icon
+    }
+}
+
 fn status_style(status: Status) -> (&'static str, Color, &'static str) {
     match status {
         Status::Pending => ("◌", Color::DarkGray, "pending"),
         Status::Running => ("⧖", Color::Yellow, "running"),
         Status::Done => ("✓", Color::Green, "done"),
         Status::Failed => ("✗", Color::Red, "failed"),
+    }
+}
+
+#[cfg(test)]
+mod tool_status_icon_tests {
+    use super::{animated_status_icon, running_icon, status_style};
+    use kid_agentic_coding::Status;
+
+    #[test]
+    fn running_tool_status_uses_the_live_spinner() {
+        let (static_icon, _, _) = status_style(Status::Running);
+
+        assert_eq!(
+            animated_status_icon(Status::Running, 1, static_icon),
+            running_icon(1)
+        );
+        assert_ne!(
+            animated_status_icon(Status::Running, 1, static_icon),
+            animated_status_icon(Status::Running, 2, static_icon)
+        );
+    }
+
+    #[test]
+    fn settled_tool_status_keeps_its_static_icon() {
+        let (static_icon, _, _) = status_style(Status::Done);
+
+        assert_eq!(
+            animated_status_icon(Status::Done, 1, static_icon),
+            static_icon
+        );
     }
 }
 
