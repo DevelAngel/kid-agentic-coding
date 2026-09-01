@@ -981,6 +981,16 @@ fn render_tool_cluster(
             Span::styled(format!("{corner}{dashes} "), style),
             Span::styled(text, style),
         ]));
+        if let Step::ToolCall(entry) = step
+            && let Some(result) = &entry.result
+        {
+            lines.extend(result.lines().map(|line| {
+                Line::from(Span::styled(
+                    format!("  {line}"),
+                    Style::default().fg(Color::DarkGray),
+                ))
+            }));
+        }
     }
     Text::from(lines)
 }
@@ -1495,7 +1505,7 @@ mod handle_key_tests {
 
 #[cfg(test)]
 mod session_event_tests {
-    use super::{App, map_tool_call_status};
+    use super::{App, map_tool_call_status, render_tool_cluster};
     use agent_client_protocol::schema::v1::{
         ContentBlock, TextContent, ToolCallId, ToolCallStatus,
     };
@@ -1737,6 +1747,26 @@ mod session_event_tests {
         let entry = nth_tool_call(tool_cluster(&app, 0), 0);
         assert_eq!(entry.status, Status::Done);
         assert_eq!(entry.result.as_deref(), Some("3 passed; 0 failed"));
+    }
+
+    #[test]
+    fn tool_cluster_renders_completed_tool_results_inline() {
+        let mut app = App::new();
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: ToolCallId::new("call-1".to_owned()),
+            title: "Shell command".to_owned(),
+            parameters: None,
+            status: ToolCallStatus::Completed,
+            result: Some("command output".to_owned()),
+        });
+
+        let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0);
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("command output"))
+        );
     }
 
     #[test]
