@@ -955,7 +955,11 @@ fn render_tool_cluster(
         let corner = if is_last { "\u{2570}" } else { "\u{251c}" };
         let selected = selected_step == Some(actual_index);
         let (line_color, dashes, text) = match step {
-            Step::Thought(text) => (Color::White, "\u{2500}\u{2500}", text.clone()),
+            Step::Thought(text) => (
+                Color::White,
+                "\u{2500}\u{2500}",
+                format!("\u{1f914} {text}"),
+            ),
             Step::ToolCall(entry) => {
                 let status_icon = match entry.status {
                     Status::Done => "\u{2713}",
@@ -963,9 +967,9 @@ fn render_tool_cluster(
                     _ => "",
                 };
                 let text = if status_icon.is_empty() {
-                    entry.name.clone()
+                    format!("\u{1f527} {}", entry.name)
                 } else {
-                    format!("{} {status_icon}", entry.name)
+                    format!("\u{1f527} {} {status_icon}", entry.name)
                 };
                 (Color::White, "\u{2500}\u{2500}", text)
             }
