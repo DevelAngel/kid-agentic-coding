@@ -11,7 +11,7 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     InitializeRequest, NewSessionRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
-    ToolCall, ToolCallContent, ToolCallUpdate,
+    ToolCall, ToolCallContent, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
@@ -189,6 +189,7 @@ async fn handle_update(
                         SessionUpdate::ToolCall(ToolCall {
                             tool_call_id,
                             title,
+                            kind,
                             status,
                             raw_input,
                             content,
@@ -197,7 +198,7 @@ async fn handle_update(
                         }) => {
                             let _ = event_tx.send(SessionEvent::ToolCall {
                                 id: tool_call_id,
-                                title,
+                                title: tool_call_title(kind, title),
                                 status,
                                 parameters: raw_input.map(|value| value.to_string()),
                                 result: tool_call_result(&content, raw_output.as_ref()),
@@ -257,6 +258,15 @@ async fn handle_update(
     Ok(())
 }
 
+/// Labels command executions while preserving the command in the title.
+fn tool_call_title(kind: ToolKind, title: String) -> String {
+    if kind == ToolKind::Execute {
+        format!("Shell command: {title}")
+    } else {
+        title
+    }
+}
+
 /// Renders a tool call's result content into a display string, joining
 /// standard content blocks, summarizing diffs and terminal embeds, and
 /// falling back to pretty-printed `raw_output` when no content blocks were
@@ -285,4 +295,26 @@ fn tool_call_result(
 
     raw_output
         .map(|value| serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_call_title;
+    use agent_client_protocol::schema::v1::ToolKind;
+
+    #[test]
+    fn shell_commands_include_the_command_in_the_title() {
+        assert_eq!(
+            tool_call_title(ToolKind::Execute, "git log --oneline".to_owned()),
+            "Shell command: git log --oneline"
+        );
+    }
+
+    #[test]
+    fn non_shell_tool_titles_are_preserved() {
+        assert_eq!(
+            tool_call_title(ToolKind::Read, "Read app/src/ui.rs".to_owned()),
+            "Read app/src/ui.rs"
+        );
+    }
 }
