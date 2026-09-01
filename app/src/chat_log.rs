@@ -191,9 +191,16 @@ impl ChatLog {
     }
 
     /// Appends a thought, joining the open cluster at the end of the log
-    /// if there is one, or starting a new one otherwise.
+    /// if there is one, or starting a new one otherwise. Thoughts that are
+    /// empty after trimming are dropped (logged at debug level) instead of
+    /// rendering as a blank step.
     pub fn push_thought(&mut self, text: impl Into<String>) {
-        self.push_step(Step::Thought(text.into()));
+        let text = text.into();
+        if text.trim().is_empty() {
+            tracing::debug!("dropping empty thought step");
+            return;
+        }
+        self.push_step(Step::Thought(text));
     }
 
     /// Appends a pending tool call, joining the open cluster at the end of
@@ -327,5 +334,37 @@ impl ChatLog {
     /// Messages in insertion order.
     pub fn messages(&self) -> &[Message] {
         &self.messages
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChatLog, Message, Step};
+
+    #[test]
+    fn empty_and_whitespace_thoughts_are_dropped() {
+        let mut log = ChatLog::new();
+
+        log.push_thought("");
+        log.push_thought("   ");
+        log.push_thought("\n\t");
+
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn non_empty_thought_is_kept() {
+        let mut log = ChatLog::new();
+
+        log.push_thought("checking existing error handling");
+
+        assert_eq!(log.len(), 1);
+        let Message::ToolCluster(cluster) = &log.messages()[0] else {
+            panic!("expected a tool cluster");
+        };
+        assert!(matches!(
+            cluster.steps()[0],
+            Step::Thought(ref t) if t == "checking existing error handling"
+        ));
     }
 }
