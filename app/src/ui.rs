@@ -192,6 +192,7 @@ impl App {
                 );
             }
             SessionEvent::Thought(block) => {
+                self.flush_agent_buffer();
                 let text = PromptRunner::content_block_to_string(&block);
                 self.chat_log.push_thought(text);
             }
@@ -202,6 +203,7 @@ impl App {
                 parameters,
                 result,
             } => {
+                self.flush_agent_buffer();
                 let entry_id = self
                     .chat_log
                     .push_tool_call_with_parameters(title, parameters);
@@ -232,6 +234,15 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// Commits streamed speech before a non-speech event. This preserves the
+    /// original event order and prevents text on opposite sides of a thought
+    /// or tool call from being concatenated into one speech bubble.
+    fn flush_agent_buffer(&mut self) {
+        if !self.agent_buffer.is_empty() {
+            self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
         }
     }
 
@@ -1456,6 +1467,12 @@ mod session_event_tests {
         ))))
     }
 
+    fn chunk(text: &str) -> SessionEvent {
+        SessionEvent::Chunk(Box::new(ContentBlock::Text(TextContent::new(
+            text.to_owned(),
+        ))))
+    }
+
     fn tool_cluster(app: &App, message_index: usize) -> &ToolCluster {
         let Message::ToolCluster(cluster) = &app.chat_log.messages()[message_index] else {
             panic!("expected a tool cluster at index {message_index}");
@@ -1485,6 +1502,48 @@ mod session_event_tests {
             cluster.steps()[0],
             Step::Thought(ref t) if t == "checking existing error handling"
         ));
+    }
+
+    #[test]
+    fn spoken_text_is_flushed_around_thoughts_and_tool_calls() {
+        let mut app = App::new();
+
+        app.handle_session_event(chunk("I will check that."));
+        app.handle_session_event(thought("checking the project files"));
+        app.handle_session_event(chunk("I found the relevant code."));
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: ToolCallId::new("call-1".to_owned()),
+            title: "read_file".to_owned(),
+            status: ToolCallStatus::Pending,
+            parameters: None,
+            result: None,
+        });
+        app.handle_session_event(chunk("Here is the fix."));
+        app.handle_session_event(SessionEvent::Stopped(
+            agent_client_protocol::schema::v1::StopReason::EndTurn,
+        ));
+
+        assert_eq!(app.chat_log.len(), 5);
+        assert!(
+            matches!(&app.chat_log.messages()[0], Message::Agent(message)
+            if message.text == "I will check that.")
+        );
+        assert!(matches!(
+            app.chat_log.messages()[1],
+            Message::ToolCluster(_)
+        ));
+        assert!(
+            matches!(&app.chat_log.messages()[2], Message::Agent(message)
+            if message.text == "I found the relevant code.")
+        );
+        assert!(matches!(
+            app.chat_log.messages()[3],
+            Message::ToolCluster(_)
+        ));
+        assert!(
+            matches!(&app.chat_log.messages()[4], Message::Agent(message)
+            if message.text == "Here is the fix.")
+        );
     }
 
     #[test]
