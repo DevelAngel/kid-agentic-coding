@@ -11,7 +11,7 @@ use rmcp::{
 use tokio::task;
 
 use std::env;
-use std::io;
+use std::io::{self, ErrorKind};
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Parser)]
@@ -64,57 +64,7 @@ impl RustTools {
         )
     )]
     async fn rust_check(&self) -> Result<Json<RustToolResult>, McpError> {
-        let workspace_root = env::current_dir().map_err(|err| {
-            McpError::internal_error(
-                "failed to determine working directory",
-                RustToolError {
-                    error: "failed to determine working directory".to_string(),
-                    reason: err.to_string(),
-                }
-                .into_json_value(),
-            )
-        })?;
-
-        let output = task::spawn_blocking(move || {
-            Command::new("cargo")
-                .args(["check", "--quiet", "--all-targets"])
-                .current_dir(workspace_root)
-                .stdin(Stdio::null())
-                .output()
-        })
-        .await
-        .map_err(|err| {
-            tracing::error!(?err, "rust-check task failed");
-            McpError::internal_error(
-                "failed to run cargo check",
-                RustToolError {
-                    error: "failed to run cargo check".to_string(),
-                    reason: err.to_string(),
-                }
-                .into_json_value(),
-            )
-        })?;
-
-        let output = output.map_err(|err| {
-            tracing::error!(?err, "rust-check failed to execute cargo");
-            McpError::internal_error(
-                "failed to execute cargo check",
-                RustToolError {
-                    error: "failed to execute cargo check".to_string(),
-                    reason: err.to_string(),
-                }
-                .into_json_value(),
-            )
-        })?;
-
-        let status = output.status.code().map_or(-1, |status| status);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Ok(Json(RustToolResult {
-            status,
-            stdout: stdout.into_owned(),
-            stderr: stderr.into_owned(),
-        }))
+        run_cargo(&["check", "--quiet", "--all-targets"], "cargo check", None).await
     }
 
     #[tool(
@@ -128,57 +78,7 @@ impl RustTools {
         )
     )]
     async fn rust_lint(&self) -> Result<Json<RustToolResult>, McpError> {
-        let workspace_root = env::current_dir().map_err(|err| {
-            McpError::internal_error(
-                "failed to determine working directory",
-                RustToolError {
-                    error: "failed to determine working directory".to_string(),
-                    reason: err.to_string(),
-                }
-                .into_json_value(),
-            )
-        })?;
-
-        let output = task::spawn_blocking(move || {
-            Command::new("cargo")
-                .args(["clippy"])
-                .current_dir(workspace_root)
-                .stdin(Stdio::null())
-                .output()
-        })
-        .await
-        .map_err(|err| {
-            tracing::error!(?err, "rust-lint task failed");
-            McpError::internal_error(
-                "failed to run cargo clippy",
-                RustToolError {
-                    error: "failed to run cargo clippy".to_string(),
-                    reason: err.to_string(),
-                }
-                .into_json_value(),
-            )
-        })?;
-
-        let output = output.map_err(|err| {
-            tracing::error!(?err, "rust-lint failed to execute cargo");
-            McpError::internal_error(
-                "failed to execute cargo clippy",
-                RustToolError {
-                    error: "failed to execute cargo clippy".to_string(),
-                    reason: err.to_string(),
-                }
-                .into_json_value(),
-            )
-        })?;
-
-        let status = output.status.code().map_or(-1, |status| status);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Ok(Json(RustToolResult {
-            status,
-            stdout: stdout.into_owned(),
-            stderr: stderr.into_owned(),
-        }))
+        run_cargo(&["clippy"], "cargo clippy", None).await
     }
 
     #[tool(
@@ -192,62 +92,80 @@ impl RustTools {
         )
     )]
     async fn rust_test(&self) -> Result<Json<RustToolResult>, McpError> {
-        let workspace_root = env::current_dir().map_err(|err| {
-            McpError::internal_error(
-                "failed to determine working directory",
-                RustToolError {
-                    error: "failed to determine working directory".to_string(),
-                    reason: err.to_string(),
-                }
-                .into_json_value(),
-            )
-        })?;
-
-        let output = task::spawn_blocking(move || {
-            Command::new("cargo")
-                .args(["nextest", "run", "--cargo-quiet"])
-                .current_dir(workspace_root)
-                .stdin(Stdio::null())
-                .output()
-        })
+        run_cargo(
+            &["nextest", "run", "--cargo-quiet"],
+            "cargo nextest",
+            Some("cargo-nextest"),
+        )
         .await
-        .map_err(|err| {
-            tracing::error!(?err, "rust-test task failed");
-            McpError::internal_error(
-                "failed to run cargo nextest",
-                RustToolError {
-                    error: "failed to run cargo nextest".to_string(),
-                    reason: err.to_string(),
-                }
-                .into_json_value(),
-            )
-        })?;
-
-        let output = output.map_err(|err| {
-            tracing::error!(?err, "rust-test failed to execute cargo nextest");
-            McpError::internal_error(
-                "failed to execute cargo nextest",
-                RustToolError {
-                    error: "failed to execute cargo nextest".to_string(),
-                    reason: if err.kind() == io::ErrorKind::NotFound {
-                        "cargo-nextest is not installed".to_string()
-                    } else {
-                        err.to_string()
-                    },
-                }
-                .into_json_value(),
-            )
-        })?;
-
-        let status = output.status.code().map_or(-1, |status| status);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Ok(Json(RustToolResult {
-            status,
-            stdout: stdout.into_owned(),
-            stderr: stderr.into_owned(),
-        }))
     }
+}
+
+async fn run_cargo(
+    args: &[&str],
+    operation: &str,
+    missing_dependency: Option<&str>,
+) -> Result<Json<RustToolResult>, McpError> {
+    let workspace_root = env::current_dir().map_err(|err| {
+        McpError::internal_error(
+            "failed to determine working directory",
+            RustToolError {
+                error: "failed to determine working directory".to_string(),
+                reason: err.to_string(),
+            }
+            .into_json_value(),
+        )
+    })?;
+
+    let args = args.iter().map(ToString::to_string).collect::<Vec<_>>();
+    let output = task::spawn_blocking(move || {
+        Command::new("cargo")
+            .args(&args)
+            .current_dir(workspace_root)
+            .stdin(Stdio::null())
+            .output()
+    })
+    .await
+    .map_err(|err| {
+        tracing::error!(?err, operation, "cargo task failed");
+        McpError::internal_error(
+            format!("failed to run {operation}"),
+            RustToolError {
+                error: format!("failed to run {operation}"),
+                reason: err.to_string(),
+            }
+            .into_json_value(),
+        )
+    })?;
+
+    let output = output.map_err(|err| {
+        tracing::error!(?err, operation, "cargo failed to execute");
+        let reason = if err.kind() == ErrorKind::NotFound {
+            missing_dependency.map_or_else(
+                || err.to_string(),
+                |dependency| format!("{dependency} is not installed"),
+            )
+        } else {
+            err.to_string()
+        };
+        McpError::internal_error(
+            format!("failed to execute {operation}"),
+            RustToolError {
+                error: format!("failed to execute {operation}"),
+                reason,
+            }
+            .into_json_value(),
+        )
+    })?;
+
+    let status = output.status.code().map_or(-1, |status| status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(Json(RustToolResult {
+        status,
+        stdout: stdout.into_owned(),
+        stderr: stderr.into_owned(),
+    }))
 }
 
 #[tool_handler]
