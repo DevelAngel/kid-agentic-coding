@@ -67,6 +67,16 @@ pub fn confetti_stdio_mcp_server(socket_name: &str) -> io::Result<SchemaMcpServe
     ))
 }
 
+/// Builds the stdio MCP server configuration for the rust-mcp tools, used
+/// by agents without MCP-over-ACP support.
+pub fn rust_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
+    let command = env::current_exe()?.with_file_name("kid-agentic-coding-rust");
+    Ok(SchemaMcpServer::Stdio(McpServerStdio::new(
+        "rust-tools",
+        command,
+    )))
+}
+
 /// Creates a Linux abstract-namespace Unix socket for the stdio MCP bridge.
 pub fn confetti_socket_name() -> String {
     format!("kid-agentic-coding-confetti-{}", process::id())
