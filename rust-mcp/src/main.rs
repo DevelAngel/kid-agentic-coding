@@ -180,6 +180,74 @@ impl RustTools {
             stderr: stderr.into_owned(),
         }))
     }
+
+    #[tool(
+        description = "Run the full Rust test suite",
+        annotations(
+            title = "Rust Test",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn rust_test(&self) -> Result<Json<RustToolResult>, McpError> {
+        let workspace_root = env::current_dir().map_err(|err| {
+            McpError::internal_error(
+                "failed to determine working directory",
+                RustToolError {
+                    error: "failed to determine working directory".to_string(),
+                    reason: err.to_string(),
+                }
+                .into_json_value(),
+            )
+        })?;
+
+        let output = task::spawn_blocking(move || {
+            Command::new("cargo")
+                .args(["nextest", "run", "--cargo-quiet"])
+                .current_dir(workspace_root)
+                .stdin(Stdio::null())
+                .output()
+        })
+        .await
+        .map_err(|err| {
+            tracing::error!(?err, "rust-test task failed");
+            McpError::internal_error(
+                "failed to run cargo nextest",
+                RustToolError {
+                    error: "failed to run cargo nextest".to_string(),
+                    reason: err.to_string(),
+                }
+                .into_json_value(),
+            )
+        })?;
+
+        let output = output.map_err(|err| {
+            tracing::error!(?err, "rust-test failed to execute cargo nextest");
+            McpError::internal_error(
+                "failed to execute cargo nextest",
+                RustToolError {
+                    error: "failed to execute cargo nextest".to_string(),
+                    reason: if err.kind() == io::ErrorKind::NotFound {
+                        "cargo-nextest is not installed".to_string()
+                    } else {
+                        err.to_string()
+                    },
+                }
+                .into_json_value(),
+            )
+        })?;
+
+        let status = output.status.code().map_or(-1, |status| status);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Ok(Json(RustToolResult {
+            status,
+            stdout: stdout.into_owned(),
+            stderr: stderr.into_owned(),
+        }))
+    }
 }
 
 #[tool_handler]
