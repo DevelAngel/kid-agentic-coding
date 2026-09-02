@@ -1363,8 +1363,8 @@ dependencies = [
 name = "kid-agentic-coding-confetti"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
- "color-eyre",
  "rmcp 3.1.4",
  "serde_json",
  "tokio",
@@ -1376,6 +1376,7 @@ dependencies = [
 name = "kid-agentic-coding-rust"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
  "rmcp 3.1.4",
  "serde_json",
