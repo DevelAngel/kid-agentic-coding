@@ -99,25 +99,27 @@ async fn run_session(
                 match (
                     mcp::bind_confetti_socket(&socket_name),
                     mcp::confetti_stdio_mcp_server(&socket_name),
+                    mcp::rust_stdio_mcp_server(),
                 ) {
-                    (Ok(listener), Ok(mcp_server)) => {
-                        tracing::info!("registered confetti MCP tool via stdio");
+                    (Ok(listener), Ok(confetti_server), Ok(rust_server)) => {
+                        tracing::info!("registered confetti and rust-mcp tools via stdio");
                         confetti_listener = Some(
                             UnixListener::from_std(listener).map_err(Error::into_internal_error)?,
                         );
                         cx.build_session_from(
                             NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
-                                .mcp_servers(vec![mcp_server]),
+                                .mcp_servers(vec![confetti_server, rust_server]),
                         )
                         .block_task()
                         .start_session()
                         .await?
                     }
-                    (listener_result, server_result) => {
+                    (listener_result, confetti_result, rust_result) => {
                         tracing::error!(
                             ?listener_result,
-                            ?server_result,
-                            "confetti MCP tool registration via stdio failed"
+                            ?confetti_result,
+                            ?rust_result,
+                            "confetti or rust-mcp tool registration via stdio failed"
                         );
                         cx.build_session(PathBuf::from(SESSION_ROOT))
                             .block_task()
