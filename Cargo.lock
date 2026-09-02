@@ -1379,6 +1379,8 @@ dependencies = [
  "anyhow",
  "clap",
  "rmcp 3.1.4",
+ "schemars 1.2.2",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
