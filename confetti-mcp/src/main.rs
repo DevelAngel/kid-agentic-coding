@@ -7,6 +7,7 @@
 //! confetti animation.
 
 use anyhow::Result;
+use anyhow::anyhow;
 use clap::Parser;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
@@ -98,7 +99,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(io::stderr)
         .try_init()
-        .map_err(|err| anyhow::anyhow!("failed to initialize logging: {err}"))?;
+        .map_err(|err| anyhow!("failed to initialize logging: {err}"))?;
     tracing::debug!("confetti logging initialized");
 
     let args = Args::parse();
