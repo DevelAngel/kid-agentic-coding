@@ -6,6 +6,7 @@
 //! socket, so the TUI (running in a different process) can trigger its
 //! confetti animation.
 
+use anyhow::Result;
 use clap::Parser;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
@@ -13,7 +14,6 @@ use rmcp::{ErrorData as McpError, ServerHandler};
 use rmcp::{service, tool, tool_handler, tool_router, transport};
 use serde_json::json;
 
-use std::error::Error;
 use std::io::{self, Write};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixStream};
@@ -94,11 +94,11 @@ fn notify_bridge(socket_name: &str) -> io::Result<()> {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(io::stderr)
         .try_init()
-        .ok();
+        .map_err(|err| anyhow::anyhow!("failed to initialize logging: {err}"))?;
     tracing::debug!("confetti logging initialized");
 
     let args = Args::parse();

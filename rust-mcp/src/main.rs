@@ -1,7 +1,7 @@
+use anyhow::Result;
 use clap::Parser;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, service, transport};
-use std::error::Error;
 use std::io;
 
 #[derive(Debug, Parser)]
@@ -19,11 +19,11 @@ impl ServerHandler for RustTools {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(io::stderr)
         .try_init()
-        .ok();
+        .map_err(|err| anyhow::anyhow!("failed to initialize logging: {err}"))?;
     tracing::debug!("rust logging initialized");
 
     let _args = Args::parse();
