@@ -19,19 +19,19 @@ use std::process::{Command, Stdio};
 struct Args {}
 
 #[derive(Serialize, JsonSchema)]
-struct RustCheckResult {
+struct RustToolResult {
     status: i32,
     stdout: String,
     stderr: String,
 }
 
 #[derive(Serialize)]
-struct RustCheckError {
+struct RustToolError {
     error: String,
     reason: String,
 }
 
-impl RustCheckError {
+impl RustToolError {
     fn into_json_value(self) -> Option<serde_json::Value> {
         serde_json::to_value(self).ok()
     }
@@ -63,11 +63,11 @@ impl RustTools {
             open_world_hint = false
         )
     )]
-    async fn rust_check(&self) -> Result<Json<RustCheckResult>, McpError> {
+    async fn rust_check(&self) -> Result<Json<RustToolResult>, McpError> {
         let workspace_root = env::current_dir().map_err(|err| {
             McpError::internal_error(
                 "failed to determine working directory",
-                RustCheckError {
+                RustToolError {
                     error: "failed to determine working directory".to_string(),
                     reason: err.to_string(),
                 }
@@ -87,7 +87,7 @@ impl RustTools {
             tracing::error!(?err, "rust-check task failed");
             McpError::internal_error(
                 "failed to run cargo check",
-                RustCheckError {
+                RustToolError {
                     error: "failed to run cargo check".to_string(),
                     reason: err.to_string(),
                 }
@@ -99,7 +99,7 @@ impl RustTools {
             tracing::error!(?err, "rust-check failed to execute cargo");
             McpError::internal_error(
                 "failed to execute cargo check",
-                RustCheckError {
+                RustToolError {
                     error: "failed to execute cargo check".to_string(),
                     reason: err.to_string(),
                 }
@@ -110,7 +110,71 @@ impl RustTools {
         let status = output.status.code().map_or(-1, |status| status);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Ok(Json(RustCheckResult {
+        Ok(Json(RustToolResult {
+            status,
+            stdout: stdout.into_owned(),
+            stderr: stderr.into_owned(),
+        }))
+    }
+
+    #[tool(
+        description = "Run Clippy and report style/correctness issues",
+        annotations(
+            title = "Rust Lint",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn rust_lint(&self) -> Result<Json<RustToolResult>, McpError> {
+        let workspace_root = env::current_dir().map_err(|err| {
+            McpError::internal_error(
+                "failed to determine working directory",
+                RustToolError {
+                    error: "failed to determine working directory".to_string(),
+                    reason: err.to_string(),
+                }
+                .into_json_value(),
+            )
+        })?;
+
+        let output = task::spawn_blocking(move || {
+            Command::new("cargo")
+                .args(["clippy"])
+                .current_dir(workspace_root)
+                .stdin(Stdio::null())
+                .output()
+        })
+        .await
+        .map_err(|err| {
+            tracing::error!(?err, "rust-lint task failed");
+            McpError::internal_error(
+                "failed to run cargo clippy",
+                RustToolError {
+                    error: "failed to run cargo clippy".to_string(),
+                    reason: err.to_string(),
+                }
+                .into_json_value(),
+            )
+        })?;
+
+        let output = output.map_err(|err| {
+            tracing::error!(?err, "rust-lint failed to execute cargo");
+            McpError::internal_error(
+                "failed to execute cargo clippy",
+                RustToolError {
+                    error: "failed to execute cargo clippy".to_string(),
+                    reason: err.to_string(),
+                }
+                .into_json_value(),
+            )
+        })?;
+
+        let status = output.status.code().map_or(-1, |status| status);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Ok(Json(RustToolResult {
             status,
             stdout: stdout.into_owned(),
             stderr: stderr.into_owned(),
