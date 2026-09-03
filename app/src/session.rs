@@ -11,7 +11,8 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelNotification, InitializeRequest, NewSessionRequest, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionNotification, SessionUpdate, ToolCall, ToolCallContent, ToolCallUpdate, ToolKind,
+    SessionNotification, SessionUpdate, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
+    ToolKind,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
@@ -293,12 +294,38 @@ async fn handle_update(
                                 fields.content.as_deref().unwrap_or(&[]),
                                 fields.raw_output.as_ref(),
                             );
-                            let _ = event_tx.send(SessionEvent::ToolCallUpdate {
-                                id: tool_call_id,
-                                status: fields.status,
-                                parameters: fields.raw_input.map(|value| value.to_string()),
-                                result,
-                            });
+
+                            // Check if this is a failed git_commit_with_check call
+                            let is_fix_session_needed = fields.status
+                                == Some(ToolCallStatus::Failed)
+                                && extract_fix_session_data(
+                                    fields.raw_input.as_ref(),
+                                    fields.raw_output.as_ref(),
+                                )
+                                .is_some();
+
+                            if is_fix_session_needed {
+                                if let Some((commit_message, failed_step, stdout, stderr)) =
+                                    extract_fix_session_data(
+                                        fields.raw_input.as_ref(),
+                                        fields.raw_output.as_ref(),
+                                    )
+                                {
+                                    let _ = event_tx.send(SessionEvent::FixSessionNeeded {
+                                        commit_message,
+                                        failed_step,
+                                        stdout,
+                                        stderr,
+                                    });
+                                }
+                            } else {
+                                let _ = event_tx.send(SessionEvent::ToolCallUpdate {
+                                    id: tool_call_id,
+                                    status: fields.status,
+                                    parameters: fields.raw_input.map(|value| value.to_string()),
+                                    result,
+                                });
+                            }
                         }
                         sn => {
                             tracing::debug!("{:?} dropped", sn);
@@ -374,6 +401,25 @@ fn tool_call_result(
 
     raw_output
         .map(|value| serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()))
+}
+
+/// Checks if a tool call is a failed git_commit_with_check and extracts all needed data.
+/// Returns Some((commit_message, failed_step, stdout, stderr)) if it is, None otherwise.
+fn extract_fix_session_data(
+    raw_input: Option<&serde_json::Value>,
+    raw_output: Option<&serde_json::Value>,
+) -> Option<(String, String, String, String)> {
+    // Extract commit_message from parameters
+    let input_obj = raw_input?.as_object()?;
+    let commit_message = input_obj.get("message")?.as_str()?.to_string();
+
+    // Extract failure details from output
+    let output_obj = raw_output?.as_object()?;
+    let failed_step = output_obj.get("failed_step")?.as_str()?.to_string();
+    let stdout = output_obj.get("stdout")?.as_str()?.to_string();
+    let stderr = output_obj.get("stderr")?.as_str()?.to_string();
+
+    Some((commit_message, failed_step, stdout, stderr))
 }
 
 #[cfg(test)]

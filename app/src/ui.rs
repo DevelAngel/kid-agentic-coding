@@ -234,6 +234,19 @@ impl App {
                     }
                 }
             }
+            SessionEvent::FixSessionNeeded {
+                commit_message: _,
+                failed_step,
+                stdout: _,
+                stderr,
+            } => {
+                // TODO: Implement fix session handling
+                self.flush_agent_buffer();
+                self.chat_log.push_session_notice(
+                    SessionNoticeKind::Stopped,
+                    format!("[Fix session needed] {} failed\n{}", failed_step, stderr),
+                );
+            }
         }
     }
 

@@ -47,6 +47,19 @@ pub enum SessionEvent {
 
     /// The session task ended because of an error.
     Error(String),
+
+    /// A fix session is needed because git_commit_with_check failed.
+    /// The main session's turn is automatically cancelled on this event.
+    FixSessionNeeded {
+        /// The original commit message that failed.
+        commit_message: String,
+        /// Which step failed: "check", "lint", or "test".
+        failed_step: String,
+        /// Standard output from the failed step.
+        stdout: String,
+        /// Standard error from the failed step.
+        stderr: String,
+    },
 }
 
 /// Returned by [`SessionHandle::send_prompt`] when the session task has already ended.
