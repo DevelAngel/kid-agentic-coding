@@ -268,6 +268,7 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => session.cancel(),
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.focused_cluster = last_cluster_index(&self.chat_log);
                 self.autoscroll = false;
@@ -276,6 +277,7 @@ impl App {
                 self.log_popup = true;
                 self.log_popup_scroll = 0;
             }
+            KeyCode::Enter if session.is_turn_active() => {}
             KeyCode::Enter => {
                 let prompt_text = self.prompt.lines().join(" ").trim().to_owned();
                 if prompt_text.is_empty() {
@@ -1228,6 +1230,30 @@ mod handle_key_tests {
 
         assert!(!app.should_quit);
         assert_eq!(app.chat_log.messages().len(), 1);
+    }
+
+    #[test]
+    fn enter_is_ignored_while_a_turn_is_active() {
+        let mut app = App::new();
+        let (session, _prompt_rx) = SessionHandle::new_connected_for_test();
+
+        type_text(&mut app, &session, "hello agent");
+        session.send_prompt("running turn").unwrap();
+        app.handle_key(key(KeyCode::Enter), &session);
+
+        assert!(!app.should_quit);
+        assert!(app.chat_log.is_empty());
+        assert_eq!(app.prompt.lines().join(" ").trim(), "hello agent");
+    }
+
+    #[test]
+    fn ctrl_c_does_not_quit() {
+        let mut app = App::new();
+        let session = test_session();
+
+        app.handle_key(ctrl_key(KeyCode::Char('c')), &session);
+
+        assert!(!app.should_quit);
     }
 
     #[test]

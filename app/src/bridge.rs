@@ -6,6 +6,10 @@
 use agent_client_protocol::schema::v1::{
     ContentBlock, PermissionOption, StopReason, ToolCallId, ToolCallStatus,
 };
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::Sender;
@@ -63,6 +67,7 @@ pub struct SessionHandle {
     pub(crate) prompt_tx: UnboundedSender<String>,
     pub(crate) event_rx: UnboundedReceiver<SessionEvent>,
     pub(crate) cancel_tx: UnboundedSender<()>,
+    pub(crate) turn_active: Arc<AtomicBool>,
 }
 
 impl SessionHandle {
@@ -74,12 +79,19 @@ impl SessionHandle {
     pub fn send_prompt(&self, prompt_text: impl ToString) -> Result<(), SessionClosed> {
         self.prompt_tx
             .send(prompt_text.to_string())
-            .map_err(|_| SessionClosed)
+            .map_err(|_| SessionClosed)?;
+        self.turn_active.store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Cancels the current turn, if one is active.
     pub fn cancel(&self) {
         let _ = self.cancel_tx.send(());
+    }
+
+    /// Returns whether a turn is currently active.
+    pub fn is_turn_active(&self) -> bool {
+        self.turn_active.load(Ordering::Relaxed)
     }
 
     ///
@@ -96,9 +108,11 @@ impl SessionHandle {
         let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel();
         let (_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (cancel_tx, _cancel_rx) = tokio::sync::mpsc::unbounded_channel();
+        let turn_active = Arc::new(AtomicBool::new(false));
         Self {
             prompt_tx,
             event_rx,
+            turn_active,
             cancel_tx,
         }
     }
@@ -110,10 +124,12 @@ impl SessionHandle {
         let (prompt_tx, prompt_rx) = tokio::sync::mpsc::unbounded_channel();
         let (_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (cancel_tx, _cancel_rx) = tokio::sync::mpsc::unbounded_channel();
+        let turn_active = Arc::new(AtomicBool::new(false));
         (
             Self {
                 prompt_tx,
                 event_rx,
+                turn_active,
                 cancel_tx,
             },
             prompt_rx,
