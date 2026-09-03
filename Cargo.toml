@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["app", "confetti-mcp", "lorem-agent", "rust-mcp"]
+members = ["app", "commit-workflow-mcp", "confetti-mcp", "lorem-agent", "rust-mcp"]
 
 [workspace.package]
 version = "0.1.0"

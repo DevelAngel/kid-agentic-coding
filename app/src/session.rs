@@ -72,25 +72,80 @@ async fn run_session(
             let mut confetti_listener: Option<UnixListener> = None;
             let mut session = if disable_confetti {
                 tracing::info!("confetti MCP tool registration disabled");
-                cx.build_session(PathBuf::from(SESSION_ROOT))
-                    .block_task()
-                    .start_session()
-                    .await?
-            } else if mcp::supports_mcp(&init_response) {
-                match cx
-                    .build_session(PathBuf::from(SESSION_ROOT))
-                    .with_mcp_server(mcp::confetti_mcp_server(session_event_tx.clone()))
-                {
-                    Ok(builder) => {
-                        tracing::info!("registered confetti MCP tool via ACP");
-                        builder.block_task().start_session().await?
+                match mcp::stdio_mcp_servers_without_confetti() {
+                    Ok(servers) => {
+                        tracing::info!("registered rust-mcp and commit-workflow tools via stdio");
+                        cx.build_session_from(
+                            NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
+                                .mcp_servers(servers),
+                        )
+                        .block_task()
+                        .start_session()
+                        .await?
                     }
                     Err(err) => {
-                        tracing::error!(?err, "confetti MCP tool registration via ACP failed");
+                        tracing::error!(
+                            ?err,
+                            "rust-mcp or commit-workflow tool registration via stdio failed"
+                        );
                         cx.build_session(PathBuf::from(SESSION_ROOT))
                             .block_task()
                             .start_session()
                             .await?
+                    }
+                }
+            } else if mcp::supports_mcp(&init_response) {
+                match mcp::stdio_mcp_servers_without_confetti() {
+                    Ok(servers) => match cx
+                        .build_session_from(
+                            NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
+                                .mcp_servers(servers),
+                        )
+                        .with_mcp_server(mcp::confetti_mcp_server(session_event_tx.clone()))
+                    {
+                        Ok(builder) => {
+                            tracing::info!(
+                                "registered confetti MCP tool via ACP and rust-mcp/commit-workflow tools via stdio"
+                            );
+                            builder.block_task().start_session().await?
+                        }
+                        Err(err) => {
+                            tracing::error!(?err, "confetti MCP tool registration via ACP failed");
+                            let servers =
+                                mcp::stdio_mcp_servers_without_confetti().unwrap_or_default();
+                            cx.build_session_from(
+                                NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
+                                    .mcp_servers(servers),
+                            )
+                            .block_task()
+                            .start_session()
+                            .await?
+                        }
+                    },
+                    Err(err) => {
+                        tracing::error!(
+                            ?err,
+                            "rust-mcp or commit-workflow tool registration via stdio failed"
+                        );
+                        match cx
+                            .build_session(PathBuf::from(SESSION_ROOT))
+                            .with_mcp_server(mcp::confetti_mcp_server(session_event_tx.clone()))
+                        {
+                            Ok(builder) => {
+                                tracing::info!("registered confetti MCP tool via ACP");
+                                builder.block_task().start_session().await?
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    ?err,
+                                    "confetti MCP tool registration via ACP failed"
+                                );
+                                cx.build_session(PathBuf::from(SESSION_ROOT))
+                                    .block_task()
+                                    .start_session()
+                                    .await?
+                            }
+                        }
                     }
                 }
             } else {
@@ -98,28 +153,28 @@ async fn run_session(
                 let socket_name = mcp::confetti_socket_name();
                 match (
                     mcp::bind_confetti_socket(&socket_name),
-                    mcp::confetti_stdio_mcp_server(&socket_name),
-                    mcp::rust_stdio_mcp_server(),
+                    mcp::stdio_mcp_servers(&socket_name),
                 ) {
-                    (Ok(listener), Ok(confetti_server), Ok(rust_server)) => {
-                        tracing::info!("registered confetti and rust-mcp tools via stdio");
+                    (Ok(listener), Ok(servers)) => {
+                        tracing::info!(
+                            "registered confetti, rust-mcp, and commit-workflow tools via stdio"
+                        );
                         confetti_listener = Some(
                             UnixListener::from_std(listener).map_err(Error::into_internal_error)?,
                         );
                         cx.build_session_from(
                             NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
-                                .mcp_servers(vec![confetti_server, rust_server]),
+                                .mcp_servers(servers),
                         )
                         .block_task()
                         .start_session()
                         .await?
                     }
-                    (listener_result, confetti_result, rust_result) => {
+                    (listener_result, servers_result) => {
                         tracing::error!(
                             ?listener_result,
-                            ?confetti_result,
-                            ?rust_result,
-                            "confetti or rust-mcp tool registration via stdio failed"
+                            ?servers_result,
+                            "confetti, rust-mcp, or commit-workflow tool registration via stdio failed"
                         );
                         cx.build_session(PathBuf::from(SESSION_ROOT))
                             .block_task()
