@@ -127,6 +127,9 @@ struct App {
     log_popup: bool,
     log_popup_scroll: u16,
     tool_call_popup_scroll: u16,
+    /// The entry ID of the last thought step, for live appending of subsequent
+    /// thought chunks. Cleared when a non-Thought event arrives.
+    last_thought_entry_id: Option<EntryId>,
 }
 
 impl App {
@@ -150,6 +153,7 @@ impl App {
             log_buffer: LogBuffer::default(),
             log_popup: false,
             log_popup_scroll: 0,
+            last_thought_entry_id: None,
         }
     }
 
@@ -164,16 +168,26 @@ impl App {
 
     fn handle_session_event(&mut self, event: SessionEvent) {
         match event {
-            SessionEvent::Confetti => self.confetti = Some(Confetti::new()),
+            SessionEvent::Confetti => {
+                tracing::debug!("event: confetti");
+                self.last_thought_entry_id = None;
+                self.confetti = Some(Confetti::new());
+            }
 
             SessionEvent::Chunk(block) => {
-                self.agent_buffer
-                    .push_str(&PromptRunner::content_block_to_string(&block));
+                let text = PromptRunner::content_block_to_string(&block);
+                tracing::debug!(len = text.len(), "event: chunk");
+                self.last_thought_entry_id = None;
+                self.agent_buffer.push_str(&text);
             }
             SessionEvent::PermissionRequest { options, reply } => {
+                tracing::debug!(option_count = options.len(), "event: permission_request");
+                self.last_thought_entry_id = None;
                 self.pending_permission = Some(PendingPermission { options, reply });
             }
             SessionEvent::Stopped(reason) => {
+                tracing::debug!(?reason, "event: stopped");
+                self.last_thought_entry_id = None;
                 if !self.agent_buffer.is_empty() {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
@@ -183,6 +197,8 @@ impl App {
                 }
             }
             SessionEvent::Error(error) => {
+                tracing::debug!(%error, "event: error");
+                self.last_thought_entry_id = None;
                 if !self.agent_buffer.is_empty() {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
@@ -192,9 +208,22 @@ impl App {
                 );
             }
             SessionEvent::Thought(block) => {
-                self.flush_agent_buffer();
                 let text = PromptRunner::content_block_to_string(&block);
-                self.chat_log.push_thought(text);
+                tracing::debug!(
+                    len = text.len(),
+                    has_entry = self.last_thought_entry_id.is_some(),
+                    "event: thought"
+                );
+                self.flush_agent_buffer();
+
+                if let Some(entry_id) = self.last_thought_entry_id {
+                    // Append to existing thought step
+                    self.chat_log.append_to_thought(entry_id, &text);
+                } else {
+                    // Create new thought step and remember its ID
+                    let entry_id = self.chat_log.push_thought(text);
+                    self.last_thought_entry_id = Some(entry_id);
+                }
             }
             SessionEvent::ToolCall {
                 id,
@@ -203,6 +232,8 @@ impl App {
                 parameters,
                 result,
             } => {
+                tracing::debug!(%title, %id, ?status, "event: tool_call");
+                self.last_thought_entry_id = None;
                 self.flush_agent_buffer();
                 let entry_id = self
                     .chat_log
@@ -220,6 +251,7 @@ impl App {
                 parameters,
                 result,
             } => {
+                tracing::debug!(%id, "event: tool_call_update");
                 if let Some(&entry_id) = self.tool_call_ids.get(&id) {
                     if let Some(status) = status {
                         self.chat_log
@@ -1581,20 +1613,6 @@ mod session_event_tests {
     }
 
     #[test]
-    fn thought_event_starts_a_tool_cluster() {
-        let mut app = App::new();
-
-        app.handle_session_event(thought("checking existing error handling"));
-
-        assert_eq!(app.chat_log.len(), 1);
-        let cluster = tool_cluster(&app, 0);
-        assert!(matches!(
-            cluster.steps()[0],
-            Step::Thought(ref t) if t == "checking existing error handling"
-        ));
-    }
-
-    #[test]
     fn spoken_text_is_flushed_around_thoughts_and_tool_calls() {
         let mut app = App::new();
 
@@ -1881,6 +1899,64 @@ mod session_event_tests {
             Status::Done
         );
         assert_eq!(map_tool_call_status(ToolCallStatus::Failed), Status::Failed);
+    }
+
+    #[test]
+    fn consecutive_thoughts_are_merged_into_single_cluster() {
+        let mut app = App::new();
+
+        // Emit 3 consecutive Thought events
+        app.handle_session_event(thought("checking the code"));
+        app.handle_session_event(thought("analyzing the structure"));
+        app.handle_session_event(thought("found the issue"));
+
+        // After 3 thoughts, should have 1 cluster with all thoughts combined
+        assert_eq!(app.chat_log.len(), 1);
+
+        let Message::ToolCluster(cluster) = &app.chat_log.messages()[0] else {
+            panic!("expected a tool cluster with thoughts");
+        };
+
+        // All 3 thoughts should be combined into ONE thought step
+        let thought_count = cluster
+            .steps()
+            .iter()
+            .filter(|step| matches!(step, Step::Thought(_)))
+            .count();
+        assert_eq!(thought_count, 1);
+
+        // The combined thought should contain all 3 texts separated by spaces
+        if let Step::Thought(text) = &cluster.steps()[0] {
+            assert!(text.contains("checking the code"));
+            assert!(text.contains("analyzing the structure"));
+            assert!(text.contains("found the issue"));
+        } else {
+            panic!("expected a thought step");
+        }
+    }
+
+    #[test]
+    fn tool_call_event_flushes_pending_thoughts() {
+        let mut app = App::new();
+
+        app.handle_session_event(thought("thinking about this"));
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: ToolCallId::new("call-1".to_owned()),
+            title: "run_tests".to_owned(),
+            status: ToolCallStatus::Pending,
+            parameters: None,
+            result: None,
+        });
+
+        assert_eq!(app.chat_log.len(), 1);
+
+        let Message::ToolCluster(cluster) = &app.chat_log.messages()[0] else {
+            panic!("expected a tool cluster");
+        };
+
+        // Should have thought followed by tool call
+        assert!(matches!(cluster.steps()[0], Step::Thought(_)));
+        assert!(matches!(cluster.steps()[1], Step::ToolCall(_)));
     }
 }
 

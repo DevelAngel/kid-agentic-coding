@@ -194,13 +194,16 @@ impl ChatLog {
     /// if there is one, or starting a new one otherwise. Thoughts that are
     /// empty after trimming are dropped (logged at debug level) instead of
     /// rendering as a blank step.
-    pub fn push_thought(&mut self, text: impl Into<String>) {
+    pub fn push_thought(&mut self, text: impl Into<String>) -> EntryId {
         let text = text.into();
         if text.trim().is_empty() {
             tracing::debug!("dropping empty thought step");
-            return;
+            return EntryId {
+                message_index: 0,
+                step_index: 0,
+            };
         }
-        self.push_step(Step::Thought(text));
+        self.push_step(Step::Thought(text))
     }
 
     /// Appends a pending tool call, joining the open cluster at the end of
@@ -282,6 +285,26 @@ impl ChatLog {
             && let Some(Step::ToolCall(entry)) = cluster.steps.get_mut(id.step_index)
         {
             entry.status = status;
+        }
+    }
+
+    /// Appends text to an existing thought step, cleaning up extra whitespace.
+    /// Removes multiple consecutive spaces and unnecessary newlines.
+    /// A no-op if `id` no longer refers to a thought step.
+    pub fn append_to_thought(&mut self, id: EntryId, text: &str) {
+        if let Some(Message::ToolCluster(cluster)) = self.messages.get_mut(id.message_index)
+            && let Some(Step::Thought(thought)) = cluster.steps.get_mut(id.step_index)
+        {
+            // Clean up: remove multiple spaces, trim each line
+            let cleaned = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+            if !cleaned.is_empty() {
+                // Add space separator only if thought already has content
+                if !thought.is_empty() {
+                    thought.push(' ');
+                }
+                thought.push_str(&cleaned);
+            }
         }
     }
 
