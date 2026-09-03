@@ -62,6 +62,7 @@ pub struct SessionClosed;
 pub struct SessionHandle {
     pub(crate) prompt_tx: UnboundedSender<String>,
     pub(crate) event_rx: UnboundedReceiver<SessionEvent>,
+    pub(crate) cancel_tx: UnboundedSender<()>,
 }
 
 impl SessionHandle {
@@ -76,7 +77,11 @@ impl SessionHandle {
             .map_err(|_| SessionClosed)
     }
 
-    /// Awaits the next event from the session.
+    /// Cancels the current turn, if one is active.
+    pub fn cancel(&self) {
+        let _ = self.cancel_tx.send(());
+    }
+
     ///
     /// Returns `None` once the session task has ended (e.g. startup failed,
     /// or the agent connection closed).
@@ -90,9 +95,11 @@ impl SessionHandle {
     pub fn new_disconnected_for_test() -> Self {
         let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel();
         let (_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (cancel_tx, _cancel_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             prompt_tx,
             event_rx,
+            cancel_tx,
         }
     }
 
@@ -102,10 +109,12 @@ impl SessionHandle {
     pub fn new_connected_for_test() -> (Self, UnboundedReceiver<String>) {
         let (prompt_tx, prompt_rx) = tokio::sync::mpsc::unbounded_channel();
         let (_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (cancel_tx, _cancel_rx) = tokio::sync::mpsc::unbounded_channel();
         (
             Self {
                 prompt_tx,
                 event_rx,
+                cancel_tx,
             },
             prompt_rx,
         )

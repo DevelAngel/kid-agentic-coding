@@ -9,9 +9,9 @@ use crate::prompt::PromptRunner;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    InitializeRequest, NewSessionRequest, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
-    ToolCall, ToolCallContent, ToolCallUpdate, ToolKind,
+    CancelNotification, InitializeRequest, NewSessionRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionNotification, SessionUpdate, ToolCall, ToolCallContent, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
@@ -38,10 +38,12 @@ pub fn start_interactive_session(
     disable_confetti: bool,
 ) -> SessionHandle {
     let (prompt_tx, prompt_rx) = unbounded_channel::<String>();
+    let (cancel_tx, cancel_rx) = unbounded_channel::<()>();
     let (event_tx, event_rx) = unbounded_channel::<SessionEvent>();
 
     tokio::spawn(run_session(
         component,
+        cancel_rx,
         prompt_rx,
         event_tx,
         disable_confetti,
@@ -50,6 +52,7 @@ pub fn start_interactive_session(
     SessionHandle {
         prompt_tx,
         event_rx,
+        cancel_tx,
     }
 }
 
@@ -57,6 +60,7 @@ pub fn start_interactive_session(
 /// between the ACP session and the event channel until the handle is dropped.
 async fn run_session(
     component: impl ConnectTo<Client> + 'static,
+    mut cancel_rx: UnboundedReceiver<()>,
     mut prompt_rx: UnboundedReceiver<String>,
     event_tx: UnboundedSender<SessionEvent>,
     disable_confetti: bool,
@@ -183,12 +187,25 @@ async fn run_session(
                     }
                 }
             };
+            let mut turn_active = false;
 
             loop {
                 tokio::select! {
+                    _ = cancel_rx.recv(), if turn_active => {
+                        session
+                            .connection()
+                            .send_notification_to(
+                                Agent,
+                                CancelNotification::new(session.session_id().clone()),
+                            )?;
+                    }
                     prompt = prompt_rx.recv() => {
                         match prompt {
-                            Some(text) => session.send_prompt(text)?,
+                            Some(text) => {
+                                while cancel_rx.try_recv().is_ok() {}
+                                session.send_prompt(text)?;
+                                turn_active = true;
+                            }
                             None => break,
                         }
                     }
@@ -208,7 +225,12 @@ async fn run_session(
                         }
                     }
                     update = session.read_update() => {
-                        handle_update(update?, &session_event_tx).await?;
+                        let update = update?;
+                        if matches!(&update, SessionMessage::StopReason(_)) {
+                            turn_active = false;
+                            while cancel_rx.try_recv().is_ok() {}
+                        }
+                        handle_update(update, &session_event_tx).await?;
                     }
                 }
             }
