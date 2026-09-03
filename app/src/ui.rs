@@ -276,6 +276,9 @@ impl App {
                 self.log_popup = true;
                 self.log_popup_scroll = 0;
             }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                session.cancel();
+            }
             KeyCode::Enter => {
                 let prompt_text = self.prompt.lines().join(" ").trim().to_owned();
                 if prompt_text.is_empty() {
@@ -304,7 +307,10 @@ impl App {
             KeyCode::End => {
                 self.autoscroll = true;
             }
-            KeyCode::Esc => self.prompt = new_prompt_textarea(),
+            KeyCode::Esc => {
+                session.cancel();
+                self.prompt = new_prompt_textarea();
+            }
             _ => {
                 self.prompt.input(key);
             }
@@ -1187,13 +1193,24 @@ mod handle_key_tests {
     #[test]
     fn esc_clears_prompt_without_quitting() {
         let mut app = App::new();
-        let session = test_session();
-
+        let (session, mut cancel_rx) = SessionHandle::new_cancelable_for_test();
         type_text(&mut app, &session, "hello");
         app.handle_key(key(KeyCode::Esc), &session);
 
+        assert!(cancel_rx.try_recv().is_ok());
         assert!(!app.should_quit);
         assert!(app.prompt.lines().join(" ").trim().is_empty());
+    }
+
+    #[test]
+    fn ctrl_c_cancels_the_current_turn() {
+        let mut app = App::new();
+        let (session, mut cancel_rx) = SessionHandle::new_cancelable_for_test();
+
+        app.handle_key(ctrl_key(KeyCode::Char('c')), &session);
+
+        assert!(!app.should_quit);
+        assert!(cancel_rx.try_recv().is_ok());
     }
 
     #[test]

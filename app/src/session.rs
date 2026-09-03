@@ -17,7 +17,7 @@ use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
 use std::future;
@@ -37,9 +37,9 @@ pub fn start_interactive_session(
     component: impl ConnectTo<Client> + 'static,
     disable_confetti: bool,
 ) -> SessionHandle {
-    let (prompt_tx, prompt_rx) = unbounded_channel::<String>();
-    let (cancel_tx, cancel_rx) = unbounded_channel::<()>();
-    let (event_tx, event_rx) = unbounded_channel::<SessionEvent>();
+    let (prompt_tx, prompt_rx) = mpsc::unbounded_channel::<String>();
+    let (cancel_tx, cancel_rx) = mpsc::unbounded_channel::<()>();
+    let (event_tx, event_rx) = mpsc::unbounded_channel::<SessionEvent>();
 
     tokio::spawn(run_session(
         component,

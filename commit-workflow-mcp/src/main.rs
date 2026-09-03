@@ -195,7 +195,7 @@ async fn run_process(
         )
     })?;
 
-    let status = output.status.code().map_or(-1, |status| status);
+    let status = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     Ok(ProcessOutput {
