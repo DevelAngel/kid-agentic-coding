@@ -77,6 +77,37 @@ pub fn rust_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
     )))
 }
 
+/// Builds the stdio MCP server configuration for the commit-workflow tool,
+/// used by agents without MCP-over-ACP support.
+pub fn commit_workflow_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
+    let command = env::current_exe()?.with_file_name("kid-agentic-coding-commit-workflow");
+    Ok(SchemaMcpServer::Stdio(McpServerStdio::new(
+        "commit-workflow-tools",
+        command,
+    )))
+}
+
+/// Builds every stdio MCP server configuration used by agents without
+/// MCP-over-ACP support. Adding a new stdio tool means adding one line here,
+/// not widening a tuple match at the call site.
+pub fn stdio_mcp_servers(socket_name: &str) -> io::Result<Vec<SchemaMcpServer>> {
+    Ok(vec![
+        confetti_stdio_mcp_server(socket_name)?,
+        rust_stdio_mcp_server()?,
+        commit_workflow_stdio_mcp_server()?,
+    ])
+}
+
+/// Builds the stdio MCP server configurations that don't depend on the
+/// confetti bridge socket, used when confetti registration is disabled but
+/// the other stdio tools should still be available.
+pub fn stdio_mcp_servers_without_confetti() -> io::Result<Vec<SchemaMcpServer>> {
+    Ok(vec![
+        rust_stdio_mcp_server()?,
+        commit_workflow_stdio_mcp_server()?,
+    ])
+}
+
 /// Creates a Linux abstract-namespace Unix socket for the stdio MCP bridge.
 pub fn confetti_socket_name() -> String {
     format!("kid-agentic-coding-confetti-{}", process::id())
