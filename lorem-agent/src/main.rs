@@ -7,24 +7,26 @@ use clap::Parser;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentNotification, ConnectMcpRequest, ContentBlock, ContentChunk, InitializeRequest,
-    InitializeResponse, McpServer, McpServerAcpId, MessageMcpNotification, MessageMcpRequest,
-    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId,
-    SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall, ToolCallId,
+    AgentNotification, CancelNotification, ConnectMcpRequest, ContentBlock, ContentChunk,
+    InitializeRequest, InitializeResponse, McpServer, McpServerAcpId, MessageMcpNotification,
+    MessageMcpRequest, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
+    SessionId, SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall, ToolCallId,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol::{
-    Agent, Client, ConnectionTo, Error, ErrorCode, Stdio, on_receive_request,
+    Agent, Client, ConnectionTo, Error, ErrorCode, Stdio, on_receive_notification,
+    on_receive_request,
 };
 use color_eyre::Result;
 use std::io;
 use std::process;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
 
 use serde_json::{Map, json};
+
 #[derive(Debug, Parser)]
 struct Args {
     /// Fails the prompt request to exercise the session error path.
@@ -69,6 +71,8 @@ static NEXT_PROMPT_SEED: AtomicUsize = AtomicUsize::new(0);
 /// call plan per request instead of repeating the same simple round-trip.
 static NEXT_PROMPT_INDEX: AtomicUsize = AtomicUsize::new(0);
 static CONFETTI_SERVER_ID: OnceLock<McpServerAcpId> = OnceLock::new();
+
+static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 /// One step in a fake agent's simulated reasoning: either a thought, or a
 /// tool call that goes `InProgress` then `Completed`.
@@ -190,9 +194,21 @@ async fn main() -> Result<()> {
             },
             on_receive_request!(),
         )
+        .on_receive_notification(
+            async |notification: CancelNotification, _cx| {
+                CANCELLED.store(true, Ordering::Relaxed);
+                tracing::debug!(
+                    session_id = ?notification.session_id,
+                    "session cancellation requested"
+                );
+                Ok(())
+            },
+            on_receive_notification!(),
+        )
         .on_receive_request(
             async |request: PromptRequest, responder, cx| {
                 let prompt_index = NEXT_PROMPT_INDEX.fetch_add(1, Ordering::Relaxed);
+                CANCELLED.store(false, Ordering::Relaxed);
 
                 if args.fail_session {
                     return Err(Error::from(ErrorCode::InternalError));
@@ -209,6 +225,10 @@ async fn main() -> Result<()> {
                     for (step_index, step) in
                         plan_for(prompt_index, supports_mcp).into_iter().enumerate()
                     {
+                        if CANCELLED.load(Ordering::Relaxed) {
+                            responder.respond(PromptResponse::new(StopReason::Cancelled))?;
+                            return Ok(());
+                        }
                         match step {
                             Step::Thought(thought) => {
                                 sleep(THINKING_DELAY).await;
@@ -316,6 +336,11 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
+                    }
+
+                    if CANCELLED.load(Ordering::Relaxed) {
+                        responder.respond(PromptResponse::new(StopReason::Cancelled))?;
+                        return Ok(());
                     }
 
                     cx.send_notification(AgentNotification::SessionNotification(

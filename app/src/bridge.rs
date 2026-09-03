@@ -7,7 +7,7 @@ use agent_client_protocol::schema::v1::{
     ContentBlock, PermissionOption, StopReason, ToolCallId, ToolCallStatus,
 };
 use thiserror::Error;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::Sender;
 
 /// Events emitted from an interactive session to a UI layer.
@@ -93,9 +93,9 @@ impl SessionHandle {
     /// that need a handle but don't exercise prompt sending or event receiving.
     #[doc(hidden)]
     pub fn new_disconnected_for_test() -> Self {
-        let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (cancel_tx, _cancel_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (prompt_tx, _prompt_rx) = mpsc::unbounded_channel();
+        let (_event_tx, event_rx) = mpsc::unbounded_channel();
+        let (cancel_tx, _cancel_rx) = mpsc::unbounded_channel();
         Self {
             prompt_tx,
             event_rx,
@@ -107,9 +107,9 @@ impl SessionHandle {
     /// need `send_prompt` to succeed rather than report a closed session.
     #[doc(hidden)]
     pub fn new_connected_for_test() -> (Self, UnboundedReceiver<String>) {
-        let (prompt_tx, prompt_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (cancel_tx, _cancel_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (prompt_tx, prompt_rx) = mpsc::unbounded_channel();
+        let (_event_tx, event_rx) = mpsc::unbounded_channel();
+        let (cancel_tx, _cancel_rx) = mpsc::unbounded_channel();
         (
             Self {
                 prompt_tx,
@@ -117,6 +117,21 @@ impl SessionHandle {
                 cancel_tx,
             },
             prompt_rx,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn new_cancelable_for_test() -> (Self, UnboundedReceiver<()>) {
+        let (prompt_tx, _prompt_rx) = mpsc::unbounded_channel();
+        let (_event_tx, event_rx) = mpsc::unbounded_channel();
+        let (cancel_tx, cancel_rx) = mpsc::unbounded_channel();
+        (
+            Self {
+                prompt_tx,
+                event_rx,
+                cancel_tx,
+            },
+            cancel_rx,
         )
     }
 }
