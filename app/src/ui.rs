@@ -130,6 +130,9 @@ struct App {
     /// The entry ID of the last thought step, for live appending of subsequent
     /// thought chunks. Cleared when a non-Thought event arrives.
     last_thought_entry_id: Option<EntryId>,
+    /// The entry ID of the last agent message, for live appending of subsequent
+    /// speech chunks. Cleared when a non-Chunk event arrives.
+    last_agent_message_entry_id: Option<EntryId>,
 }
 
 impl App {
@@ -154,6 +157,7 @@ impl App {
             log_popup: false,
             log_popup_scroll: 0,
             last_thought_entry_id: None,
+            last_agent_message_entry_id: None,
         }
     }
 
@@ -171,23 +175,38 @@ impl App {
             SessionEvent::Confetti => {
                 tracing::debug!("event: confetti");
                 self.last_thought_entry_id = None;
+                self.last_agent_message_entry_id = None;
                 self.confetti = Some(Confetti::new());
             }
 
             SessionEvent::Chunk(block) => {
                 let text = PromptRunner::content_block_to_string(&block);
-                tracing::debug!(len = text.len(), "event: chunk");
+                tracing::debug!(
+                    len = text.len(),
+                    has_entry = self.last_agent_message_entry_id.is_some(),
+                    "event: chunk"
+                );
                 self.last_thought_entry_id = None;
-                self.agent_buffer.push_str(&text);
+
+                if let Some(entry_id) = self.last_agent_message_entry_id {
+                    // Append to existing agent message
+                    self.chat_log.append_to_agent(entry_id, &text);
+                } else {
+                    // Create new agent message and remember its ID
+                    let entry_id = self.chat_log.push_agent(text);
+                    self.last_agent_message_entry_id = Some(entry_id);
+                }
             }
             SessionEvent::PermissionRequest { options, reply } => {
                 tracing::debug!(option_count = options.len(), "event: permission_request");
                 self.last_thought_entry_id = None;
+                self.last_agent_message_entry_id = None;
                 self.pending_permission = Some(PendingPermission { options, reply });
             }
             SessionEvent::Stopped(reason) => {
                 tracing::debug!(?reason, "event: stopped");
                 self.last_thought_entry_id = None;
+                self.last_agent_message_entry_id = None;
                 if !self.agent_buffer.is_empty() {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
@@ -199,6 +218,7 @@ impl App {
             SessionEvent::Error(error) => {
                 tracing::debug!(%error, "event: error");
                 self.last_thought_entry_id = None;
+                self.last_agent_message_entry_id = None;
                 if !self.agent_buffer.is_empty() {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
@@ -214,6 +234,7 @@ impl App {
                     has_entry = self.last_thought_entry_id.is_some(),
                     "event: thought"
                 );
+                self.last_agent_message_entry_id = None;
                 self.flush_agent_buffer();
 
                 if let Some(entry_id) = self.last_thought_entry_id {
@@ -234,6 +255,7 @@ impl App {
             } => {
                 tracing::debug!(%title, %id, ?status, "event: tool_call");
                 self.last_thought_entry_id = None;
+                self.last_agent_message_entry_id = None;
                 self.flush_agent_buffer();
                 let entry_id = self
                     .chat_log
