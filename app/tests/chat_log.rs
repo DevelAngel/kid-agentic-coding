@@ -53,11 +53,39 @@ fn messages_preserve_insertion_order() {
         .map(|m| match m {
             Message::User(u) => u.text.as_str(),
             Message::Agent(a) => a.text.as_str(),
-            Message::ToolCluster(_) | Message::SessionNotice(_) => "",
+            Message::ToolCluster(_) | Message::SessionNotice(_) | Message::SessionTransition(_) => {
+                ""
+            }
         })
         .collect();
 
     assert_eq!(texts, vec!["one", "two", "three"]);
+}
+
+#[test]
+fn push_session_transition_appends_a_banner_message() {
+    let mut log = ChatLog::new();
+    log.push_session_transition("commit-fix-rust");
+
+    assert_eq!(log.len(), 1);
+    assert!(matches!(
+        &log.messages()[0],
+        Message::SessionTransition(transition)
+            if transition.workflow_name == "commit-fix-rust"
+    ));
+}
+
+#[test]
+fn session_transition_does_not_merge_into_an_open_tool_cluster() {
+    let mut log = ChatLog::new();
+    log.push_tool_call("git_status");
+    log.push_session_transition("commit-fix-rust");
+    log.push_tool_call("cargo_check");
+
+    assert_eq!(log.len(), 3);
+    assert!(matches!(log.messages()[0], Message::ToolCluster(_)));
+    assert!(matches!(log.messages()[1], Message::SessionTransition(_)));
+    assert!(matches!(log.messages()[2], Message::ToolCluster(_)));
 }
 
 fn tool_cluster(log: &ChatLog, message_index: usize) -> &kid_agentic_coding::ToolCluster {

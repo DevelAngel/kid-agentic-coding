@@ -63,6 +63,7 @@ impl BubbleLayout {
                     let text_lines = wrapped_line_count(&m.text, text_width);
                     unframed_rect(bubble_width, 1 + text_lines)
                 }
+                Message::SessionTransition(_) => unframed_rect(width, 1),
             };
 
             bubbles.push(Bubble {

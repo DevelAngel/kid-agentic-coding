@@ -874,6 +874,24 @@ impl DrawApp for Frame<'_> {
                     };
                     self.render_widget(Paragraph::new(m.text.as_str()).style(style), render_rect);
                 }
+                Message::SessionTransition(t) => {
+                    let title = format!(" \u{2699} {} (main paused) ", t.workflow_name);
+                    let width = render_rect.width as usize;
+                    let fill = width.saturating_sub(title.chars().count());
+                    let left = fill / 2;
+                    let right = fill - left;
+                    let line = Line::from(vec![
+                        Span::styled("\u{2500}".repeat(left), Style::default().fg(Color::Yellow)),
+                        Span::styled(
+                            title,
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("\u{2500}".repeat(right), Style::default().fg(Color::Yellow)),
+                    ]);
+                    self.render_widget(Paragraph::new(line), render_rect);
+                }
             }
         }
 
@@ -1179,7 +1197,7 @@ pub async fn run(
     log_buffer: LogBuffer,
     disable_confetti: bool,
 ) -> io::Result<()> {
-    let mut session = start_interactive_session(component, disable_confetti);
+    let mut session = start_interactive_session(component, disable_confetti, None);
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
     let mut app = App::with_log_buffer(log_buffer);
