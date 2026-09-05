@@ -44,6 +44,12 @@ pub struct SessionTransition {
     pub workflow_name: String,
 }
 
+/// Text automatically provided to the agent by the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoMessage {
+    pub text: String,
+}
+
 /// A single tool call within a [`ToolCluster`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallEntry {
@@ -147,6 +153,7 @@ impl ToolCluster {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
     User(UserMessage),
+    Auto(AutoMessage),
     Agent(AgentMessage),
     ToolCluster(ToolCluster),
     SessionNotice(SessionNotice),
@@ -181,6 +188,12 @@ impl ChatLog {
     pub fn push_user(&mut self, text: impl Into<String>) {
         self.messages
             .push(Message::User(UserMessage { text: text.into() }));
+    }
+
+    /// Appends text automatically provided by the client.
+    pub fn push_auto(&mut self, text: impl Into<String>) {
+        self.messages
+            .push(Message::Auto(AutoMessage { text: text.into() }));
     }
 
     /// Appends a session outcome and ends the current tool cluster.

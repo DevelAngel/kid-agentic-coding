@@ -48,6 +48,10 @@ impl BubbleLayout {
                     let text_lines = wrapped_line_count(&m.text, text_width);
                     framed_rect(bubble_width, width, 2 + text_lines, Alignment::Right)
                 }
+                Message::Auto(m) => {
+                    let text_lines = wrapped_line_count(&m.text, text_width);
+                    framed_rect(bubble_width, width, 2 + text_lines, Alignment::Left)
+                }
                 Message::Agent(m) => {
                     let text_lines = wrapped_line_count(&m.text, text_width);
                     framed_rect(bubble_width, width, 2 + text_lines, Alignment::Left)

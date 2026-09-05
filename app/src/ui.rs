@@ -50,6 +50,10 @@ const AGENT_ICON: &str = "\u{f0f5}";
 const AGENT_COLOR: Color = Color::Rgb(255, 170, 80);
 const AGENT_NAME: &str = "Senshi";
 
+/// Nerd Font glyph and accent color for client-provided prompts.
+const AUTO_ICON: &str = "\u{2699}";
+const AUTO_COLOR: Color = Color::Yellow;
+const AUTO_NAME: &str = "Auto Prompt";
 /// Rows scrolled per PageUp/PageDown press.
 const SCROLL_STEP: u16 = 3;
 
@@ -760,6 +764,8 @@ async fn open_commit_fix_session(
     let seed_prompt = format!(
         "{COMMIT_FIX_INSTRUCTIONS}\n\n[AUTO: Commit Message from Main Session]\n{commit_message}"
     );
+
+    app.chat_log.push_auto(seed_prompt.clone());
     let _ = fix_session.send_prompt(seed_prompt);
 
     fix_session
@@ -930,6 +936,19 @@ impl DrawApp for Frame<'_> {
                         render_rect,
                     );
                 }
+                Message::Auto(m) => {
+                    self.render_widget(
+                        bubble_paragraph(
+                            AUTO_ICON,
+                            AUTO_NAME,
+                            AUTO_COLOR,
+                            &m.text,
+                            &visible_bubble,
+                        ),
+                        render_rect,
+                    );
+                }
+
                 Message::Agent(m) => {
                     self.render_widget(
                         bubble_paragraph(
@@ -950,6 +969,7 @@ impl DrawApp for Frame<'_> {
                     let selected_step = app
                         .focused_tool_call
                         .and_then(|id| app.chat_log.tool_call_step_index(index, id));
+
                     let text = render_tool_cluster(
                         cluster,
                         is_focused,
@@ -969,7 +989,7 @@ impl DrawApp for Frame<'_> {
                     self.render_widget(Paragraph::new(m.text.as_str()).style(style), render_rect);
                 }
                 Message::SessionTransition(t) => {
-                    let title = format!(" \u{2699} {} (main paused) ", t.workflow_name);
+                    let title = format!(" \u{2699} {} ", t.workflow_name);
                     let width = render_rect.width as usize;
                     let fill = width.saturating_sub(title.chars().count());
                     let left = fill / 2;
