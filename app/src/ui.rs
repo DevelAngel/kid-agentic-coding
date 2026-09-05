@@ -1065,7 +1065,7 @@ fn render_tool_cluster(
                 &text,
                 Options::new(width.max(1) as usize)
                     .initial_indent(&format!("{corner}{dashes} "))
-                    .subsequent_indent("    "),
+                    .subsequent_indent("|  "),
             )
             .lines()
             .map(|line| Line::from(Span::styled(line.to_owned(), style))),
@@ -1886,6 +1886,13 @@ mod session_event_tests {
                     .map(|text| text.matches("run_tests").count())
                     .sum::<usize>()
                     == 1
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .skip(2)
+                .all(|line| { line.to_string().starts_with("|  ") })
         );
     }
 

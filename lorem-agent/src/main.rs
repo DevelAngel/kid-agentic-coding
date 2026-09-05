@@ -50,7 +50,7 @@ struct Args {
 }
 
 /// Number of words the fake agent replies with per prompt.
-const REPLY_WORD_COUNT: usize = 12;
+const REPLY_WORD_COUNT: usize = 48;
 
 /// How long the fake agent "thinks" before its first chunk, so a client
 /// polling for a running state actually has something to observe.
@@ -93,29 +93,42 @@ enum Step {
 fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
     let mut steps = match prompt_index % 3 {
         0 => vec![
-            Step::Thought("Generating lorem ipsum"),
+            Step::Thought(
+                "Generating a deliberately long lorem ipsum response so the live UI has enough content to demonstrate line wrapping clearly",
+            ),
             Step::ToolCall("generate_lorem_ipsum"),
         ],
         1 => vec![
-            Step::Thought("Breaking the request into steps"),
+            Step::Thought(
+                "Breaking the request into several carefully chosen steps while keeping enough descriptive detail to exercise the live text wrapping behavior",
+            ),
             Step::ToolCall("search_files"),
             Step::ToolCall("read_file"),
-            Step::Thought("Cross-checking the findings"),
+            Step::Thought(
+                "Cross-checking the findings against the surrounding context to make sure the rendered cluster remains readable while new chunks continue arriving",
+            ),
             Step::ToolCall("list_directory"),
         ],
         _ => vec![
-            Step::Thought("Exploring possible approaches"),
+            Step::Thought(
+                "Exploring several possible approaches and intentionally producing enough reasoning text to make incremental rendering and wrapping visible in a narrow terminal",
+            ),
             Step::ToolCall("grep_codebase"),
             Step::ToolCall("read_file"),
-            Step::Thought("Narrowing down the relevant files"),
+            Step::Thought(
+                "Narrowing down the relevant files while preserving a long enough live thought stream to expose wrapping, indentation, and cluster growth",
+            ),
             Step::ToolCall("read_file"),
             Step::ToolCall("run_tests"),
-            Step::Thought("Verifying edge cases"),
+            Step::Thought(
+                "Verifying edge cases and checking that the final rendered output stays legible even when long messages and tool details arrive in many small chunks",
+            ),
             Step::ToolCall("write_file"),
             Step::ToolCall("run_tests"),
         ],
     };
     if supports_mcp && prompt_index % 3 == 2 {
+        steps.push(Step::ToolCall("bash"));
         steps.push(Step::ToolCall("confetti"));
     }
     steps
@@ -256,11 +269,17 @@ async fn main() -> Result<()> {
                                         SessionUpdate::ToolCall(
                                             ToolCall::new(tool_call_id.clone(), name)
                                                 .status(ToolCallStatus::InProgress)
-                                                .raw_input(serde_json::json!({
-                                                    "tool": name,
-                                                    "prompt_seed": seed,
-                                                    "step_index": step_index,
-                                                })),
+                                                .raw_input(if name == "bash" {
+                                                    serde_json::json!({
+                                                        "command": "printf '%s\\n' 'Demonstrating a deliberately long Bash command whose arguments continue far enough to exercise wrapping in the tool-call display'"
+                                                    })
+                                                } else {
+                                                    serde_json::json!({
+                                                        "tool": name,
+                                                        "prompt_seed": seed,
+                                                        "step_index": step_index
+                                                    })
+                                                }),
                                         ),
                                     ),
                                 ))?;
@@ -397,8 +416,9 @@ mod plan_for_tests {
     }
 
     #[test]
-    fn third_request_with_mcp_ends_with_confetti() {
+    fn third_request_with_mcp_includes_bash_before_confetti() {
         let steps = plan_for(2, true);
+        assert!(matches!(steps[9], Step::ToolCall("bash")));
         assert!(matches!(steps.last(), Some(Step::ToolCall("confetti"))));
     }
 
