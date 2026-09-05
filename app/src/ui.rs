@@ -27,6 +27,7 @@ use ratatui::widgets::{
     ScrollbarState, Wrap,
 };
 use ratatui_textarea::TextArea;
+use textwrap::{self, Options};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task;
@@ -851,6 +852,7 @@ impl DrawApp for Frame<'_> {
                         keep_live,
                         selected_step,
                         app.spinner_phase,
+                        render_rect.width,
                     );
                     let paragraph = Paragraph::new(text).scroll((visible_bubble.text_line_skip, 0));
                     self.render_widget(paragraph, render_rect);
@@ -989,13 +991,14 @@ fn strip_redundant_name<'a>(comment: &'a str, name: &str) -> &'a str {
 
 /// Renders a tool cluster as a summary line followed by its visible steps.
 /// `keep_live` defers the collapse of a just-settled cluster while it is
-/// still the newest message (see [`ToolCluster::visible_steps`]).
+/// still the last message.
 fn render_tool_cluster(
     cluster: &ToolCluster,
     is_focused: bool,
     keep_live: bool,
     selected_step: Option<usize>,
     spinner_phase: usize,
+    width: u16,
 ) -> Text<'static> {
     let (icon, color, _) = status_style(cluster.status());
     let icon = animated_status_icon(cluster.status(), spinner_phase, icon);
@@ -1057,10 +1060,16 @@ fn render_tool_cluster(
         } else {
             Style::default().fg(line_color)
         };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{corner}{dashes} "), style),
-            Span::styled(text, style),
-        ]));
+        lines.extend(
+            textwrap::fill(
+                &text,
+                Options::new(width.max(1) as usize)
+                    .initial_indent(&format!("{corner}{dashes} "))
+                    .subsequent_indent("    "),
+            )
+            .lines()
+            .map(|line| Line::from(Span::styled(line.to_owned(), style))),
+        );
     }
     Text::from(lines)
 }
@@ -1840,7 +1849,7 @@ mod session_event_tests {
             result: Some("command output".to_owned()),
         });
 
-        let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0);
+        let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0, 80);
         assert!(rendered.lines.iter().any(|line| {
             let text = line.to_string();
             text.contains("Shell command") && text.contains("command output")
@@ -1858,14 +1867,26 @@ mod session_event_tests {
             title: "run_tests".to_owned(),
             parameters: None,
             status: ToolCallStatus::Completed,
-            result: Some("run_tests: ok (12 words)".to_owned()),
+            result: Some(
+                "run_tests: ok (12 words) with a long result comment that must wrap".to_owned(),
+            ),
         });
 
-        let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0);
-        assert!(rendered.lines.iter().any(|line| {
-            let text = line.to_string();
-            text.contains("ok (12 words)") && text.matches("run_tests").count() == 1
-        }));
+        let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0, 20);
+        assert!(
+            rendered.lines.len() > 2
+                && rendered
+                    .lines
+                    .iter()
+                    .all(|line| line.to_string().chars().count() <= 20)
+                && rendered
+                    .lines
+                    .iter()
+                    .map(|line| line.to_string())
+                    .map(|text| text.matches("run_tests").count())
+                    .sum::<usize>()
+                    == 1
+        );
     }
 
     #[test]
