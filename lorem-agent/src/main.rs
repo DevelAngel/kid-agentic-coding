@@ -232,16 +232,20 @@ async fn main() -> Result<()> {
                         match step {
                             Step::Thought(thought) => {
                                 sleep(THINKING_DELAY).await;
-                                cx.send_notification(AgentNotification::SessionNotification(
-                                    SessionNotification::new(
-                                        request.session_id.clone(),
-                                        SessionUpdate::AgentThoughtChunk(ContentChunk::new(
-                                            ContentBlock::Text(TextContent::new(
-                                                thought.to_owned(),
+                                // Emit thought in small word chunks to show live-append
+                                let words: Vec<&str> = thought.split_whitespace().collect();
+                                for chunk in words.chunks(2) {
+                                    let chunk_text = chunk.join(" ");
+                                    cx.send_notification(AgentNotification::SessionNotification(
+                                        SessionNotification::new(
+                                            request.session_id.clone(),
+                                            SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                                                ContentBlock::Text(TextContent::new(chunk_text)),
                                             )),
-                                        )),
-                                    ),
-                                ))?;
+                                        ),
+                                    ))?;
+                                    sleep(Duration::from_millis(100)).await;
+                                }
                             }
                             Step::ToolCall(name) => {
                                 let tool_call_id =
@@ -343,14 +347,20 @@ async fn main() -> Result<()> {
                         return Ok(());
                     }
 
-                    cx.send_notification(AgentNotification::SessionNotification(
-                        SessionNotification::new(
-                            request.session_id.clone(),
-                            SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                                ContentBlock::Text(TextContent::new(text)),
-                            )),
-                        ),
-                    ))?;
+                    // Emit speech in small word chunks to show live-append
+                    let words: Vec<&str> = text.split_whitespace().collect();
+                    for chunk in words.chunks(2) {
+                        let chunk_text = chunk.join(" ");
+                        cx.send_notification(AgentNotification::SessionNotification(
+                            SessionNotification::new(
+                                request.session_id.clone(),
+                                SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                    ContentBlock::Text(TextContent::new(chunk_text)),
+                                )),
+                            ),
+                        ))?;
+                        sleep(Duration::from_millis(50)).await;
+                    }
 
                     responder.respond(PromptResponse::new(StopReason::EndTurn))
                 });
