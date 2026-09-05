@@ -108,6 +108,7 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
                 "Cross-checking the findings against the surrounding context to make sure the rendered cluster remains readable while new chunks continue arriving",
             ),
             Step::ToolCall("list_directory"),
+            Step::ToolCall("Git Commit With Check"),
         ],
         _ => vec![
             Step::Thought(
@@ -273,6 +274,10 @@ async fn main() -> Result<()> {
                                                     serde_json::json!({
                                                         "command": "printf '%s\\n' 'Demonstrating a deliberately long Bash command whose arguments continue far enough to exercise wrapping in the tool-call display'"
                                                     })
+                                                } else if name == "Git Commit With Check" {
+                                                    serde_json::json!({
+                                                        "message": "feat(lorem-agent): demonstrate commit fix workflow"
+                                                    })
                                                 } else {
                                                     serde_json::json!({
                                                         "tool": name,
@@ -416,6 +421,20 @@ mod plan_for_tests {
     }
 
     #[test]
+    fn second_request_includes_commit_check_tool_call() {
+        let steps = plan_for(1, false);
+        assert_eq!(
+            tool_call_names(&steps),
+            vec![
+                "search_files",
+                "read_file",
+                "list_directory",
+                "Git Commit With Check"
+            ]
+        );
+    }
+
+    #[test]
     fn third_request_with_mcp_includes_bash_before_confetti() {
         let steps = plan_for(2, true);
         assert!(matches!(steps[9], Step::ToolCall("bash")));
@@ -427,7 +446,12 @@ mod plan_for_tests {
         let steps = plan_for(1, false);
         assert_eq!(
             tool_call_names(&steps),
-            vec!["search_files", "read_file", "list_directory"]
+            vec![
+                "search_files",
+                "read_file",
+                "list_directory",
+                "Git Commit With Check",
+            ]
         );
         // search_files and read_file are adjacent tool calls; since a
         // thought no longer ends the cluster, both this pair and
