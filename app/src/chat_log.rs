@@ -184,10 +184,30 @@ impl ChatLog {
     }
 
     /// Appends an agent message. Ends whatever tool cluster is currently
-    /// open, so the next thought or tool call starts a fresh one.
-    pub fn push_agent(&mut self, text: impl Into<String>) {
+    /// open, so the next thought or tool call starts a fresh one. Returns
+    /// a handle for later appending via `append_to_agent`.
+    pub fn push_agent(&mut self, text: impl Into<String>) -> EntryId {
+        let message_index = self.messages.len();
         self.messages
             .push(Message::Agent(AgentMessage { text: text.into() }));
+        EntryId {
+            message_index,
+            step_index: 0,
+        }
+    }
+
+    /// Appends text to an existing agent message, cleaning up extra whitespace.
+    /// A no-op if `id` no longer refers to an agent message.
+    pub fn append_to_agent(&mut self, id: EntryId, text: &str) {
+        if let Some(Message::Agent(msg)) = self.messages.get_mut(id.message_index) {
+            let cleaned = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !cleaned.is_empty() {
+                if !msg.text.is_empty() {
+                    msg.text.push(' ');
+                }
+                msg.text.push_str(&cleaned);
+            }
+        }
     }
 
     /// Appends a thought, joining the open cluster at the end of the log
