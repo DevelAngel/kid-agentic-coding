@@ -37,6 +37,13 @@ pub struct SessionNotice {
     pub text: String,
 }
 
+/// A visible marker that the active session switched to a fix workflow,
+/// shown as a full-width banner in the chat history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTransition {
+    pub workflow_name: String,
+}
+
 /// A single tool call within a [`ToolCluster`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallEntry {
@@ -143,6 +150,7 @@ pub enum Message {
     Agent(AgentMessage),
     ToolCluster(ToolCluster),
     SessionNotice(SessionNotice),
+    SessionTransition(SessionTransition),
 }
 
 /// Opaque handle to a [`Step`], returned by [`ChatLog::push_tool_call`]
@@ -181,6 +189,14 @@ impl ChatLog {
             kind,
             text: text.into(),
         }));
+    }
+
+    /// Appends a session-switch banner and ends the current tool cluster.
+    pub fn push_session_transition(&mut self, workflow_name: impl Into<String>) {
+        self.messages
+            .push(Message::SessionTransition(SessionTransition {
+                workflow_name: workflow_name.into(),
+            }));
     }
 
     /// Appends an agent message. Ends whatever tool cluster is currently
