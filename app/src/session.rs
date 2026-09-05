@@ -3,7 +3,7 @@
 //! Protocol-facing logic only; the channel plumbing consumers see lives in
 //! [`crate::bridge`].
 
-use crate::bridge::{SessionEvent, SessionHandle};
+use crate::bridge::{SessionEvent, SessionHandle, next_session_id};
 use crate::mcp;
 use crate::prompt::PromptRunner;
 
@@ -36,6 +36,7 @@ const SESSION_ROOT: &str = ".";
 pub fn start_interactive_session(
     component: impl ConnectTo<Client> + 'static,
     disable_confetti: bool,
+    workflow_name: Option<String>,
 ) -> SessionHandle {
     let (prompt_tx, prompt_rx) = mpsc::unbounded_channel::<String>();
     let (cancel_tx, cancel_rx) = mpsc::unbounded_channel::<()>();
@@ -53,6 +54,8 @@ pub fn start_interactive_session(
         prompt_tx,
         event_rx,
         cancel_tx,
+        session_id: next_session_id(),
+        workflow_name,
     }
 }
 

@@ -6,9 +6,17 @@
 use agent_client_protocol::schema::v1::{
     ContentBlock, PermissionOption, StopReason, ToolCallId, ToolCallStatus,
 };
+use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::Sender;
+
+/// Generates a process-unique id for [`SessionHandle`] lifecycle logging.
+/// Unrelated to the agent's own protocol-level session id.
+pub(crate) fn next_session_id() -> String {
+    static COUNTER: AtomicUsize = AtomicUsize::new(1);
+    format!("session-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
 
 /// Events emitted from an interactive session to a UI layer.
 #[derive(Debug)]
@@ -63,6 +71,8 @@ pub struct SessionHandle {
     pub(crate) prompt_tx: UnboundedSender<String>,
     pub(crate) event_rx: UnboundedReceiver<SessionEvent>,
     pub(crate) cancel_tx: UnboundedSender<()>,
+    pub(crate) session_id: String,
+    pub(crate) workflow_name: Option<String>,
 }
 
 impl SessionHandle {
@@ -80,6 +90,18 @@ impl SessionHandle {
     /// Cancels the current turn, if one is active.
     pub fn cancel(&self) {
         let _ = self.cancel_tx.send(());
+    }
+
+    /// Identifies this session for lifecycle logging. Unique per handle,
+    /// unrelated to the agent's own protocol-level session id.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Name of the fix workflow this session was opened for, or `None` for
+    /// the main session.
+    pub fn workflow_name(&self) -> Option<&str> {
+        self.workflow_name.as_deref()
     }
 
     ///
@@ -100,6 +122,8 @@ impl SessionHandle {
             prompt_tx,
             event_rx,
             cancel_tx,
+            session_id: next_session_id(),
+            workflow_name: None,
         }
     }
 
@@ -115,6 +139,8 @@ impl SessionHandle {
                 prompt_tx,
                 event_rx,
                 cancel_tx,
+                session_id: next_session_id(),
+                workflow_name: None,
             },
             prompt_rx,
         )
@@ -130,6 +156,8 @@ impl SessionHandle {
                 prompt_tx,
                 event_rx,
                 cancel_tx,
+                session_id: next_session_id(),
+                workflow_name: None,
             },
             cancel_rx,
         )
