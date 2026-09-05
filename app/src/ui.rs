@@ -181,7 +181,17 @@ impl App {
             }
 
             SessionEvent::Chunk(block) => {
-                let text = PromptRunner::content_block_to_string(&block);
+                let mut text = PromptRunner::content_block_to_string(&block);
+
+                // Trim leading newlines only on first chunk of a message
+                if self.last_agent_message_entry_id.is_none() {
+                    text = text.trim_start().to_string();
+                }
+
+                if text.is_empty() {
+                    return; // Skip whitespace-only chunks
+                }
+
                 tracing::debug!(
                     len = text.len(),
                     has_entry = self.last_agent_message_entry_id.is_some(),
