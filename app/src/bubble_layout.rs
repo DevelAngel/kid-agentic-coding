@@ -310,7 +310,7 @@ fn tool_cluster_row_count(cluster: &ToolCluster, width: u16, keep_live: bool) ->
                 &text,
                 Options::new(width.max(1) as usize)
                     .initial_indent(&format!("{corner}── "))
-                    .subsequent_indent("|  "),
+                    .subsequent_indent("│  "),
             );
             wrapped.lines().count() as u16
         })
