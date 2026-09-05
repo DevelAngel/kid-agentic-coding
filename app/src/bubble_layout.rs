@@ -325,36 +325,51 @@ fn tool_cluster_row_count(cluster: &ToolCluster, width: u16, keep_live: bool) ->
 }
 
 /// Number of rows `text` occupies when greedily word-wrapped to `width`
-/// columns. Words longer than `width` are not split further.
+/// columns. Explicit newlines and empty lines each occupy one row.
 fn wrapped_line_count(text: &str, width: u16) -> u16 {
     let width = usize::from(width.max(1));
-    let mut lines: u16 = 0;
-    let mut current_width = 0usize;
 
-    for word in text.split_whitespace() {
-        let word_len = word.chars().count();
-        if current_width == 0 {
-            lines += 1;
-            current_width = word_len;
-            continue;
-        }
+    text.split('\n')
+        .map(|line| {
+            let mut lines: u16 = 0;
+            let mut current_width = 0usize;
 
-        let needed = current_width + 1 + word_len;
-        if needed <= width {
-            current_width = needed;
-        } else {
-            lines += 1;
-            current_width = word_len;
-        }
-    }
+            for word in line.split_whitespace() {
+                let word_len = word.chars().count();
+                if current_width == 0 {
+                    lines += 1;
+                    current_width = word_len;
+                    continue;
+                }
 
-    lines.max(1)
+                let needed = current_width + 1 + word_len;
+                if needed <= width {
+                    current_width = needed;
+                } else {
+                    lines += 1;
+                    current_width = word_len;
+                }
+            }
+
+            lines.max(1)
+        })
+        .sum()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::BubbleLayout;
+    use super::{BubbleLayout, wrapped_line_count};
     use crate::chat_log::ChatLog;
+
+    #[test]
+    fn wrapped_line_count_preserves_explicit_newlines() {
+        assert_eq!(wrapped_line_count("first\nsecond", 40), 2);
+    }
+
+    #[test]
+    fn wrapped_line_count_preserves_empty_lines() {
+        assert_eq!(wrapped_line_count("first\n\nsecond", 40), 3);
+    }
 
     #[test]
     fn expanded_wrapped_last_thought_reserves_following_bubble_space() {
