@@ -53,6 +53,7 @@ fn messages_preserve_insertion_order() {
         .map(|m| match m {
             Message::User(u) => u.text.as_str(),
             Message::Agent(a) => a.text.as_str(),
+            Message::Auto(a) => a.text.as_str(),
             Message::ToolCluster(_) | Message::SessionNotice(_) | Message::SessionTransition(_) => {
                 ""
             }
