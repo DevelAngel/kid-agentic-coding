@@ -2,8 +2,8 @@
 
 use crate::log_buffer::LogBuffer;
 
+use agent_client_protocol::AcpAgent;
 use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
-use agent_client_protocol::{Client, ConnectTo};
 use ansi_to_tui::IntoText;
 use kid_agentic_coding::start_interactive_session;
 use kid_agentic_coding::{
@@ -34,7 +34,9 @@ use tokio::task;
 use tokio::time::{self, MissedTickBehavior};
 
 use std::collections::HashMap;
+use std::future;
 use std::io::{self, Stdout};
+
 use std::mem;
 use std::time::Duration;
 
@@ -50,6 +52,35 @@ const AGENT_NAME: &str = "Senshi";
 
 /// Rows scrolled per PageUp/PageDown press.
 const SCROLL_STEP: u16 = 3;
+
+/// Tool title annotation of `git_commit_with_check` in
+/// `commit-workflow-mcp/src/main.rs`. Must match exactly; the two crates
+/// aren't linked, so this is the trigger for opening a fix session.
+const GIT_COMMIT_WITH_CHECK_TITLE: &str = "Git Commit With Check";
+
+/// Workflow name for the fix session opened on a failed
+/// `git_commit_with_check`. Shown in the session banner and prompt title.
+const COMMIT_FIX_WORKFLOW: &str = "commit-fix-rust";
+
+/// Fixed first prompt sent to a freshly opened commit-fix session, followed
+/// by the `[AUTO: ...]` block carrying the original commit message.
+const COMMIT_FIX_INSTRUCTIONS: &str = "\
+The main session's `git_commit_with_check` failed. You are a fresh session \
+started to fix it. Run `cargo check`, `cargo clippy`, and `cargo test` (or \
+re-invoke `git_commit_with_check` directly) to see the current failure. Fix \
+the underlying issue, not just the symptom. Once check, lint, and test all \
+pass, invoke `git_commit_with_check` again with the same commit message to \
+finish the commit.";
+
+/// Extracts the `message` field from a `git_commit_with_check` tool call's
+/// JSON parameters. Returns an empty string if parsing fails or the field
+/// is absent, rather than failing the whole trigger.
+fn extract_commit_message(parameters: Option<&str>) -> String {
+    parameters
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.get("message")?.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
 
 /// A permission request awaiting the user's decision.
 struct PendingPermission {
@@ -140,7 +171,7 @@ impl App {
     fn new() -> Self {
         Self {
             chat_log: ChatLog::new(),
-            prompt: new_prompt_textarea(),
+            prompt: new_prompt_textarea(None),
             agent_buffer: String::new(),
             scroll_anchor: None,
             pending_scroll_delta: 0,
@@ -353,7 +384,7 @@ impl App {
                     self.should_quit = true;
                     return;
                 }
-                self.prompt = new_prompt_textarea();
+                self.prompt = new_prompt_textarea(session.workflow_name());
                 self.chat_log.push_user(prompt_text.clone());
                 if session.send_prompt(prompt_text).is_err() {
                     self.chat_log.push_agent("[session closed]");
@@ -374,7 +405,7 @@ impl App {
             }
             KeyCode::Esc => {
                 session.cancel();
-                self.prompt = new_prompt_textarea();
+                self.prompt = new_prompt_textarea(session.workflow_name());
             }
             _ => {
                 self.prompt.input(key);
@@ -571,15 +602,20 @@ fn stop_reason_text(reason: StopReason) -> String {
     }
 }
 
-/// Builds a fresh single-line prompt textarea with the mage-themed block.
-fn new_prompt_textarea() -> TextArea<'static> {
+/// Title shows `workflow_name` when set, so it's clear at a glance which
+/// session Enter routes the prompt to.
+fn new_prompt_textarea(workflow_name: Option<&str>) -> TextArea<'static> {
+    let title = match workflow_name {
+        Some(name) => format!(" {USER_ICON} Prompt \u{2192} {name} "),
+        None => format!(" {USER_ICON} Prompt "),
+    };
     let mut textarea = TextArea::default();
     textarea.set_block(
         Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(USER_COLOR))
             .title(Span::styled(
-                format!(" {USER_ICON} Prompt "),
+                title,
                 Style::default().fg(USER_COLOR).add_modifier(Modifier::BOLD),
             )),
     );
@@ -636,16 +672,24 @@ fn spawn_terminal_events() -> UnboundedReceiver<Event> {
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
-    session: &mut SessionHandle,
+    main_session: &mut SessionHandle,
+    agent_config: &agent_client_protocol::AcpAgentConfig,
     term_events: &mut UnboundedReceiver<Event>,
 ) -> io::Result<()> {
     let mut spinner = time::interval(Duration::from_millis(250));
     spinner.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut confetti = time::interval(Duration::from_millis(50));
     confetti.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut fix_session: Option<SessionHandle> = None;
 
     while !app.should_quit {
         terminal.draw(|frame| frame.draw_app(app))?;
+        let fix_recv = async {
+            match fix_session.as_mut() {
+                Some(session) => session.recv_event().await,
+                None => future::pending().await,
+            }
+        };
         tokio::select! {
             _ = spinner.tick() => {
                 app.spinner_phase = app.spinner_phase.wrapping_add(1);
@@ -655,20 +699,70 @@ async fn run_app(
                     app.confetti = None;
                 }
             }
-            Some(session_event) = session.recv_event() => {
+            Some(session_event) = main_session.recv_event() => {
+                if fix_session.is_none()
+                    && let SessionEvent::ToolCall { title, parameters, .. } = &session_event
+                    && title == GIT_COMMIT_WITH_CHECK_TITLE
+                {
+                    let commit_message = extract_commit_message(parameters.as_deref());
+                    app.handle_session_event(session_event);
+                    fix_session = Some(
+                        open_commit_fix_session(app, main_session, agent_config, commit_message)
+                            .await,
+                    );
+                } else {
+                    app.handle_session_event(session_event);
+                }
+            }
+            Some(session_event) = fix_recv => {
                 app.handle_session_event(session_event);
             }
             Some(term_event) = term_events.recv() => {
                 if let Event::Key(key) = term_event
                     && key.kind == KeyEventKind::Press
                 {
-                    app.handle_key(key, session);
+                    let active_session = fix_session.as_ref().unwrap_or(main_session);
+                    app.handle_key(key, active_session);
                 }
             }
         }
     }
 
     Ok(())
+}
+
+/// Cancels the main session's current turn, waits for it to actually stop,
+/// then opens and seeds a fix session. Blocking on the cancel confirmation
+/// avoids a race between the main session's own event stream and the new
+/// fix session's first events.
+async fn open_commit_fix_session(
+    app: &mut App,
+    main_session: &mut SessionHandle,
+    agent_config: &agent_client_protocol::AcpAgentConfig,
+    commit_message: String,
+) -> SessionHandle {
+    main_session.cancel();
+    while let Some(event) = main_session.recv_event().await {
+        let is_cancelled = matches!(event, SessionEvent::Stopped(StopReason::Cancelled));
+        app.handle_session_event(event);
+        if is_cancelled {
+            break;
+        }
+    }
+
+    let fix_component = AcpAgent::new(agent_config.clone());
+    let fix_session =
+        start_interactive_session(fix_component, true, Some(COMMIT_FIX_WORKFLOW.to_owned()));
+
+    app.chat_log.push_session_transition(COMMIT_FIX_WORKFLOW);
+    app.prompt = new_prompt_textarea(Some(COMMIT_FIX_WORKFLOW));
+
+    let seed_prompt = format!(
+        "{COMMIT_FIX_INSTRUCTIONS}\n\n[AUTO: Commit Message from Main Session]\n{commit_message}"
+    );
+    let _ = fix_session.send_prompt(seed_prompt);
+
+    fix_session
 }
 
 /// Draws application state onto a ratatui `Frame`.
@@ -1159,6 +1253,31 @@ mod tool_status_icon_tests {
     }
 }
 
+#[cfg(test)]
+mod commit_fix_trigger_tests {
+    use super::extract_commit_message;
+
+    #[test]
+    fn extracts_the_message_field_from_json_parameters() {
+        let parameters = r#"{"message": "fix: correct the thing"}"#;
+
+        assert_eq!(
+            extract_commit_message(Some(parameters)),
+            "fix: correct the thing"
+        );
+    }
+
+    #[test]
+    fn returns_empty_string_for_missing_parameters() {
+        assert_eq!(extract_commit_message(None), "");
+    }
+
+    #[test]
+    fn returns_empty_string_for_malformed_json() {
+        assert_eq!(extract_commit_message(Some("not json")), "");
+    }
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let [_, vertical, _] = Layout::vertical([
         Constraint::Percentage((100 - percent_y) / 2),
@@ -1192,17 +1311,21 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 
 /// Runs the interactive terminal UI against the given agent component until
 /// the user quits, restoring the terminal afterwards regardless of outcome.
-pub async fn run(
-    component: impl ConnectTo<Client> + 'static,
-    log_buffer: LogBuffer,
-    disable_confetti: bool,
-) -> io::Result<()> {
-    let mut session = start_interactive_session(component, disable_confetti, None);
+pub async fn run(agent: AcpAgent, log_buffer: LogBuffer, disable_confetti: bool) -> io::Result<()> {
+    let agent_config = agent.config().clone();
+    let mut session = start_interactive_session(agent, disable_confetti, None);
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
     let mut app = App::with_log_buffer(log_buffer);
 
-    let result = run_app(&mut terminal, &mut app, &mut session, &mut term_events).await;
+    let result = run_app(
+        &mut terminal,
+        &mut app,
+        &mut session,
+        &agent_config,
+        &mut term_events,
+    )
+    .await;
 
     restore_terminal(&mut terminal)?;
 
