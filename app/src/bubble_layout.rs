@@ -1,9 +1,10 @@
 //! Pure layout computation for chat bubbles: bounding rects, border sets,
 //! and scroll bounds. No terminal or I/O access.
 
-use crate::chat_log::{ChatLog, Message};
+use crate::chat_log::{ChatLog, Message, Step, ToolCluster};
 use ratatui::layout::Rect;
 use ratatui::widgets::Borders;
+use textwrap::Options;
 
 /// Horizontal alignment of a bubble within the viewport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +54,10 @@ impl BubbleLayout {
                 }
                 Message::ToolCluster(cluster) => {
                     let keep_live = index == last_index;
-                    unframed_rect(bubble_width, cluster.visible_row_count(keep_live) as u16)
+                    unframed_rect(
+                        bubble_width,
+                        tool_cluster_row_count(cluster, bubble_width, keep_live),
+                    )
                 }
                 Message::SessionNotice(m) => {
                     let text_lines = wrapped_line_count(&m.text, text_width);
@@ -269,6 +273,52 @@ fn unframed_rect(bubble_width: u16, height: u16) -> (Rect, Borders, Alignment) {
     )
 }
 
+/// Number of rendered rows in a tool cluster, including wrapped step text.
+fn tool_cluster_row_count(cluster: &ToolCluster, width: u16, keep_live: bool) -> u16 {
+    let shown = cluster.visible_steps(keep_live);
+    if shown.is_empty() {
+        return 1;
+    }
+
+    let hidden = cluster.steps().len().saturating_sub(shown.len());
+    let step_rows = shown
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            let is_last = index + 1 == shown.len();
+            let corner = if is_last { "╰" } else { "├" };
+            let text = match step {
+                Step::Thought(text) => format!("🤔 {text}"),
+                Step::ToolCall(entry) => {
+                    let comment = entry
+                        .result
+                        .as_deref()
+                        .and_then(|result| result.lines().next());
+                    let comment = comment.map(|comment| {
+                        let rest = comment.strip_prefix(&entry.name).unwrap_or(comment);
+                        rest.trim_start_matches(':').trim_start()
+                    });
+                    match comment {
+                        Some(comment) if !comment.is_empty() => {
+                            format!("🔧 {} • — {comment}", entry.name)
+                        }
+                        _ => format!("🔧 {} •", entry.name),
+                    }
+                }
+            };
+            let wrapped = textwrap::fill(
+                &text,
+                Options::new(width.max(1) as usize)
+                    .initial_indent(&format!("{corner}── "))
+                    .subsequent_indent("|  "),
+            );
+            wrapped.lines().count() as u16
+        })
+        .sum::<u16>();
+
+    1 + u16::from(hidden > 0) + step_rows
+}
+
 /// Number of rows `text` occupies when greedily word-wrapped to `width`
 /// columns. Words longer than `width` are not split further.
 fn wrapped_line_count(text: &str, width: u16) -> u16 {
@@ -294,4 +344,26 @@ fn wrapped_line_count(text: &str, width: u16) -> u16 {
     }
 
     lines.max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BubbleLayout;
+    use crate::chat_log::ChatLog;
+
+    #[test]
+    fn expanded_wrapped_last_thought_reserves_following_bubble_space() {
+        let mut log = ChatLog::new();
+        log.push_thought(
+            "This is a deliberately long thought that must wrap across multiple rows in the tool cluster.",
+        );
+        log.push_agent("Speech after the thought");
+        log.toggle_cluster(0);
+
+        let layout = BubbleLayout::new(&log, 40, 20);
+        let bubbles = layout.bubbles();
+
+        assert!(bubbles[0].rect.height > 2);
+        assert_eq!(bubbles[1].rect.y, bubbles[0].rect.height);
+    }
 }
