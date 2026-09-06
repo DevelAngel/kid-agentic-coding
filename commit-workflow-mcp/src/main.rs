@@ -3,69 +3,53 @@ use anyhow::anyhow;
 use clap::Parser;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::schemars::JsonSchema;
 use rmcp::serde::{Deserialize, Serialize};
 use rmcp::{
-    ErrorData as McpError, Json, ServerHandler, service, tool, tool_handler, tool_router, transport,
+    ErrorData as McpError, ServerHandler, service, tool, tool_handler, tool_router, transport,
 };
-use tokio::task;
+use serde_json::json;
 
-use std::env;
-use std::io::{self, ErrorKind};
-use std::process::{Command, Stdio};
+use std::io::{self, Write};
+use std::os::linux::net::SocketAddrExt;
+use std::os::unix::net::{SocketAddr, UnixStream};
 
 #[derive(Debug, Parser)]
 #[command(about = "Standalone MCP server for the git_commit_with_check tool")]
-struct Args {}
+struct Args {
+    /// Name of the abstract-namespace Unix socket used for workflow events.
+    #[arg(long)]
+    socket: String,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GitCommitWithCheckParams {
-    /// The commit message, used verbatim.
+    /// The commit message to carry into the fix session.
     message: String,
 }
 
-#[derive(Serialize, JsonSchema)]
-struct GitCommitWithCheckResult {
-    committed: bool,
-    message: String,
+#[derive(Debug, Serialize)]
+struct CommitFixEvent<'a> {
+    event: &'static str,
+    instructions: &'static str,
+    commit_message: &'a str,
 }
 
-#[derive(Serialize)]
-struct CheckStepFailure {
-    failed_step: String,
-    status: i32,
-    stdout: String,
-    stderr: String,
-}
-
-impl CheckStepFailure {
-    fn into_json_value(self) -> Option<serde_json::Value> {
-        serde_json::to_value(self).ok()
-    }
-}
-
-#[derive(Serialize)]
-struct CommitWorkflowError {
-    error: String,
-    reason: String,
-}
-
-impl CommitWorkflowError {
-    fn into_json_value(self) -> Option<serde_json::Value> {
-        serde_json::to_value(self).ok()
-    }
-}
+const COMMIT_FIX_EVENT: &str = "commit-fix";
+const COMMIT_FIX_INSTRUCTIONS: &str = "The main session requested a commit-fix session. Investigate the current problem, fix the underlying issue, run the provided check, lint, and test tools, and commit the resulting changes with the supplied commit message using the available Git tools.";
 
 #[derive(Clone)]
 struct CommitWorkflowTools {
+    socket_name: String,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
-impl Default for CommitWorkflowTools {
-    fn default() -> Self {
+impl CommitWorkflowTools {
+    fn new(socket_name: String) -> Self {
         Self {
+            socket_name,
             tool_router: Self::tool_router(),
         }
     }
@@ -74,7 +58,7 @@ impl Default for CommitWorkflowTools {
 #[tool_router]
 impl CommitWorkflowTools {
     #[tool(
-        description = "Runs check, lint, and test; commits with the given message on green",
+        description = "Requests a commit-fix session for the current work",
         annotations(
             title = "Git Commit With Check",
             read_only_hint = false,
@@ -86,149 +70,29 @@ impl CommitWorkflowTools {
     async fn git_commit_with_check(
         &self,
         Parameters(params): Parameters<GitCommitWithCheckParams>,
-    ) -> Result<Json<GitCommitWithCheckResult>, McpError> {
-        for (step, args, operation, missing_dependency) in [
-            (
-                "check",
-                &["check", "--quiet", "--all-targets"][..],
-                "cargo check",
-                None,
-            ),
-            ("lint", &["clippy"][..], "cargo clippy", None),
-            (
-                "test",
-                &["nextest", "run", "--cargo-quiet"][..],
-                "cargo nextest",
-                Some("cargo-nextest"),
-            ),
-        ] {
-            let output = run_cargo(args, operation, missing_dependency).await?;
-            if output.status != 0 {
-                return Err(McpError::internal_error(
-                    format!("{operation} failed"),
-                    CheckStepFailure {
-                        failed_step: step.to_string(),
-                        status: output.status,
-                        stdout: output.stdout,
-                        stderr: output.stderr,
-                    }
-                    .into_json_value(),
-                ));
-            }
-        }
-
-        run_git_commit(&params.message).await?;
-
-        Ok(Json(GitCommitWithCheckResult {
-            committed: true,
-            message: params.message,
-        }))
-    }
-}
-
-#[cfg_attr(test, derive(Debug))]
-struct ProcessOutput {
-    status: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Runs `program` with `args` in the workspace root, capturing its output.
-/// Shared by the cargo check/lint/test steps and the git commit step so both
-/// go through the same spawn and error-mapping logic.
-async fn run_process(
-    program: &str,
-    args: &[String],
-    operation: &str,
-    missing_dependency: Option<&str>,
-) -> Result<ProcessOutput, McpError> {
-    let workspace_root = env::current_dir().map_err(|err| {
-        McpError::internal_error(
-            "failed to determine working directory",
-            CommitWorkflowError {
-                error: "failed to determine working directory".to_string(),
-                reason: err.to_string(),
-            }
-            .into_json_value(),
-        )
-    })?;
-
-    let program = program.to_string();
-    let args = args.to_vec();
-    let output = task::spawn_blocking(move || {
-        Command::new(program)
-            .args(&args)
-            .current_dir(workspace_root)
-            .stdin(Stdio::null())
-            .output()
-    })
-    .await
-    .map_err(|err| {
-        tracing::error!(?err, operation, "process task failed");
-        McpError::internal_error(
-            format!("failed to run {operation}"),
-            CommitWorkflowError {
-                error: format!("failed to run {operation}"),
-                reason: err.to_string(),
-            }
-            .into_json_value(),
-        )
-    })?;
-
-    let output = output.map_err(|err| {
-        tracing::error!(?err, operation, "process failed to execute");
-        let reason = if err.kind() == ErrorKind::NotFound {
-            missing_dependency.map_or_else(
-                || err.to_string(),
-                |dependency| format!("{dependency} is not installed"),
-            )
-        } else {
-            err.to_string()
+    ) -> Result<CallToolResult, McpError> {
+        let event = CommitFixEvent {
+            event: COMMIT_FIX_EVENT,
+            instructions: COMMIT_FIX_INSTRUCTIONS,
+            commit_message: &params.message,
         };
-        McpError::internal_error(
-            format!("failed to execute {operation}"),
-            CommitWorkflowError {
-                error: format!("failed to execute {operation}"),
-                reason,
-            }
-            .into_json_value(),
-        )
-    })?;
+        let message = serde_json::to_vec(&event).map_err(|err| {
+            McpError::internal_error(
+                "failed to encode commit-fix event",
+                Some(json!({"reason": err.to_string()})),
+            )
+        })?;
+        notify_bridge(&self.socket_name, &message).map_err(|err| {
+            tracing::error!(?err, "commit-fix event notification failed");
+            McpError::internal_error(
+                "failed to notify commit-fix bridge",
+                Some(json!({"reason": err.to_string()})),
+            )
+        })?;
 
-    let status = output.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Ok(ProcessOutput {
-        status,
-        stdout: stdout.into_owned(),
-        stderr: stderr.into_owned(),
-    })
-}
-
-async fn run_cargo(
-    args: &[&str],
-    operation: &str,
-    missing_dependency: Option<&str>,
-) -> Result<ProcessOutput, McpError> {
-    let args = args.iter().map(ToString::to_string).collect::<Vec<_>>();
-    run_process("cargo", &args, operation, missing_dependency).await
-}
-
-async fn run_git_commit(message: &str) -> Result<(), McpError> {
-    let args = vec!["commit".to_string(), "-m".to_string(), message.to_string()];
-    let output = run_process("git", &args, "git commit", None).await?;
-
-    if output.status == 0 {
-        Ok(())
-    } else {
-        Err(McpError::internal_error(
-            "git commit failed",
-            CommitWorkflowError {
-                error: "git commit failed".to_string(),
-                reason: output.stderr,
-            }
-            .into_json_value(),
-        ))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            "commit-fix session requested",
+        )]))
     }
 }
 
@@ -245,6 +109,13 @@ impl ServerHandler for CommitWorkflowTools {
     }
 }
 
+fn notify_bridge(socket_name: &str, message: &[u8]) -> io::Result<()> {
+    let addr = SocketAddr::from_abstract_name(socket_name.as_bytes())?;
+    let mut stream = UnixStream::connect_addr(&addr)?;
+    stream.write_all(message)?;
+    stream.write_all(b"\n")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -253,8 +124,8 @@ async fn main() -> Result<()> {
         .map_err(|err| anyhow!("failed to initialize logging: {err}"))?;
     tracing::debug!("commit-workflow logging initialized");
 
-    let _args = Args::parse();
-    let server = CommitWorkflowTools::default();
+    let args = Args::parse();
+    let server = CommitWorkflowTools::new(args.socket);
     let transport = transport::io::stdio();
     let running = service::serve_server(server, transport).await?;
     let _ = running.waiting().await;
@@ -262,39 +133,21 @@ async fn main() -> Result<()> {
 }
 
 #[cfg(test)]
-mod run_process_tests {
-    use super::run_process;
+mod tests {
+    use super::{COMMIT_FIX_EVENT, COMMIT_FIX_INSTRUCTIONS, CommitFixEvent};
 
-    #[tokio::test]
-    async fn success_exit_code_is_reported() {
-        let output = run_process("true", &[], "true", None)
-            .await
-            .expect("true is always available");
+    #[test]
+    fn commit_fix_event_contains_workflow_instructions_and_message() {
+        let event = CommitFixEvent {
+            event: COMMIT_FIX_EVENT,
+            instructions: COMMIT_FIX_INSTRUCTIONS,
+            commit_message: "feat: preserve workflow",
+        };
 
-        assert_eq!(output.status, 0);
-    }
+        let value = serde_json::to_value(event).expect("event is serializable");
 
-    #[tokio::test]
-    async fn failure_exit_code_is_reported() {
-        let output = run_process("false", &[], "false", None)
-            .await
-            .expect("false is always available");
-
-        assert_ne!(output.status, 0);
-    }
-
-    #[tokio::test]
-    async fn missing_program_reports_missing_dependency_reason() {
-        let err = run_process(
-            "kid-agentic-coding-nonexistent-program",
-            &[],
-            "phantom step",
-            Some("phantom-tool"),
-        )
-        .await
-        .expect_err("program does not exist");
-
-        let message = err.message.to_string();
-        assert!(message.contains("phantom step"));
+        assert_eq!(value["event"], COMMIT_FIX_EVENT);
+        assert_eq!(value["instructions"], COMMIT_FIX_INSTRUCTIONS);
+        assert_eq!(value["commit_message"], "feat: preserve workflow");
     }
 }

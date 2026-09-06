@@ -57,34 +57,8 @@ const AUTO_NAME: &str = "Auto Prompt";
 /// Rows scrolled per PageUp/PageDown press.
 const SCROLL_STEP: u16 = 3;
 
-/// Tool title annotation of `git_commit_with_check` in
-/// `commit-workflow-mcp/src/main.rs`. Must match exactly; the two crates
-/// aren't linked, so this is the trigger for opening a fix session.
-const GIT_COMMIT_WITH_CHECK_TITLE: &str = "Git Commit With Check";
-
-/// Workflow name for the fix session opened on a failed
-/// `git_commit_with_check`. Shown in the session banner and prompt title.
+/// Workflow name for the fix session opened by the commit workflow.
 const COMMIT_FIX_WORKFLOW: &str = "commit-fix-rust";
-
-/// Fixed first prompt sent to a freshly opened commit-fix session, followed
-/// by the `[AUTO: ...]` block carrying the original commit message.
-const COMMIT_FIX_INSTRUCTIONS: &str = "\
-The main session's `git_commit_with_check` failed. You are a fresh session \
-started to fix it. Run `cargo check`, `cargo clippy`, and `cargo test` (or \
-re-invoke `git_commit_with_check` directly) to see the current failure. Fix \
-the underlying issue, not just the symptom. Once check, lint, and test all \
-pass, invoke `git_commit_with_check` again with the same commit message to \
-finish the commit.";
-
-/// Extracts the `message` field from a `git_commit_with_check` tool call's
-/// JSON parameters. Returns an empty string if parsing fails or the field
-/// is absent, rather than failing the whole trigger.
-fn extract_commit_message(parameters: Option<&str>) -> String {
-    parameters
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-        .and_then(|value| value.get("message")?.as_str().map(str::to_owned))
-        .unwrap_or_default()
-}
 
 /// A permission request awaiting the user's decision.
 struct PendingPermission {
@@ -213,6 +187,9 @@ impl App {
                 self.last_thought_entry_id = None;
                 self.last_agent_message_entry_id = None;
                 self.confetti = Some(Confetti::new());
+            }
+            SessionEvent::CommitFix { .. } => {
+                tracing::debug!("event: commit-fix");
             }
 
             SessionEvent::Chunk(block) => {
@@ -704,20 +681,26 @@ async fn run_app(
                 }
             }
             Some(session_event) = main_session.recv_event() => {
-                if fix_session.is_none()
-                    && let SessionEvent::ToolCall { title, parameters, .. } = &session_event
-                    && title == GIT_COMMIT_WITH_CHECK_TITLE
-                {
-                    let commit_message = extract_commit_message(parameters.as_deref());
-                    app.handle_session_event(session_event);
-                    fix_session = Some(
-                        open_commit_fix_session(app, main_session, agent_config, commit_message)
+                match session_event {
+                    SessionEvent::CommitFix {
+                        instructions,
+                        commit_message,
+                    } if fix_session.is_none() => {
+                        fix_session = Some(
+                            open_commit_fix_session(
+                                app,
+                                main_session,
+                                agent_config,
+                                instructions,
+                                commit_message,
+                            )
                             .await,
-                    );
-                } else {
-                    app.handle_session_event(session_event);
+                        );
+                    }
+                    event => app.handle_session_event(event),
                 }
             }
+
             Some(session_event) = fix_recv => {
                 app.handle_session_event(session_event);
             }
@@ -743,6 +726,7 @@ async fn open_commit_fix_session(
     app: &mut App,
     main_session: &mut SessionHandle,
     agent_config: &agent_client_protocol::AcpAgentConfig,
+    instructions: String,
     commit_message: String,
 ) -> SessionHandle {
     main_session.cancel();
@@ -761,9 +745,8 @@ async fn open_commit_fix_session(
     app.chat_log.push_session_transition(COMMIT_FIX_WORKFLOW);
     app.prompt = new_prompt_textarea(Some(COMMIT_FIX_WORKFLOW));
 
-    let seed_prompt = format!(
-        "{COMMIT_FIX_INSTRUCTIONS}\n\n[AUTO: Commit Message from Main Session]\n{commit_message}"
-    );
+    let seed_prompt =
+        format!("{instructions}\n\n[AUTO: Commit Message from Main Session]\n{commit_message}");
 
     app.chat_log.push_auto(seed_prompt.clone());
     let _ = fix_session.send_prompt(seed_prompt);
@@ -1270,31 +1253,6 @@ mod tool_status_icon_tests {
             animated_status_icon(Status::Done, 1, static_icon),
             static_icon
         );
-    }
-}
-
-#[cfg(test)]
-mod commit_fix_trigger_tests {
-    use super::extract_commit_message;
-
-    #[test]
-    fn extracts_the_message_field_from_json_parameters() {
-        let parameters = r#"{"message": "fix: correct the thing"}"#;
-
-        assert_eq!(
-            extract_commit_message(Some(parameters)),
-            "fix: correct the thing"
-        );
-    }
-
-    #[test]
-    fn returns_empty_string_for_missing_parameters() {
-        assert_eq!(extract_commit_message(None), "");
-    }
-
-    #[test]
-    fn returns_empty_string_for_malformed_json() {
-        assert_eq!(extract_commit_message(Some("not json")), "");
     }
 }
 
