@@ -21,8 +21,11 @@ use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener};
 use std::process;
 
-/// Stable name of the semantic event emitted by commit-workflow.
+/// Stable name of the semantic event emitted by git-commit-fix-open.
 pub const COMMIT_FIX_EVENT: &str = "commit-fix";
+
+/// Stable name of the semantic event emitted when a commit-fix session closes.
+pub const COMMIT_FIX_DONE_EVENT: &str = "commit-fix-done";
 
 pub const CONFETTI_TOOL_NAME: &str = "confetti";
 
@@ -79,23 +82,24 @@ pub fn rust_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
     )))
 }
 
-/// Builds the stdio MCP server configuration for the commit-workflow tool.
+/// Builds the stdio MCP server configuration for the git-commit-fix-open tool.
 /// The socket receives semantic workflow events from the server process.
-pub fn commit_workflow_stdio_mcp_server(socket_name: &str) -> io::Result<SchemaMcpServer> {
-    let command = env::current_exe()?.with_file_name("kid-agentic-coding-commit-workflow");
+pub fn git_commit_fix_open_stdio_mcp_server(socket_name: &str) -> io::Result<SchemaMcpServer> {
+    let command = env::current_exe()?.with_file_name("kid-agentic-coding-git-commit-fix-open");
     Ok(SchemaMcpServer::Stdio(
-        McpServerStdio::new("commit-workflow-tools", command)
+        McpServerStdio::new("git-commit-fix-open-tools", command)
             .args(vec!["--socket".to_owned(), socket_name.to_owned()]),
     ))
 }
 
-/// Builds the stdio MCP server configuration for the Git tools.
-pub fn git_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
-    let command = env::current_exe()?.with_file_name("kid-agentic-coding-git");
-    Ok(SchemaMcpServer::Stdio(McpServerStdio::new(
-        "git-tools",
-        command,
-    )))
+/// Builds the stdio MCP server configuration for the git-commit-fix-close tools.
+/// The socket receives the commit-fix-done event once a commit closes the session.
+pub fn git_commit_fix_close_stdio_mcp_server(socket_name: &str) -> io::Result<SchemaMcpServer> {
+    let command = env::current_exe()?.with_file_name("kid-agentic-coding-git-commit-fix-close");
+    Ok(SchemaMcpServer::Stdio(
+        McpServerStdio::new("git-commit-fix-close-tools", command)
+            .args(vec!["--socket".to_owned(), socket_name.to_owned()]),
+    ))
 }
 
 pub fn stdio_mcp_servers(
@@ -105,7 +109,7 @@ pub fn stdio_mcp_servers(
     Ok(vec![
         confetti_stdio_mcp_server(socket_name)?,
         rust_stdio_mcp_server()?,
-        commit_workflow_stdio_mcp_server(workflow_socket_name)?,
+        git_commit_fix_open_stdio_mcp_server(workflow_socket_name)?,
     ])
 }
 
@@ -114,12 +118,17 @@ pub fn stdio_mcp_servers_without_confetti(
 ) -> io::Result<Vec<SchemaMcpServer>> {
     Ok(vec![
         rust_stdio_mcp_server()?,
-        commit_workflow_stdio_mcp_server(workflow_socket_name)?,
+        git_commit_fix_open_stdio_mcp_server(workflow_socket_name)?,
     ])
 }
 
-pub fn stdio_mcp_servers_for_fix_session() -> io::Result<Vec<SchemaMcpServer>> {
-    Ok(vec![rust_stdio_mcp_server()?, git_stdio_mcp_server()?])
+pub fn stdio_mcp_servers_for_fix_session(
+    workflow_socket_name: &str,
+) -> io::Result<Vec<SchemaMcpServer>> {
+    Ok(vec![
+        rust_stdio_mcp_server()?,
+        git_commit_fix_close_stdio_mcp_server(workflow_socket_name)?,
+    ])
 }
 
 pub fn workflow_socket_name() -> String {

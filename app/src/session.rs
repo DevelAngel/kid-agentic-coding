@@ -80,10 +80,16 @@ async fn run_session(
                 .block_task()
                 .await?;
             let mut confetti_listener: Option<UnixListener> = None;
+            #[allow(unused_assignments)]
             let mut workflow_listener: Option<UnixListener> = None;
+
             let workflow_socket_name = mcp::workflow_socket_name();
             let mut session = if workflow_name.is_some() {
-                match mcp::stdio_mcp_servers_for_fix_session() {
+                workflow_listener = Some(UnixListener::from_std(
+                    mcp::bind_workflow_socket(&workflow_socket_name).map_err(Error::into_internal_error)?
+                ).map_err(Error::into_internal_error)?);
+                match mcp::stdio_mcp_servers_for_fix_session(&workflow_socket_name) {
+
                     Ok(servers) => cx
                         .build_session_from(
                             NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
@@ -201,26 +207,33 @@ async fn run_session(
                             let mut message = Vec::new();
                             if stream.read_to_end(&mut message).await.is_ok()
                                 && let Ok(value) = serde_json::from_slice::<Value>(&message)
-                                && value.get("event").and_then(Value::as_str)
-                                    == Some(mcp::COMMIT_FIX_EVENT)
                             {
-                                let instructions = value
-                                    .get("instructions")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_owned();
+                                let event_name = value.get("event").and_then(Value::as_str);
                                 let commit_message = value
                                     .get("commit_message")
                                     .and_then(Value::as_str)
                                     .unwrap_or_default()
                                     .to_owned();
-                                tracing::info!(%commit_message, "commit-fix session event received");
-                                let _ = session_event_tx.send(SessionEvent::CommitFix {
-                                    instructions,
-                                    commit_message,
-                                });
+                                if event_name == Some(mcp::COMMIT_FIX_EVENT) {
+                                    let instructions = value
+                                        .get("instructions")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_owned();
+                                    tracing::info!(%commit_message, "commit-fix session event received");
+                                    let _ = session_event_tx.send(SessionEvent::CommitFix {
+                                        instructions,
+                                        commit_message,
+                                    });
+                                } else if event_name == Some(mcp::COMMIT_FIX_DONE_EVENT) {
+                                    tracing::info!(%commit_message, "commit-fix-done session event received");
+                                    let _ = session_event_tx.send(SessionEvent::CommitFixDone {
+                                        commit_message,
+                                    });
+                                }
                             }
                         }
+
                     }
 
                     update = session.read_update() => {
