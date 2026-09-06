@@ -19,10 +19,11 @@ use agent_client_protocol::{
 };
 use color_eyre::Result;
 use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
+use std::collections::HashMap;
 use std::io;
 use std::process;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use tokio::process::Command;
 
 use std::time::Duration;
@@ -78,6 +79,7 @@ static COMMIT_WORKFLOW_SERVER: OnceLock<McpServerStdio> = OnceLock::new();
 static CONFETTI_SERVER_ID: OnceLock<McpServerAcpId> = OnceLock::new();
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
+static SESSION_MCP_SERVERS: OnceLock<Mutex<HashMap<SessionId, Vec<McpServer>>>> = OnceLock::new();
 
 /// One step in a fake agent's simulated reasoning: either a thought, or a
 /// tool call that goes `InProgress` then `Completed`.
@@ -176,6 +178,7 @@ async fn invoke_confetti(
         .send_request(MessageMcpRequest::new(connection_id, "tools/call").params(params))
         .block_task()
         .await?;
+
     Ok(())
 }
 
@@ -184,6 +187,7 @@ async fn invoke_commit_workflow(message: &str) -> Result<()> {
         .get()
         .ok_or_else(|| color_eyre::eyre::eyre!("commit-workflow MCP server unavailable"))?;
     let mut command = Command::new(&server.command);
+    tracing::debug!(%message, "invoking commit-workflow MCP tool");
     command.args(&server.args);
 
     let client = ().serve(TokioChildProcess::new(command)?).await?;
@@ -197,8 +201,93 @@ async fn invoke_commit_workflow(message: &str) -> Result<()> {
             ),
         )
         .await?;
+    tracing::debug!("commit-workflow MCP tool completed");
     client.cancel().await?;
     Ok(())
+}
+async fn list_acp_tools(
+    connection: ConnectionTo<Client>,
+    server_id: McpServerAcpId,
+) -> Result<Vec<String>> {
+    let response = connection
+        .send_request(ConnectMcpRequest::new(server_id))
+        .block_task()
+        .await?;
+    let connection_id = response.connection_id;
+
+    let mut initialize_params = Map::new();
+    initialize_params.insert("protocolVersion".into(), json!("2025-11-25"));
+    initialize_params.insert("capabilities".into(), json!({}));
+    initialize_params.insert(
+        "clientInfo".into(),
+        json!({"name": "lorem-agent", "version": env!("CARGO_PKG_VERSION")}),
+    );
+    connection
+        .send_request(
+            MessageMcpRequest::new(connection_id.clone(), "initialize").params(initialize_params),
+        )
+        .block_task()
+        .await?;
+    connection.send_notification(MessageMcpNotification::new(
+        connection_id.clone(),
+        "notifications/initialized",
+    ))?;
+
+    let response = connection
+        .send_request(MessageMcpRequest::new(connection_id, "tools/list"))
+        .block_task()
+        .await?;
+    let response: serde_json::Value = serde_json::from_str(response.0.get())?;
+    Ok(response["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+        .collect())
+}
+
+async fn list_registered_tools(
+    connection: ConnectionTo<Client>,
+    servers: Vec<McpServer>,
+) -> Result<String> {
+    let mut lines = vec!["Registered MCP tools:".to_owned()];
+    for server in servers {
+        match server {
+            McpServer::Acp(server) => {
+                let server_id = server.server_id.clone();
+                match list_acp_tools(connection.clone(), server_id.clone()).await {
+                    Ok(tools) => lines.push(format!("- {}: {}", server_id, tools.join(", "))),
+                    Err(error) => {
+                        lines.push(format!("- {}: <failed to list tools: {error}>", server_id))
+                    }
+                }
+            }
+            McpServer::Stdio(server) => {
+                let mut command = Command::new(&server.command);
+                command.args(&server.args);
+                match async {
+                    let client = ().serve(TokioChildProcess::new(command)?).await?;
+                    let tools = client.peer().list_all_tools().await?;
+                    let names = tools
+                        .into_iter()
+                        .map(|tool| tool.name.to_string())
+                        .collect::<Vec<_>>();
+                    client.cancel().await?;
+                    Ok::<_, color_eyre::Report>(names)
+                }
+                .await
+                {
+                    Ok(tools) => lines.push(format!("- {}: {}", server.name, tools.join(", "))),
+                    Err(error) => lines.push(format!(
+                        "- {}: <failed to list tools: {error}>",
+                        server.name
+                    )),
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(lines.join("\\n"))
 }
 
 #[tokio::main]
@@ -243,10 +332,18 @@ async fn main() -> Result<()> {
                     let _ = COMMIT_WORKFLOW_SERVER.set(server);
                 }
 
+                SESSION_MCP_SERVERS
+                    .get_or_init(|| Mutex::new(HashMap::new()))
+                    .lock()
+                    .map_err(|_| Error::from(ErrorCode::InternalError))?
+                    .insert(session_id.clone(), request.mcp_servers.clone());
+
+
 
                 responder.respond(NewSessionResponse::new(session_id))
             },
             on_receive_request!(),
+
         )
         .on_receive_notification(
             async |notification: CancelNotification, _cx| {
@@ -273,7 +370,28 @@ async fn main() -> Result<()> {
                 let supports_mcp = !args.disable_mcp;
                 let fail_tool = args.fail_tool;
 
+                let first_prompt_servers = SESSION_MCP_SERVERS
+                    .get()
+                    .and_then(|servers| servers.lock().ok())
+                    .and_then(|mut servers| servers.remove(&request.session_id));
+
+
                 let _ = cx.clone().spawn(async move {
+                    if let Some(servers) = first_prompt_servers {
+                        let tools = match list_registered_tools(cx.clone(), servers).await {
+                            Ok(tools) => tools,
+                            Err(error) => format!("Registered MCP tools: <failed to list tools: {error}>"),
+                        };
+                        cx.send_notification(AgentNotification::SessionNotification(
+                            SessionNotification::new(
+                                request.session_id.clone(),
+                                SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                    ContentBlock::Text(TextContent::new(tools)),
+                                )),
+                            ),
+                        ))?;
+                    }
+
                     let seed = NEXT_PROMPT_SEED.fetch_add(REPLY_WORD_COUNT, Ordering::Relaxed);
                     let text = lorem::generate(seed, REPLY_WORD_COUNT);
                     for (step_index, step) in
@@ -330,6 +448,7 @@ async fn main() -> Result<()> {
                                 ))?;
 
                                 if name == "Git Commit With Check" {
+                                    tracing::debug!("displaying fake Git Commit With Check tool call");
                                     sleep(TOOL_CALL_DELAY).await;
                                     let (status, result_text) = match invoke_commit_workflow(
                                         "feat(lorem-agent): demonstrate commit fix workflow",

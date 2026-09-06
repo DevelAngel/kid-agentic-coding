@@ -71,6 +71,7 @@ impl CommitWorkflowTools {
         &self,
         Parameters(params): Parameters<GitCommitWithCheckParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(%params.message, "commit-fix session requested");
         let event = CommitFixEvent {
             event: COMMIT_FIX_EVENT,
             instructions: COMMIT_FIX_INSTRUCTIONS,
@@ -89,6 +90,7 @@ impl CommitWorkflowTools {
                 Some(json!({"reason": err.to_string()})),
             )
         })?;
+        tracing::debug!("commit-fix event sent");
 
         Ok(CallToolResult::success(vec![ContentBlock::text(
             "commit-fix session requested",

@@ -738,15 +738,18 @@ async fn open_commit_fix_session(
         }
     }
 
+    tracing::info!("main session cancelled; starting commit-fix session");
     let fix_component = AcpAgent::new(agent_config.clone());
     let fix_session =
         start_interactive_session(fix_component, true, Some(COMMIT_FIX_WORKFLOW.to_owned()));
+    tracing::info!("commit-fix session started");
 
     app.chat_log.push_session_transition(COMMIT_FIX_WORKFLOW);
     app.prompt = new_prompt_textarea(Some(COMMIT_FIX_WORKFLOW));
 
     let seed_prompt =
         format!("{instructions}\n\n[AUTO: Commit Message from Main Session]\n{commit_message}");
+    tracing::debug!("sending commit-fix seed prompt");
 
     app.chat_log.push_auto(seed_prompt.clone());
     let _ = fix_session.send_prompt(seed_prompt);
