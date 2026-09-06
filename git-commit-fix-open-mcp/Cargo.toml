@@ -1,5 +1,5 @@
 [package]
-name = "kid-agentic-coding-commit-workflow"
+name = "kid-agentic-coding-git-commit-fix-open"
 version.workspace = true
 edition.workspace = true
 

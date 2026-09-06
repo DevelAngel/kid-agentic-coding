@@ -1427,7 +1427,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "kid-agentic-coding-commit-workflow"
+name = "kid-agentic-coding-confetti"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rmcp 3.1.4",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kid-agentic-coding-git-commit-fix-close"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1442,20 +1455,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kid-agentic-coding-confetti"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "rmcp 3.1.4",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "kid-agentic-coding-git"
+name = "kid-agentic-coding-git-commit-fix-open"
 version = "0.1.0"
 dependencies = [
  "anyhow",
