@@ -17,7 +17,7 @@ color-eyre = "0.6.5"
 schemars = "1"
 serde = "1"
 serde_json = "1"
-ratatui = "0.30.2"
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 ratatui-textarea = "0.9"
 rmcp = { version = "3.1.0", features = ["macros", "schemars", "server", "transport-io"] }
 thiserror = "2.0"
@@ -26,6 +26,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "chrono"] }
 rand = "0.10"
 textwrap = "0.16"
+tui-markdown = "0.3.9"
 
 # color-eyre: improving perf on debug builds
 [profile.dev.package.backtrace]

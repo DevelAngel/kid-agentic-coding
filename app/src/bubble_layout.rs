@@ -2,8 +2,9 @@
 //! and scroll bounds. No terminal or I/O access.
 
 use crate::chat_log::{ChatLog, Message, Step, ToolCluster};
+use crate::markdown;
 use ratatui::layout::Rect;
-use ratatui::widgets::Borders;
+use ratatui::widgets::{Borders, Paragraph, Wrap};
 use textwrap::Options;
 
 /// Horizontal alignment of a bubble within the viewport.
@@ -324,36 +325,10 @@ fn tool_cluster_row_count(cluster: &ToolCluster, width: u16, keep_live: bool) ->
     1 + u16::from(hidden > 0) + step_rows
 }
 
-/// Number of rows `text` occupies when greedily word-wrapped to `width`
-/// columns. Explicit newlines and empty lines each occupy one row.
 fn wrapped_line_count(text: &str, width: u16) -> u16 {
-    let width = usize::from(width.max(1));
-
-    text.split('\n')
-        .map(|line| {
-            let mut lines: u16 = 0;
-            let mut current_width = 0usize;
-
-            for word in line.split_whitespace() {
-                let word_len = word.chars().count();
-                if current_width == 0 {
-                    lines += 1;
-                    current_width = word_len;
-                    continue;
-                }
-
-                let needed = current_width + 1 + word_len;
-                if needed <= width {
-                    current_width = needed;
-                } else {
-                    lines += 1;
-                    current_width = word_len;
-                }
-            }
-
-            lines.max(1)
-        })
-        .sum()
+    Paragraph::new(markdown::render(text))
+        .wrap(Wrap { trim: true })
+        .line_count(width.max(1)) as u16
 }
 
 #[cfg(test)]
@@ -369,6 +344,11 @@ mod tests {
     #[test]
     fn wrapped_line_count_preserves_empty_lines() {
         assert_eq!(wrapped_line_count("first\n\nsecond", 40), 3);
+    }
+
+    #[test]
+    fn wrapped_line_count_renders_markdown() {
+        assert_eq!(wrapped_line_count("**first**\nsecond", 40), 2);
     }
 
     #[test]

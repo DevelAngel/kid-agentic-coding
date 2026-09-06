@@ -1,11 +1,11 @@
 //! Interactive terminal UI for an ACP session.
 
 use crate::log_buffer::LogBuffer;
+use kid_agentic_coding::{render_markdown, start_interactive_session};
 
 use agent_client_protocol::AcpAgent;
 use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
 use ansi_to_tui::IntoText;
-use kid_agentic_coding::start_interactive_session;
 use kid_agentic_coding::{
     BubbleLayout, ChatLog, EntryId, Message, PromptRunner, ScrollAnchor, SessionEvent,
     SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
@@ -1099,7 +1099,7 @@ fn bubble_paragraph<'a>(
             format!(" {icon} {name} "),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
-
+    let text = render_markdown(text);
     Paragraph::new(text)
         .wrap(Wrap { trim: true })
         .scroll((visible_bubble.text_line_skip, 0))
