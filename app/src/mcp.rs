@@ -21,7 +21,9 @@ use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener};
 use std::process;
 
-/// Stable name of the confetti tool, as advertised to the agent.
+/// Stable name of the semantic event emitted by commit-workflow.
+pub const COMMIT_FIX_EVENT: &str = "commit-fix";
+
 pub const CONFETTI_TOOL_NAME: &str = "confetti";
 
 /// Empty input contract: the confetti tool takes no parameters.
@@ -77,35 +79,51 @@ pub fn rust_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
     )))
 }
 
-/// Builds the stdio MCP server configuration for the commit-workflow tool,
-/// used by agents without MCP-over-ACP support.
-pub fn commit_workflow_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
+/// Builds the stdio MCP server configuration for the commit-workflow tool.
+/// The socket receives semantic workflow events from the server process.
+pub fn commit_workflow_stdio_mcp_server(socket_name: &str) -> io::Result<SchemaMcpServer> {
     let command = env::current_exe()?.with_file_name("kid-agentic-coding-commit-workflow");
+    Ok(SchemaMcpServer::Stdio(
+        McpServerStdio::new("commit-workflow-tools", command)
+            .args(vec!["--socket".to_owned(), socket_name.to_owned()]),
+    ))
+}
+
+/// Builds the stdio MCP server configuration for the Git tools.
+pub fn git_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
+    let command = env::current_exe()?.with_file_name("kid-agentic-coding-git");
     Ok(SchemaMcpServer::Stdio(McpServerStdio::new(
-        "commit-workflow-tools",
+        "git-tools",
         command,
     )))
 }
 
-/// Builds every stdio MCP server configuration used by agents without
-/// MCP-over-ACP support. Adding a new stdio tool means adding one line here,
-/// not widening a tuple match at the call site.
-pub fn stdio_mcp_servers(socket_name: &str) -> io::Result<Vec<SchemaMcpServer>> {
+pub fn stdio_mcp_servers(
+    socket_name: &str,
+    workflow_socket_name: &str,
+) -> io::Result<Vec<SchemaMcpServer>> {
     Ok(vec![
         confetti_stdio_mcp_server(socket_name)?,
         rust_stdio_mcp_server()?,
-        commit_workflow_stdio_mcp_server()?,
+        commit_workflow_stdio_mcp_server(workflow_socket_name)?,
     ])
 }
 
-/// Builds the stdio MCP server configurations that don't depend on the
-/// confetti bridge socket, used when confetti registration is disabled but
-/// the other stdio tools should still be available.
-pub fn stdio_mcp_servers_without_confetti() -> io::Result<Vec<SchemaMcpServer>> {
+pub fn stdio_mcp_servers_without_confetti(
+    workflow_socket_name: &str,
+) -> io::Result<Vec<SchemaMcpServer>> {
     Ok(vec![
         rust_stdio_mcp_server()?,
-        commit_workflow_stdio_mcp_server()?,
+        commit_workflow_stdio_mcp_server(workflow_socket_name)?,
     ])
+}
+
+pub fn stdio_mcp_servers_for_fix_session() -> io::Result<Vec<SchemaMcpServer>> {
+    Ok(vec![rust_stdio_mcp_server()?, git_stdio_mcp_server()?])
+}
+
+pub fn workflow_socket_name() -> String {
+    format!("kid-agentic-coding-workflow-{}", process::id())
 }
 
 /// Creates a Linux abstract-namespace Unix socket for the stdio MCP bridge.
@@ -114,6 +132,13 @@ pub fn confetti_socket_name() -> String {
 }
 
 pub fn bind_confetti_socket(socket_name: &str) -> io::Result<UnixListener> {
+    let address = SocketAddr::from_abstract_name(socket_name.as_bytes())?;
+    let listener = UnixListener::bind_addr(&address)?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
+}
+
+pub fn bind_workflow_socket(socket_name: &str) -> io::Result<UnixListener> {
     let address = SocketAddr::from_abstract_name(socket_name.as_bytes())?;
     let listener = UnixListener::bind_addr(&address)?;
     listener.set_nonblocking(true)?;

@@ -48,6 +48,7 @@ pub fn start_interactive_session(
         prompt_rx,
         event_tx,
         disable_confetti,
+        workflow_name.clone(),
     ));
 
     SessionHandle {
@@ -67,6 +68,7 @@ async fn run_session(
     mut prompt_rx: UnboundedReceiver<String>,
     event_tx: UnboundedSender<SessionEvent>,
     disable_confetti: bool,
+    workflow_name: Option<String>,
 ) {
     let session_event_tx = event_tx.clone();
     let result = Client
@@ -77,119 +79,80 @@ async fn run_session(
                 .block_task()
                 .await?;
             let mut confetti_listener: Option<UnixListener> = None;
-            let mut session = if disable_confetti {
-                tracing::info!("confetti MCP tool registration disabled");
-                match mcp::stdio_mcp_servers_without_confetti() {
-                    Ok(servers) => {
-                        tracing::info!("registered rust-mcp and commit-workflow tools via stdio");
-                        cx.build_session_from(
-                            NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
-                                .mcp_servers(servers),
-                        )
-                        .block_task()
-                        .start_session()
-                        .await?
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            ?err,
-                            "rust-mcp or commit-workflow tool registration via stdio failed"
-                        );
-                        cx.build_session(PathBuf::from(SESSION_ROOT))
-                            .block_task()
-                            .start_session()
-                            .await?
-                    }
-                }
-            } else if mcp::supports_mcp(&init_response) {
-                match mcp::stdio_mcp_servers_without_confetti() {
-                    Ok(servers) => match cx
+            let mut workflow_listener: Option<UnixListener> = None;
+            let workflow_socket_name = mcp::workflow_socket_name();
+            let mut session = if workflow_name.is_some() {
+                match mcp::stdio_mcp_servers_for_fix_session() {
+                    Ok(servers) => cx
                         .build_session_from(
                             NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
                                 .mcp_servers(servers),
                         )
-                        .with_mcp_server(mcp::confetti_mcp_server(session_event_tx.clone()))
-                    {
-                        Ok(builder) => {
-                            tracing::info!(
-                                "registered confetti MCP tool via ACP and rust-mcp/commit-workflow tools via stdio"
-                            );
-                            builder.block_task().start_session().await?
-                        }
-                        Err(err) => {
-                            tracing::error!(?err, "confetti MCP tool registration via ACP failed");
-                            let servers =
-                                mcp::stdio_mcp_servers_without_confetti().unwrap_or_default();
-                            cx.build_session_from(
-                                NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
-                                    .mcp_servers(servers),
-                            )
-                            .block_task()
-                            .start_session()
-                            .await?
-                        }
-                    },
-                    Err(err) => {
-                        tracing::error!(
-                            ?err,
-                            "rust-mcp or commit-workflow tool registration via stdio failed"
-                        );
-                        match cx
-                            .build_session(PathBuf::from(SESSION_ROOT))
-                            .with_mcp_server(mcp::confetti_mcp_server(session_event_tx.clone()))
-                        {
-                            Ok(builder) => {
-                                tracing::info!("registered confetti MCP tool via ACP");
-                                builder.block_task().start_session().await?
-                            }
-                            Err(err) => {
-                                tracing::error!(
-                                    ?err,
-                                    "confetti MCP tool registration via ACP failed"
-                                );
-                                cx.build_session(PathBuf::from(SESSION_ROOT))
-                                    .block_task()
-                                    .start_session()
-                                    .await?
-                            }
-                        }
-                    }
-                }
-            } else {
-                tracing::warn!("agent lacks MCP-over-ACP support");
-                let socket_name = mcp::confetti_socket_name();
-                match (
-                    mcp::bind_confetti_socket(&socket_name),
-                    mcp::stdio_mcp_servers(&socket_name),
-                ) {
-                    (Ok(listener), Ok(servers)) => {
-                        tracing::info!(
-                            "registered confetti, rust-mcp, and commit-workflow tools via stdio"
-                        );
-                        confetti_listener = Some(
-                            UnixListener::from_std(listener).map_err(Error::into_internal_error)?,
-                        );
-                        cx.build_session_from(
-                            NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
-                                .mcp_servers(servers),
-                        )
                         .block_task()
                         .start_session()
-                        .await?
-                    }
-                    (listener_result, servers_result) => {
-                        tracing::error!(
-                            ?listener_result,
-                            ?servers_result,
-                            "confetti, rust-mcp, or commit-workflow tool registration via stdio failed"
-                        );
+                        .await?,
+                    Err(err) => {
+                        tracing::error!(?err, "fix-session tool registration failed");
                         cx.build_session(PathBuf::from(SESSION_ROOT))
                             .block_task()
                             .start_session()
                             .await?
                     }
                 }
+            } else if disable_confetti {
+
+                workflow_listener = Some(UnixListener::from_std(
+                    mcp::bind_workflow_socket(&workflow_socket_name).map_err(Error::into_internal_error)?
+                ).map_err(Error::into_internal_error)?);
+                let servers = mcp::stdio_mcp_servers_without_confetti(&workflow_socket_name).map_err(Error::into_internal_error)?;
+                cx.build_session_from(
+                    NewSessionRequest::new(PathBuf::from(SESSION_ROOT)).mcp_servers(servers),
+                )
+                .block_task()
+                .start_session()
+                .await?
+            } else if mcp::supports_mcp(&init_response) {
+                workflow_listener = Some(UnixListener::from_std(
+                    mcp::bind_workflow_socket(&workflow_socket_name).map_err(Error::into_internal_error)?
+                ).map_err(Error::into_internal_error)?);
+                let servers = mcp::stdio_mcp_servers_without_confetti(&workflow_socket_name).map_err(Error::into_internal_error)?;
+                match cx
+                    .build_session_from(
+                        NewSessionRequest::new(PathBuf::from(SESSION_ROOT)).mcp_servers(servers),
+                    )
+                    .with_mcp_server(mcp::confetti_mcp_server(session_event_tx.clone()))
+                {
+                    Ok(builder) => builder.block_task().start_session().await?,
+                    Err(err) => {
+                        tracing::error!(?err, "confetti MCP tool registration via ACP failed");
+                        cx.build_session(PathBuf::from(SESSION_ROOT))
+                            .with_mcp_server(mcp::confetti_mcp_server(session_event_tx.clone()))
+                            .map_err(Error::into_internal_error)?
+                            .block_task()
+                            .start_session()
+                            .await?
+                    }
+                }
+            } else {
+                let confetti_socket_name = mcp::confetti_socket_name();
+                confetti_listener = Some(UnixListener::from_std(
+                    mcp::bind_confetti_socket(&confetti_socket_name).map_err(Error::into_internal_error)?
+                ).map_err(Error::into_internal_error)?);
+                workflow_listener = Some(UnixListener::from_std(
+                    mcp::bind_workflow_socket(&workflow_socket_name).map_err(Error::into_internal_error)?
+                ).map_err(Error::into_internal_error)?);
+                let servers = mcp::stdio_mcp_servers(
+                    &confetti_socket_name,
+                    &workflow_socket_name,
+                ) .map_err(Error::into_internal_error)?;
+                cx.build_session_from(
+                    NewSessionRequest::new(PathBuf::from(SESSION_ROOT)).mcp_servers(servers),
+                )
+                .block_task()
+                .start_session()
+                .await?
             };
+
             let mut turn_active = false;
 
             loop {
@@ -227,6 +190,37 @@ async fn run_session(
                             }
                         }
                     }
+                    workflow = async {
+                        match workflow_listener.as_ref() {
+                            Some(listener) => Some(listener.accept().await),
+                            None => future::pending().await,
+                        }
+                    } => {
+                        if let Some(Ok((mut stream, _))) = workflow {
+                            let mut message = Vec::new();
+                            if stream.read_to_end(&mut message).await.is_ok()
+                                && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&message)
+                                && value.get("event").and_then(serde_json::Value::as_str)
+                                    == Some(mcp::COMMIT_FIX_EVENT)
+                            {
+                                let instructions = value
+                                    .get("instructions")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_owned();
+                                let commit_message = value
+                                    .get("commit_message")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_owned();
+                                let _ = session_event_tx.send(SessionEvent::CommitFix {
+                                    instructions,
+                                    commit_message,
+                                });
+                            }
+                        }
+                    }
+
                     update = session.read_update() => {
                         let update = update?;
                         if matches!(&update, SessionMessage::StopReason(_)) {

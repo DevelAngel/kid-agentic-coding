@@ -47,6 +47,12 @@ pub enum SessionEvent {
         options: Vec<PermissionOption>,
         reply: Sender<Option<String>>,
     },
+    /// The commit workflow requested a dedicated fix session.
+    CommitFix {
+        instructions: String,
+        commit_message: String,
+    },
+
     /// The confetti MCP tool was invoked successfully.
     Confetti,
     /// The current turn ended with the given reason. The session stays open
