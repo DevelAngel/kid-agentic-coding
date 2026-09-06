@@ -21,3 +21,4 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 textwrap.workspace = true
+tui-markdown.workspace = true
