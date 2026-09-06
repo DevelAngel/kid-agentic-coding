@@ -20,6 +20,7 @@ use std::io;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener};
 use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Stable name of the semantic event emitted by git-commit-fix-open.
 pub const COMMIT_FIX_EVENT: &str = "commit-fix";
@@ -131,13 +132,28 @@ pub fn stdio_mcp_servers_for_fix_session(
     ])
 }
 
+/// Monotonic counter distinguishing sockets bound within the same process,
+/// since two sessions (e.g. main and fix) can be alive at overlapping times.
+fn next_socket_id() -> u64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
 pub fn workflow_socket_name() -> String {
-    format!("kid-agentic-coding-workflow-{}", process::id())
+    format!(
+        "kid-agentic-coding-workflow-{}-{}",
+        process::id(),
+        next_socket_id()
+    )
 }
 
 /// Creates a Linux abstract-namespace Unix socket for the stdio MCP bridge.
 pub fn confetti_socket_name() -> String {
-    format!("kid-agentic-coding-confetti-{}", process::id())
+    format!(
+        "kid-agentic-coding-confetti-{}-{}",
+        process::id(),
+        next_socket_id()
+    )
 }
 
 pub fn bind_confetti_socket(socket_name: &str) -> io::Result<UnixListener> {
