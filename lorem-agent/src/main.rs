@@ -116,7 +116,7 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
                 "Cross-checking the findings against the surrounding context to make sure the rendered cluster remains readable while new chunks continue arriving",
             ),
             Step::ToolCall("list_directory"),
-            Step::ToolCall("Git Commit With Check"),
+            Step::ToolCall("Git Commit With Fix"),
         ],
         _ => vec![
             Step::Thought(
@@ -193,7 +193,7 @@ async fn invoke_commit_workflow(message: &str) -> Result<()> {
     let client = ().serve(TokioChildProcess::new(command)?).await?;
     client
         .call_tool(
-            CallToolRequestParams::new("git_commit_with_check").with_arguments(
+            CallToolRequestParams::new("git_commit_with_fix").with_arguments(
                 serde_json::json!({"message": message})
                     .as_object()
                     .cloned()
@@ -322,7 +322,7 @@ async fn main() -> Result<()> {
                     let _ = CONFETTI_SERVER_ID.set(server_id);
                 }
                 if let Some(server) = request.mcp_servers.iter().find_map(|server| match server {
-                    McpServer::Stdio(server) if server.name == "commit-workflow-tools" => {
+                    McpServer::Stdio(server) if server.name == "git-commit-fix-open-tools" => {
                         Some(server.clone())
                     }
                     _ => None,
@@ -428,7 +428,7 @@ async fn main() -> Result<()> {
                                                     json!({
                                                         "command": "printf '%s\\n' 'Demonstrating a deliberately long Bash command whose arguments continue far enough to exercise wrapping in the tool-call display'"
                                                     })
-                                                } else if name == "Git Commit With Check" {
+                                                } else if name == "Git Commit With Fix" {
                                                     json!({
                                                         "message": "feat(lorem-agent): demonstrate commit fix workflow"
                                                     })
@@ -443,8 +443,8 @@ async fn main() -> Result<()> {
                                     ),
                                 ))?;
 
-                                if name == "Git Commit With Check" {
-                                    tracing::debug!("displaying fake Git Commit With Check tool call");
+                                if name == "Git Commit With Fix" {
+                                    tracing::debug!("displaying fake Git Commit With Fix tool call");
                                     sleep(TOOL_CALL_DELAY).await;
                                     let (status, result_text) = match invoke_commit_workflow(
                                         "feat(lorem-agent): demonstrate commit fix workflow",
@@ -453,7 +453,7 @@ async fn main() -> Result<()> {
                                     {
                                         Ok(()) => (
                                             ToolCallStatus::Completed,
-                                            "git_commit_with_check: ok".to_owned(),
+                                            "git_commit_with_fix: ok".to_owned(),
                                         ),
                                         Err(error) => {
                                             tracing::debug!(
@@ -462,7 +462,7 @@ async fn main() -> Result<()> {
                                             );
                                             (
                                                 ToolCallStatus::Failed,
-                                                "git_commit_with_check: failed".to_owned(),
+                                                "git_commit_with_fix: failed".to_owned(),
                                             )
                                         }
                                     };
@@ -614,7 +614,7 @@ mod plan_for_tests {
     }
 
     #[test]
-    fn second_request_includes_commit_check_tool_call() {
+    fn second_request_includes_commit_fix_tool_call() {
         let steps = plan_for(1, false);
         assert_eq!(
             tool_call_names(&steps),
@@ -622,7 +622,7 @@ mod plan_for_tests {
                 "search_files",
                 "read_file",
                 "list_directory",
-                "Git Commit With Check"
+                "Git Commit With Fix"
             ]
         );
     }
@@ -643,7 +643,7 @@ mod plan_for_tests {
                 "search_files",
                 "read_file",
                 "list_directory",
-                "Git Commit With Check",
+                "Git Commit With Fix",
             ]
         );
         // search_files and read_file are adjacent tool calls; since a
