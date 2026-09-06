@@ -9,9 +9,11 @@ use rmcp::{
     ErrorData as McpError, ServerHandler, service, tool, tool_handler, tool_router, transport,
 };
 use serde_json::json;
-use std::env;
-use std::process::{Command, Stdio};
 use tokio::task;
+
+use std::env;
+use std::io;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Parser)]
 #[command(about = "Standalone MCP server exposing Git tools")]
@@ -192,9 +194,11 @@ async fn run_process(
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
+        .with_writer(io::stderr)
         .try_init()
         .map_err(|err| anyhow::anyhow!("failed to initialize logging: {err}"))?;
+    tracing::debug!("git logging initialized");
+
     let _args = Args::parse();
     let server = GitTools::default();
     let transport = transport::io::stdio();

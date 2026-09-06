@@ -1,15 +1,15 @@
 //! Interactive terminal UI for an ACP session.
 
 use crate::log_buffer::LogBuffer;
-use kid_agentic_coding::{render_markdown, start_interactive_session};
-
-use agent_client_protocol::AcpAgent;
-use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
-use ansi_to_tui::IntoText;
 use kid_agentic_coding::{
     BubbleLayout, ChatLog, EntryId, Message, PromptRunner, ScrollAnchor, SessionEvent,
     SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
 };
+use kid_agentic_coding::{render_markdown, start_interactive_session};
+
+use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
+use agent_client_protocol::{AcpAgent, AcpAgentConfig};
+use ansi_to_tui::IntoText;
 use rand::RngExt;
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -36,7 +36,6 @@ use tokio::time::{self, MissedTickBehavior};
 use std::collections::HashMap;
 use std::future;
 use std::io::{self, Stdout};
-
 use std::mem;
 use std::time::Duration;
 
@@ -654,7 +653,7 @@ async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     main_session: &mut SessionHandle,
-    agent_config: &agent_client_protocol::AcpAgentConfig,
+    agent_config: &AcpAgentConfig,
     term_events: &mut UnboundedReceiver<Event>,
 ) -> io::Result<()> {
     let mut spinner = time::interval(Duration::from_millis(250));
@@ -725,7 +724,7 @@ async fn run_app(
 async fn open_commit_fix_session(
     app: &mut App,
     main_session: &mut SessionHandle,
-    agent_config: &agent_client_protocol::AcpAgentConfig,
+    agent_config: &AcpAgentConfig,
     instructions: String,
     commit_message: String,
 ) -> SessionHandle {

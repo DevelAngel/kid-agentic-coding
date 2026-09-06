@@ -15,6 +15,7 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
+use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -100,7 +101,6 @@ async fn run_session(
                     }
                 }
             } else if disable_confetti {
-
                 workflow_listener = Some(UnixListener::from_std(
                     mcp::bind_workflow_socket(&workflow_socket_name).map_err(Error::into_internal_error)?
                 ).map_err(Error::into_internal_error)?);
@@ -200,18 +200,18 @@ async fn run_session(
                             tracing::debug!("commit-fix workflow event received");
                             let mut message = Vec::new();
                             if stream.read_to_end(&mut message).await.is_ok()
-                                && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&message)
-                                && value.get("event").and_then(serde_json::Value::as_str)
+                                && let Ok(value) = serde_json::from_slice::<Value>(&message)
+                                && value.get("event").and_then(Value::as_str)
                                     == Some(mcp::COMMIT_FIX_EVENT)
                             {
                                 let instructions = value
                                     .get("instructions")
-                                    .and_then(serde_json::Value::as_str)
+                                    .and_then(Value::as_str)
                                     .unwrap_or_default()
                                     .to_owned();
                                 let commit_message = value
                                     .get("commit_message")
-                                    .and_then(serde_json::Value::as_str)
+                                    .and_then(Value::as_str)
                                     .unwrap_or_default()
                                     .to_owned();
                                 tracing::info!(%commit_message, "commit-fix session event received");
@@ -349,10 +349,7 @@ fn tool_call_title(kind: ToolKind, title: String) -> String {
 /// standard content blocks, summarizing diffs and terminal embeds, and
 /// falling back to pretty-printed `raw_output` when no content blocks were
 /// provided. Returns `None` when the tool call carries no result yet.
-fn tool_call_result(
-    content: &[ToolCallContent],
-    raw_output: Option<&serde_json::Value>,
-) -> Option<String> {
+fn tool_call_result(content: &[ToolCallContent], raw_output: Option<&Value>) -> Option<String> {
     let rendered: Vec<String> = content
         .iter()
         .map(|item| match item {
