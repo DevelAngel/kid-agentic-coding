@@ -4,7 +4,7 @@ use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::schemars::JsonSchema;
-use rmcp::serde::Deserialize;
+use rmcp::serde::{Deserialize, Serialize};
 use rmcp::{
     ErrorData as McpError, ServerHandler, service, tool, tool_handler, tool_router, transport,
 };
@@ -12,12 +12,27 @@ use serde_json::json;
 use tokio::task;
 
 use std::env;
-use std::io;
+use std::io::{self, Write};
+use std::os::linux::net::SocketAddrExt;
+use std::os::unix::net::{SocketAddr, UnixStream};
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Parser)]
-#[command(about = "Standalone MCP server exposing Git tools")]
-struct Args {}
+#[command(about = "Standalone MCP server for investigating and closing a commit-fix session")]
+struct Args {
+    /// Name of the abstract-namespace Unix socket used for workflow events.
+    #[arg(long)]
+    socket: String,
+}
+
+/// Stable name of the semantic event emitted when a commit-fix session closes.
+const COMMIT_FIX_DONE_EVENT: &str = "commit-fix-done";
+
+#[derive(Debug, Serialize)]
+struct CommitFixDoneEvent<'a> {
+    event: &'static str,
+    commit_message: &'a str,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct CommitParams {
@@ -39,21 +54,23 @@ struct ProcessOutput {
 }
 
 #[derive(Clone)]
-struct GitTools {
+struct GitCommitFixCloseTools {
+    socket_name: String,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
-impl Default for GitTools {
-    fn default() -> Self {
+impl GitCommitFixCloseTools {
+    fn new(socket_name: String) -> Self {
         Self {
+            socket_name,
             tool_router: Self::tool_router(),
         }
     }
 }
 
 #[tool_router]
-impl GitTools {
+impl GitCommitFixCloseTools {
     #[tool(
         description = "Shows the current Git status",
         annotations(
@@ -100,7 +117,7 @@ impl GitTools {
     }
 
     #[tool(
-        description = "Creates a Git commit with the given message",
+        description = "Creates a Git commit with the given message and closes the commit-fix session",
         annotations(
             title = "Git Commit",
             read_only_hint = false,
@@ -113,18 +130,50 @@ impl GitTools {
         &self,
         Parameters(params): Parameters<CommitParams>,
     ) -> Result<CallToolResult, McpError> {
-        command_result("git", &["commit", "-m", &params.message], "git commit").await
+        let result =
+            command_result("git", &["commit", "-m", &params.message], "git commit").await?;
+
+        let event = CommitFixDoneEvent {
+            event: COMMIT_FIX_DONE_EVENT,
+            commit_message: &params.message,
+        };
+        let message = serde_json::to_vec(&event).map_err(|err| {
+            McpError::internal_error(
+                "failed to encode commit-fix-done event",
+                Some(json!({"reason": err.to_string()})),
+            )
+        })?;
+        notify_bridge(&self.socket_name, &message).map_err(|err| {
+            tracing::error!(?err, "commit-fix-done event notification failed");
+            McpError::internal_error(
+                "failed to notify commit-fix-done bridge",
+                Some(json!({"reason": err.to_string()})),
+            )
+        })?;
+        tracing::debug!("commit-fix-done event sent");
+
+        Ok(result)
     }
 }
 
 #[tool_handler]
-impl ServerHandler for GitTools {
+impl ServerHandler for GitCommitFixCloseTools {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
-            Implementation::new("kid-agentic-coding-git", env!("CARGO_PKG_VERSION"))
-                .with_title("Git Tools"),
+            Implementation::new(
+                "kid-agentic-coding-git-commit-fix-close",
+                env!("CARGO_PKG_VERSION"),
+            )
+            .with_title("Git Commit Fix Close"),
         )
     }
+}
+
+fn notify_bridge(socket_name: &str, message: &[u8]) -> std::io::Result<()> {
+    let addr = SocketAddr::from_abstract_name(socket_name.as_bytes())?;
+    let mut stream = UnixStream::connect_addr(&addr)?;
+    stream.write_all(message)?;
+    stream.write_all(b"\n")
 }
 
 async fn command_result(
@@ -199,8 +248,8 @@ async fn main() -> Result<()> {
         .map_err(|err| anyhow::anyhow!("failed to initialize logging: {err}"))?;
     tracing::debug!("git logging initialized");
 
-    let _args = Args::parse();
-    let server = GitTools::default();
+    let args = Args::parse();
+    let server = GitCommitFixCloseTools::new(args.socket);
     let transport = transport::io::stdio();
     let _running = service::serve_server(server, transport).await?;
     Ok(())

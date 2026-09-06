@@ -16,7 +16,7 @@ use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixStream};
 
 #[derive(Debug, Parser)]
-#[command(about = "Standalone MCP server for the git_commit_with_check tool")]
+#[command(about = "Standalone MCP server for the git_commit_with_fix tool")]
 struct Args {
     /// Name of the abstract-namespace Unix socket used for workflow events.
     #[arg(long)]
@@ -24,7 +24,7 @@ struct Args {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct GitCommitWithCheckParams {
+struct GitCommitWithFixParams {
     /// The commit message to carry into the fix session.
     message: String,
 }
@@ -40,13 +40,13 @@ const COMMIT_FIX_EVENT: &str = "commit-fix";
 const COMMIT_FIX_INSTRUCTIONS: &str = "The main session requested a commit-fix session. Investigate the current problem, fix the underlying issue, run the provided check, lint, and test tools, and commit the resulting changes with the supplied commit message using the available Git tools.";
 
 #[derive(Clone)]
-struct CommitWorkflowTools {
+struct GitCommitFixOpenTools {
     socket_name: String,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
-impl CommitWorkflowTools {
+impl GitCommitFixOpenTools {
     fn new(socket_name: String) -> Self {
         Self {
             socket_name,
@@ -54,22 +54,21 @@ impl CommitWorkflowTools {
         }
     }
 }
-
 #[tool_router]
-impl CommitWorkflowTools {
+impl GitCommitFixOpenTools {
     #[tool(
         description = "Requests a commit-fix session for the current work",
         annotations(
-            title = "Git Commit With Check",
+            title = "Git Commit With Fix",
             read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = false,
             open_world_hint = false
         )
     )]
-    async fn git_commit_with_check(
+    async fn git_commit_with_fix(
         &self,
-        Parameters(params): Parameters<GitCommitWithCheckParams>,
+        Parameters(params): Parameters<GitCommitWithFixParams>,
     ) -> Result<CallToolResult, McpError> {
         tracing::info!(%params.message, "commit-fix session requested");
         let event = CommitFixEvent {
@@ -99,14 +98,14 @@ impl CommitWorkflowTools {
 }
 
 #[tool_handler]
-impl ServerHandler for CommitWorkflowTools {
+impl ServerHandler for GitCommitFixOpenTools {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
             Implementation::new(
-                "kid-agentic-coding-commit-workflow",
+                "kid-agentic-coding-git-commit-fix-open",
                 env!("CARGO_PKG_VERSION"),
             )
-            .with_title("Commit Workflow"),
+            .with_title("Git Commit Fix Open"),
         )
     }
 }
@@ -124,10 +123,10 @@ async fn main() -> Result<()> {
         .with_writer(io::stderr)
         .try_init()
         .map_err(|err| anyhow!("failed to initialize logging: {err}"))?;
-    tracing::debug!("commit-workflow logging initialized");
+    tracing::debug!("git-commit-fix-open logging initialized");
 
     let args = Args::parse();
-    let server = CommitWorkflowTools::new(args.socket);
+    let server = GitCommitFixOpenTools::new(args.socket);
     let transport = transport::io::stdio();
     let running = service::serve_server(server, transport).await?;
     let _ = running.waiting().await;
