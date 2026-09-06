@@ -190,6 +190,9 @@ impl App {
             SessionEvent::CommitFix { .. } => {
                 tracing::debug!("event: commit-fix");
             }
+            SessionEvent::CommitFixDone { .. } => {
+                tracing::debug!("event: commit-fix-done");
+            }
 
             SessionEvent::Chunk(block) => {
                 let mut text = PromptRunner::content_block_to_string(&block);
@@ -699,10 +702,23 @@ async fn run_app(
                     event => app.handle_session_event(event),
                 }
             }
-
             Some(session_event) = fix_recv => {
-                app.handle_session_event(session_event);
+                match session_event {
+                    SessionEvent::CommitFixDone { commit_message } => {
+                        fix_session = None;
+                        app.chat_log.push_session_transition("Main Session");
+                        app.prompt = new_prompt_textarea(None);
+                        let resume_prompt = format!(
+                            "[AUTO: Commit Fix Session Closed]\nThe commit-fix session committed and closed. Commit message used:\n{commit_message}"
+                        );
+                        app.chat_log.push_auto(resume_prompt.clone());
+                        let _ = main_session.send_prompt(resume_prompt);
+                    }
+                    event => app.handle_session_event(event),
+                }
             }
+
+
             Some(term_event) = term_events.recv() => {
                 if let Event::Key(key) = term_event
                     && key.kind == KeyEventKind::Press

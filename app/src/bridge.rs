@@ -52,6 +52,8 @@ pub enum SessionEvent {
         instructions: String,
         commit_message: String,
     },
+    /// The fix session committed its changes, closing the commit-fix workflow.
+    CommitFixDone { commit_message: String },
 
     /// The confetti MCP tool was invoked successfully.
     Confetti,
