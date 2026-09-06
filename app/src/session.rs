@@ -197,6 +197,7 @@ async fn run_session(
                         }
                     } => {
                         if let Some(Ok((mut stream, _))) = workflow {
+                            tracing::debug!("commit-fix workflow event received");
                             let mut message = Vec::new();
                             if stream.read_to_end(&mut message).await.is_ok()
                                 && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&message)
@@ -213,6 +214,7 @@ async fn run_session(
                                     .and_then(serde_json::Value::as_str)
                                     .unwrap_or_default()
                                     .to_owned();
+                                tracing::info!(%commit_message, "commit-fix session event received");
                                 let _ = session_event_tx.send(SessionEvent::CommitFix {
                                     instructions,
                                     commit_message,
