@@ -17,19 +17,20 @@ use agent_client_protocol::{
     Agent, Client, ConnectionTo, Error, ErrorCode, Stdio, on_receive_notification,
     on_receive_request,
 };
-use color_eyre::Result;
+use color_eyre::eyre::eyre;
+use color_eyre::{Report, Result};
 use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
+use serde_json::json;
+use serde_json::{Map, Value};
+use tokio::process::Command;
+use tokio::time::sleep;
+
 use std::collections::HashMap;
 use std::io;
 use std::process;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
-use tokio::process::Command;
-
 use std::time::Duration;
-use tokio::time::sleep;
-
-use serde_json::{Map, json};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -144,7 +145,6 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
 
 async fn invoke_confetti(
     connection: ConnectionTo<Client>,
-
     server_id: McpServerAcpId,
 ) -> Result<()> {
     let response = connection
@@ -185,7 +185,7 @@ async fn invoke_confetti(
 async fn invoke_commit_workflow(message: &str) -> Result<()> {
     let server = COMMIT_WORKFLOW_SERVER
         .get()
-        .ok_or_else(|| color_eyre::eyre::eyre!("commit-workflow MCP server unavailable"))?;
+        .ok_or_else(|| eyre!("commit-workflow MCP server unavailable"))?;
     let mut command = Command::new(&server.command);
     tracing::debug!(%message, "invoking commit-workflow MCP tool");
     command.args(&server.args);
@@ -237,7 +237,7 @@ async fn list_acp_tools(
         .send_request(MessageMcpRequest::new(connection_id, "tools/list"))
         .block_task()
         .await?;
-    let response: serde_json::Value = serde_json::from_str(response.0.get())?;
+    let response: Value = serde_json::from_str(response.0.get())?;
     Ok(response["tools"]
         .as_array()
         .into_iter()
@@ -273,7 +273,7 @@ async fn list_registered_tools(
                         .map(|tool| tool.name.to_string())
                         .collect::<Vec<_>>();
                     client.cancel().await?;
-                    Ok::<_, color_eyre::Report>(names)
+                    Ok::<_, Report>(names)
                 }
                 .await
                 {
@@ -287,7 +287,7 @@ async fn list_registered_tools(
             _ => {}
         }
     }
-    Ok(lines.join("\\n"))
+    Ok(lines.join("\n"))
 }
 
 #[tokio::main]
@@ -308,13 +308,11 @@ async fn main() -> Result<()> {
                 responder.respond(response)
             },
             on_receive_request!(),
-
         )
         .on_receive_request(
             async |request: NewSessionRequest, responder, _cx| {
                 let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
                 let session_id: SessionId = format!("lorem-session-{id}").into();
-
 
                 let server_id = request.mcp_servers.iter().find_map(|server| match server {
                     McpServer::Acp(server) => Some(server.server_id.clone()),
@@ -337,8 +335,6 @@ async fn main() -> Result<()> {
                     .lock()
                     .map_err(|_| Error::from(ErrorCode::InternalError))?
                     .insert(session_id.clone(), request.mcp_servers.clone());
-
-
 
                 responder.respond(NewSessionResponse::new(session_id))
             },
@@ -429,15 +425,15 @@ async fn main() -> Result<()> {
                                             ToolCall::new(tool_call_id.clone(), name)
                                                 .status(ToolCallStatus::InProgress)
                                                 .raw_input(if name == "bash" {
-                                                    serde_json::json!({
+                                                    json!({
                                                         "command": "printf '%s\\n' 'Demonstrating a deliberately long Bash command whose arguments continue far enough to exercise wrapping in the tool-call display'"
                                                     })
                                                 } else if name == "Git Commit With Check" {
-                                                    serde_json::json!({
+                                                    json!({
                                                         "message": "feat(lorem-agent): demonstrate commit fix workflow"
                                                     })
                                                 } else {
-                                                    serde_json::json!({
+                                                    json!({
                                                         "tool": name,
                                                         "prompt_seed": seed,
                                                         "step_index": step_index
@@ -487,7 +483,6 @@ async fn main() -> Result<()> {
                                         ),
                                     ))?;
                                 } else if name == "confetti" {
-
                                     sleep(TOOL_CALL_DELAY).await;
                                     let (status, result_text) =
                                         match CONFETTI_SERVER_ID.get().cloned() {
