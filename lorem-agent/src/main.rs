@@ -8,20 +8,23 @@ use clap::Parser;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentNotification, CancelNotification, ConnectMcpRequest, ContentBlock, ContentChunk,
-    InitializeRequest, InitializeResponse, McpServer, McpServerAcpId, MessageMcpNotification,
-    MessageMcpRequest, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
-    SessionId, SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall, ToolCallId,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    InitializeRequest, InitializeResponse, McpServer, McpServerAcpId, McpServerStdio,
+    MessageMcpNotification, MessageMcpRequest, NewSessionRequest, NewSessionResponse,
+    PromptRequest, PromptResponse, SessionId, SessionNotification, SessionUpdate, StopReason,
+    TextContent, ToolCall, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol::{
     Agent, Client, ConnectionTo, Error, ErrorCode, Stdio, on_receive_notification,
     on_receive_request,
 };
 use color_eyre::Result;
+use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
 use std::io;
 use std::process;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tokio::process::Command;
+
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -70,6 +73,8 @@ static NEXT_PROMPT_SEED: AtomicUsize = AtomicUsize::new(0);
 /// Assigns increasing indices so the fake agent can vary its thought/tool
 /// call plan per request instead of repeating the same simple round-trip.
 static NEXT_PROMPT_INDEX: AtomicUsize = AtomicUsize::new(0);
+static COMMIT_WORKFLOW_SERVER: OnceLock<McpServerStdio> = OnceLock::new();
+
 static CONFETTI_SERVER_ID: OnceLock<McpServerAcpId> = OnceLock::new();
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -137,6 +142,7 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
 
 async fn invoke_confetti(
     connection: ConnectionTo<Client>,
+
     server_id: McpServerAcpId,
 ) -> Result<()> {
     let response = connection
@@ -173,6 +179,28 @@ async fn invoke_confetti(
     Ok(())
 }
 
+async fn invoke_commit_workflow(message: &str) -> Result<()> {
+    let server = COMMIT_WORKFLOW_SERVER
+        .get()
+        .ok_or_else(|| color_eyre::eyre::eyre!("commit-workflow MCP server unavailable"))?;
+    let mut command = Command::new(&server.command);
+    command.args(&server.args);
+
+    let client = ().serve(TokioChildProcess::new(command)?).await?;
+    client
+        .call_tool(
+            CallToolRequestParams::new("git_commit_with_check").with_arguments(
+                serde_json::json!({"message": message})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        )
+        .await?;
+    client.cancel().await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -191,11 +219,14 @@ async fn main() -> Result<()> {
                 responder.respond(response)
             },
             on_receive_request!(),
+
         )
         .on_receive_request(
             async |request: NewSessionRequest, responder, _cx| {
                 let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
                 let session_id: SessionId = format!("lorem-session-{id}").into();
+
+
                 let server_id = request.mcp_servers.iter().find_map(|server| match server {
                     McpServer::Acp(server) => Some(server.server_id.clone()),
                     _ => None,
@@ -203,6 +234,15 @@ async fn main() -> Result<()> {
                 if let (true, Some(server_id)) = (!args.disable_mcp, server_id) {
                     let _ = CONFETTI_SERVER_ID.set(server_id);
                 }
+                if let Some(server) = request.mcp_servers.iter().find_map(|server| match server {
+                    McpServer::Stdio(server) if server.name == "commit-workflow-tools" => {
+                        Some(server.clone())
+                    }
+                    _ => None,
+                }) {
+                    let _ = COMMIT_WORKFLOW_SERVER.set(server);
+                }
+
 
                 responder.respond(NewSessionResponse::new(session_id))
             },
@@ -289,7 +329,46 @@ async fn main() -> Result<()> {
                                     ),
                                 ))?;
 
-                                if name == "confetti" {
+                                if name == "Git Commit With Check" {
+                                    sleep(TOOL_CALL_DELAY).await;
+                                    let (status, result_text) = match invoke_commit_workflow(
+                                        "feat(lorem-agent): demonstrate commit fix workflow",
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => (
+                                            ToolCallStatus::Completed,
+                                            "git_commit_with_check: ok".to_owned(),
+                                        ),
+                                        Err(error) => {
+                                            tracing::debug!(
+                                                ?error,
+                                                "commit-workflow MCP invocation failed"
+                                            );
+                                            (
+                                                ToolCallStatus::Failed,
+                                                "git_commit_with_check: failed".to_owned(),
+                                            )
+                                        }
+                                    };
+                                    cx.send_notification(AgentNotification::SessionNotification(
+                                        SessionNotification::new(
+                                            request.session_id.clone(),
+                                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                                tool_call_id,
+                                                ToolCallUpdateFields::new().status(status).content(
+                                                    vec![
+                                                        ContentBlock::Text(TextContent::new(
+                                                            result_text,
+                                                        ))
+                                                        .into(),
+                                                    ],
+                                                ),
+                                            )),
+                                        ),
+                                    ))?;
+                                } else if name == "confetti" {
+
                                     sleep(TOOL_CALL_DELAY).await;
                                     let (status, result_text) =
                                         match CONFETTI_SERVER_ID.get().cloned() {
