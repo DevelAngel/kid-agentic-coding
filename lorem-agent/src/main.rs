@@ -717,7 +717,7 @@ async fn main() -> Result<()> {
                                             );
                                             (
                                                 ToolCallStatus::Failed,
-                                                format!("{}: failed", call.name),
+                                                format!("{}: failed: {error}", call.name),
                                             )
                                         }
                                     };
