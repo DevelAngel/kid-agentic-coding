@@ -189,7 +189,7 @@ async fn command_result(
         ))]))
     } else {
         Err(McpError::internal_error(
-            format!("{operation} failed"),
+            format!("{operation} failed: {}", output.stderr.trim()),
             Some(json!({
                 "status": output.status,
                 "stdout": output.stdout,
@@ -255,4 +255,26 @@ async fn main() -> Result<()> {
     let _ = running.waiting().await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn command_result_includes_stderr_when_command_fails() {
+        let error = command_result(
+            "sh",
+            &["-c", "printf 'commit failed' >&2; exit 1"],
+            "git commit",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("git commit failed: commit failed")
+        );
+    }
 }
