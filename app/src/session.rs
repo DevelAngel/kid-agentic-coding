@@ -217,7 +217,7 @@ async fn run_session(
                                 if event_name == Some(mcp::COMMIT_FIX_EVENT) {
                                     let instructions = value
                                         .get("instructions")
-                                        .and_then(serde_json::Value::as_str)
+                                        .and_then(Value::as_str)
                                         .unwrap_or_default()
                                         .to_owned();
                                     tracing::info!(%commit_message, "commit-fix session event received");
