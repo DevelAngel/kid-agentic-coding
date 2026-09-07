@@ -128,12 +128,10 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
                 "Narrowing down the relevant files while preserving a long enough live thought stream to expose wrapping, indentation, and cluster growth",
             ),
             Step::ToolCall("read_file"),
-            Step::ToolCall("run_tests"),
             Step::Thought(
                 "Verifying edge cases and checking that the final rendered output stays legible even when long messages and tool details arrive in many small chunks",
             ),
             Step::ToolCall("write_file"),
-            Step::ToolCall("run_tests"),
         ],
     };
     if supports_mcp && prompt_index % 3 == 2 {
@@ -142,15 +140,19 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
     }
     steps
 }
+
 /// The fixed thought/tool-call plan for a commit-fix session: investigate,
-/// then call the close server's git_commit, which both commits and closes
-/// the session. Unlike `plan_for`, this never cycles - a fix session only
-/// ever gets a single seed prompt.
+/// re-run the Rust checks, then call the close server's git_commit, which
+/// both commits and closes the session. Unlike `plan_for`, this never
+/// cycles - a fix session only ever gets a single seed prompt.
 fn commit_fix_session_plan() -> Vec<Step> {
     vec![
         Step::Thought(
             "Investigating the failing checks reported by the main session and applying a fix before committing",
         ),
+        Step::ToolCall("Rust Check"),
+        Step::ToolCall("Rust Lint"),
+        Step::ToolCall("Rust Test"),
         Step::ToolCall("Git Commit"),
     ]
 }
@@ -234,6 +236,20 @@ async fn invoke_git_commit_fix_close(server: &McpServerStdio, message: &str) -> 
         )
         .await?;
     tracing::debug!("git-commit-fix-close MCP tool completed");
+    client.cancel().await?;
+    Ok(())
+}
+
+async fn invoke_rust_tool(server: &McpServerStdio, tool_name: &str) -> Result<()> {
+    let mut command = Command::new(&server.command);
+    tracing::debug!(%tool_name, "invoking rust-tools MCP tool");
+    command.args(&server.args);
+
+    let client = ().serve(TokioChildProcess::new(command)?).await?;
+    client
+        .call_tool(CallToolRequestParams::new(tool_name.to_owned()))
+        .await?;
+    tracing::debug!("rust-tools MCP tool completed");
     client.cancel().await?;
     Ok(())
 }
@@ -413,6 +429,15 @@ async fn main() -> Result<()> {
                         _ => None,
                     })
                 });
+                let rust_server = first_prompt_servers.as_ref().and_then(|servers| {
+                    servers.iter().find_map(|server| match server {
+                        McpServer::Stdio(server) if server.name == "rust-tools" => {
+                            Some(server.clone())
+                        }
+                        _ => None,
+                    })
+                });
+
 
 
                 let _ = cx.clone().spawn(async move {
@@ -489,7 +514,55 @@ async fn main() -> Result<()> {
                                     ),
                                 ))?;
 
-                                if name == "Git Commit With Fix" {
+                                if name == "Rust Check" || name == "Rust Lint" || name == "Rust Test" {
+                                    let tool_name = match name {
+                                        "Rust Check" => "rust_check",
+                                        "Rust Lint" => "rust_lint",
+                                        _ => "rust_test",
+                                    };
+                                    tracing::debug!(%tool_name, "displaying fake Rust tool call");
+                                    sleep(TOOL_CALL_DELAY).await;
+                                    let (status, result_text) = match rust_server.as_ref() {
+                                        Some(server) => {
+                                            match invoke_rust_tool(server, tool_name).await {
+                                                Ok(()) => (
+                                                    ToolCallStatus::Completed,
+                                                    format!("{tool_name}: ok"),
+                                                ),
+                                                Err(error) => {
+                                                    tracing::debug!(
+                                                        ?error,
+                                                        "rust-tools MCP invocation failed"
+                                                    );
+                                                    (
+                                                        ToolCallStatus::Failed,
+                                                        format!("{tool_name}: failed"),
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        None => (
+                                            ToolCallStatus::Failed,
+                                            format!("{tool_name}: MCP server unavailable"),
+                                        ),
+                                    };
+                                    cx.send_notification(AgentNotification::SessionNotification(
+                                        SessionNotification::new(
+                                            request.session_id.clone(),
+                                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                                tool_call_id,
+                                                ToolCallUpdateFields::new().status(status).content(
+                                                    vec![
+                                                        ContentBlock::Text(TextContent::new(
+                                                            result_text,
+                                                        ))
+                                                        .into(),
+                                                    ],
+                                                ),
+                                            )),
+                                        ),
+                                    ))?;
+                                } else if name == "Git Commit With Fix" {
                                     tracing::debug!("displaying fake Git Commit With Fix tool call");
                                     sleep(TOOL_CALL_DELAY).await;
                                     let (status, result_text) = match invoke_commit_workflow(
@@ -709,7 +782,11 @@ mod plan_for_tests {
     #[test]
     fn commit_fix_session_plan_ends_with_git_commit() {
         let steps = commit_fix_session_plan();
-        assert_eq!(tool_call_names(&steps), vec!["Git Commit"]);
+        assert_eq!(
+            tool_call_names(&steps),
+            vec!["Rust Check", "Rust Lint", "Rust Test", "Git Commit"]
+        );
+
         assert!(matches!(steps[0], Step::Thought(_)));
     }
 
@@ -730,7 +807,7 @@ mod plan_for_tests {
     #[test]
     fn third_request_with_mcp_includes_bash_before_confetti() {
         let steps = plan_for(2, true);
-        assert!(matches!(steps[9], Step::ToolCall("bash")));
+        assert!(matches!(steps[steps.len() - 2], Step::ToolCall("bash")));
         assert!(matches!(steps.last(), Some(Step::ToolCall("confetti"))));
     }
 
