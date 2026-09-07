@@ -251,6 +251,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let server = GitCommitFixCloseTools::new(args.socket);
     let transport = transport::io::stdio();
-    let _running = service::serve_server(server, transport).await?;
+    let running = service::serve_server(server, transport).await?;
+    let _ = running.waiting().await;
+
     Ok(())
 }
