@@ -169,7 +169,7 @@ impl ServerHandler for GitCommitFixCloseTools {
     }
 }
 
-fn notify_bridge(socket_name: &str, message: &[u8]) -> std::io::Result<()> {
+fn notify_bridge(socket_name: &str, message: &[u8]) -> io::Result<()> {
     let addr = SocketAddr::from_abstract_name(socket_name.as_bytes())?;
     let mut stream = UnixStream::connect_addr(&addr)?;
     stream.write_all(message)?;
