@@ -225,6 +225,40 @@ fn settled_tool_cluster_stays_live_while_it_is_still_the_last_message() {
 }
 
 #[test]
+fn settled_tool_cluster_stays_live_while_agent_text_follows_in_the_same_turn() {
+    let mut log = ChatLog::new();
+    let a = log.push_tool_call("git_status");
+    let b = log.push_tool_call("git_switch_branch");
+    log.update_tool_call_status(a, Status::Done);
+    log.update_tool_call_status(b, Status::Done);
+    // The agent's streamed reply lands after the cluster but within the
+    // same turn (no user message sent since); the cluster must not
+    // collapse just because it is no longer the last message.
+    log.push_agent("done");
+
+    let layout = BubbleLayout::new(&log, 80, 24);
+
+    // summary + 2 steps, no truncation marker since nothing is hidden
+    assert_eq!(layout.bubbles()[0].rect.height, 3);
+}
+
+#[test]
+fn tool_cluster_collapses_once_the_next_prompt_is_sent() {
+    let mut log = ChatLog::new();
+    let a = log.push_tool_call("git_status");
+    let b = log.push_tool_call("git_switch_branch");
+    log.update_tool_call_status(a, Status::Done);
+    log.update_tool_call_status(b, Status::Done);
+    log.push_agent("done");
+    log.push_user("next prompt");
+
+    let layout = BubbleLayout::new(&log, 80, 24);
+
+    assert_eq!(layout.bubbles()[0].rect.height, 1);
+    assert_eq!(layout.bubbles()[0].borders, Borders::NONE);
+}
+
+#[test]
 fn still_running_tool_cluster_shows_a_live_tail() {
     let mut log = ChatLog::new();
     log.push_tool_call("git_status");

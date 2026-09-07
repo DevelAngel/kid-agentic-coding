@@ -123,8 +123,8 @@ impl ToolCluster {
     /// [`Self::expanded`], the last three while
     /// [`Status::Pending`]/[`Status::Running`] or `keep_live` is set,
     /// otherwise none. `keep_live` defers the collapse of a just-settled
-    /// cluster while it is still the newest message (see
-    /// [`crate::bubble_layout::BubbleLayout`]).
+    /// cluster while it belongs to the current turn (see
+    /// [`ChatLog::in_current_turn`]).
     pub fn visible_steps(&self, keep_live: bool) -> &[Step] {
         if self.expanded {
             &self.steps
@@ -181,6 +181,20 @@ impl ChatLog {
     /// Creates an empty chat log.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Whether the message at `index` belongs to the current turn, i.e. no
+    /// [`Message::User`] message has been appended after it. Used to keep
+    /// tool clusters expanded until the user sends the next prompt.
+    pub fn in_current_turn(&self, index: usize) -> bool {
+        let last_user_index = self
+            .messages
+            .iter()
+            .rposition(|message| matches!(message, Message::User(_)));
+        match last_user_index {
+            Some(last_user_index) => index > last_user_index,
+            None => true,
+        }
     }
 
     /// Appends a user message. Ends whatever tool cluster is currently
