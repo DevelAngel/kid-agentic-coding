@@ -84,12 +84,14 @@ static CONFETTI_SERVER_ID: OnceLock<McpServerAcpId> = OnceLock::new();
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 static SESSION_MCP_SERVERS: OnceLock<Mutex<HashMap<SessionId, Vec<McpServer>>>> = OnceLock::new();
 
-type McpToolInvoker =
-    fn(McpToolContext, &'static str) -> Pin<Box<dyn Future<Output = Result<String>> + Send>>;
+type McpToolInvoker = fn(
+    McpToolContext,
+    Option<&'static str>,
+) -> Pin<Box<dyn Future<Output = Result<String>> + Send>>;
 
 struct McpToolCall {
     name: &'static str,
-    argument: &'static str,
+    argument: Option<&'static str>,
     invoke: McpToolInvoker,
 }
 
@@ -134,7 +136,7 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
             Step::SimulatedToolCall("list_directory"),
             Step::McpToolCall(McpToolCall {
                 name: "Git Commit With Fix",
-                argument: "feat(lorem-agent): demonstrate commit fix workflow",
+                argument: Some("feat(lorem-agent): demonstrate commit fix workflow"),
                 invoke: invoke_commit_workflow,
             }),
         ],
@@ -158,7 +160,7 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
         steps.push(Step::SimulatedToolCall("bash"));
         steps.push(Step::McpToolCall(McpToolCall {
             name: "confetti",
-            argument: "",
+            argument: None,
             invoke: invoke_confetti_tool,
         }));
     }
@@ -176,22 +178,22 @@ fn commit_fix_session_plan() -> Vec<Step> {
         ),
         Step::McpToolCall(McpToolCall {
             name: "Rust Check",
-            argument: "rust_check",
+            argument: Some("rust_check"),
             invoke: invoke_rust_tool,
         }),
         Step::McpToolCall(McpToolCall {
             name: "Rust Lint",
-            argument: "rust_lint",
+            argument: Some("rust_lint"),
             invoke: invoke_rust_tool,
         }),
         Step::McpToolCall(McpToolCall {
             name: "Rust Test",
-            argument: "rust_test",
+            argument: Some("rust_test"),
             invoke: invoke_rust_tool,
         }),
         Step::McpToolCall(McpToolCall {
             name: "Git Commit",
-            argument: "feat(lorem-agent): demonstrate commit fix workflow",
+            argument: Some("feat(lorem-agent): demonstrate commit fix workflow"),
             invoke: invoke_git_commit_tool,
         }),
     ]
@@ -293,12 +295,15 @@ async fn run_rust_tool(server: &McpServerStdio, tool_name: &str) -> Result<()> {
 
 fn invoke_rust_tool(
     context: McpToolContext,
-    tool_name: &'static str,
+    tool_name: Option<&'static str>,
 ) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
     Box::pin(async move {
         let server = context
             .rust_server
             .ok_or_else(|| eyre!("rust-tools MCP server unavailable"))?;
+        let Some(tool_name) = tool_name else {
+            return Err(eyre!("rust tool name unavailable"));
+        };
         run_rust_tool(&server, tool_name).await?;
         Ok(format!("{tool_name}: ok"))
     })
@@ -306,9 +311,12 @@ fn invoke_rust_tool(
 
 fn invoke_commit_workflow(
     _context: McpToolContext,
-    message: &'static str,
+    message: Option<&'static str>,
 ) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
     Box::pin(async move {
+        let Some(message) = message else {
+            return Err(eyre!("commit message unavailable"));
+        };
         run_commit_workflow(message).await?;
         Ok("git_commit_with_fix: ok".to_owned())
     })
@@ -316,12 +324,15 @@ fn invoke_commit_workflow(
 
 fn invoke_git_commit_tool(
     context: McpToolContext,
-    message: &'static str,
+    message: Option<&'static str>,
 ) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
     Box::pin(async move {
         let server = context
             .close_server
             .ok_or_else(|| eyre!("git-commit-fix-close MCP server unavailable"))?;
+        let Some(message) = message else {
+            return Err(eyre!("commit message unavailable"));
+        };
         run_git_commit_fix_close(&server, message).await?;
         Ok("git_commit: ok".to_owned())
     })
@@ -329,7 +340,7 @@ fn invoke_git_commit_tool(
 
 fn invoke_confetti_tool(
     context: McpToolContext,
-    _argument: &'static str,
+    _argument: Option<&'static str>,
 ) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
     Box::pin(async move {
         let server_id = CONFETTI_SERVER_ID
@@ -621,7 +632,11 @@ async fn main() -> Result<()> {
                                         SessionUpdate::ToolCall(
                                             ToolCall::new(tool_call_id.clone(), call.name)
                                                 .status(ToolCallStatus::InProgress)
-                                                .raw_input(json!({"argument": call.argument})),
+                                                .raw_input(
+                                                    call.argument.map(
+                                                        |argument| json!({"argument": argument}),
+                                                    ),
+                                                ),
                                         ),
                                     ),
                                 ))?;
