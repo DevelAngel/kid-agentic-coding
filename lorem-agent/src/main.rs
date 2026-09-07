@@ -142,6 +142,18 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
     }
     steps
 }
+/// The fixed thought/tool-call plan for a commit-fix session: investigate,
+/// then call the close server's git_commit, which both commits and closes
+/// the session. Unlike `plan_for`, this never cycles - a fix session only
+/// ever gets a single seed prompt.
+fn commit_fix_session_plan() -> Vec<Step> {
+    vec![
+        Step::Thought(
+            "Investigating the failing checks reported by the main session and applying a fix before committing",
+        ),
+        Step::ToolCall("Git Commit"),
+    ]
+}
 
 async fn invoke_confetti(
     connection: ConnectionTo<Client>,
@@ -205,6 +217,27 @@ async fn invoke_commit_workflow(message: &str) -> Result<()> {
     client.cancel().await?;
     Ok(())
 }
+async fn invoke_git_commit_fix_close(server: &McpServerStdio, message: &str) -> Result<()> {
+    let mut command = Command::new(&server.command);
+    tracing::debug!(%message, "invoking git-commit-fix-close MCP tool");
+    command.args(&server.args);
+
+    let client = ().serve(TokioChildProcess::new(command)?).await?;
+    client
+        .call_tool(
+            CallToolRequestParams::new("git_commit").with_arguments(
+                serde_json::json!({"message": message})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        )
+        .await?;
+    tracing::debug!("git-commit-fix-close MCP tool completed");
+    client.cancel().await?;
+    Ok(())
+}
+
 async fn list_acp_tools(
     connection: ConnectionTo<Client>,
     server_id: McpServerAcpId,
@@ -370,6 +403,16 @@ async fn main() -> Result<()> {
                     .get()
                     .and_then(|servers| servers.lock().ok())
                     .and_then(|mut servers| servers.remove(&request.session_id));
+                let close_server = first_prompt_servers.as_ref().and_then(|servers| {
+                    servers.iter().find_map(|server| match server {
+                        McpServer::Stdio(server)
+                            if server.name == "git-commit-fix-close-tools" =>
+                        {
+                            Some(server.clone())
+                        }
+                        _ => None,
+                    })
+                });
 
 
                 let _ = cx.clone().spawn(async move {
@@ -390,9 +433,12 @@ async fn main() -> Result<()> {
 
                     let seed = NEXT_PROMPT_SEED.fetch_add(REPLY_WORD_COUNT, Ordering::Relaxed);
                     let text = lorem::generate(seed, REPLY_WORD_COUNT);
-                    for (step_index, step) in
-                        plan_for(prompt_index, supports_mcp).into_iter().enumerate()
-                    {
+                    let steps = match close_server.clone() {
+                        Some(_) => commit_fix_session_plan(),
+                        None => plan_for(prompt_index, supports_mcp),
+                    };
+                    for (step_index, step) in steps.into_iter().enumerate() {
+
                         if CANCELLED.load(Ordering::Relaxed) {
                             responder.respond(PromptResponse::new(StopReason::Cancelled))?;
                             return Ok(());
@@ -428,7 +474,7 @@ async fn main() -> Result<()> {
                                                     json!({
                                                         "command": "printf '%s\\n' 'Demonstrating a deliberately long Bash command whose arguments continue far enough to exercise wrapping in the tool-call display'"
                                                     })
-                                                } else if name == "Git Commit With Fix" {
+                                                } else if name == "Git Commit With Fix" || name == "Git Commit" {
                                                     json!({
                                                         "message": "feat(lorem-agent): demonstrate commit fix workflow"
                                                     })
@@ -482,7 +528,54 @@ async fn main() -> Result<()> {
                                             )),
                                         ),
                                     ))?;
+                                } else if name == "Git Commit" {
+                                    tracing::debug!("displaying fake Git Commit tool call");
+                                    sleep(TOOL_CALL_DELAY).await;
+                                    let (status, result_text) = match close_server.as_ref() {
+                                        Some(server) => match invoke_git_commit_fix_close(
+                                            server,
+                                            "feat(lorem-agent): demonstrate commit fix workflow",
+                                        )
+                                        .await
+                                        {
+                                            Ok(()) => (
+                                                ToolCallStatus::Completed,
+                                                "git_commit: ok".to_owned(),
+                                            ),
+                                            Err(error) => {
+                                                tracing::debug!(
+                                                    ?error,
+                                                    "git-commit-fix-close MCP invocation failed"
+                                                );
+                                                (
+                                                    ToolCallStatus::Failed,
+                                                    "git_commit: failed".to_owned(),
+                                                )
+                                            }
+                                        },
+                                        None => (
+                                            ToolCallStatus::Failed,
+                                            "git_commit: MCP server unavailable".to_owned(),
+                                        ),
+                                    };
+                                    cx.send_notification(AgentNotification::SessionNotification(
+                                        SessionNotification::new(
+                                            request.session_id.clone(),
+                                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                                tool_call_id,
+                                                ToolCallUpdateFields::new().status(status).content(
+                                                    vec![
+                                                        ContentBlock::Text(TextContent::new(
+                                                            result_text,
+                                                        ))
+                                                        .into(),
+                                                    ],
+                                                ),
+                                            )),
+                                        ),
+                                    ))?;
                                 } else if name == "confetti" {
+
                                     sleep(TOOL_CALL_DELAY).await;
                                     let (status, result_text) =
                                         match CONFETTI_SERVER_ID.get().cloned() {
@@ -594,7 +687,7 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod plan_for_tests {
-    use super::{Step, plan_for};
+    use super::{Step, commit_fix_session_plan, plan_for};
 
     fn tool_call_names(steps: &[Step]) -> Vec<&'static str> {
         steps
@@ -610,6 +703,13 @@ mod plan_for_tests {
     fn first_request_has_a_single_thought_and_tool_call() {
         let steps = plan_for(0, false);
         assert_eq!(tool_call_names(&steps), vec!["generate_lorem_ipsum"]);
+        assert!(matches!(steps[0], Step::Thought(_)));
+    }
+
+    #[test]
+    fn commit_fix_session_plan_ends_with_git_commit() {
+        let steps = commit_fix_session_plan();
+        assert_eq!(tool_call_names(&steps), vec!["Git Commit"]);
         assert!(matches!(steps[0], Step::Thought(_)));
     }
 
