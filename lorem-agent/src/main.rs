@@ -82,11 +82,12 @@ static CONFETTI_SERVER_ID: OnceLock<McpServerAcpId> = OnceLock::new();
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 static SESSION_MCP_SERVERS: OnceLock<Mutex<HashMap<SessionId, Vec<McpServer>>>> = OnceLock::new();
 
-/// One step in a fake agent's simulated reasoning: either a thought, or a
-/// tool call that goes `InProgress` then `Completed`.
+/// One step in a fake agent's simulated reasoning: either a thought, a
+/// simulated tool call, or a real MCP tool call.
 enum Step {
     Thought(&'static str),
-    ToolCall(&'static str),
+    SimulatedToolCall(&'static str),
+    McpToolCall(&'static str),
 }
 
 /// The thought/tool-call plan for the `prompt_index`-th prompt in a
@@ -104,39 +105,39 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
             Step::Thought(
                 "Generating a deliberately long lorem ipsum response so the live UI has enough content to demonstrate line wrapping clearly",
             ),
-            Step::ToolCall("generate_lorem_ipsum"),
+            Step::SimulatedToolCall("generate_lorem_ipsum"),
         ],
         1 => vec![
             Step::Thought(
                 "Breaking the request into several carefully chosen steps while keeping enough descriptive detail to exercise the live text wrapping behavior",
             ),
-            Step::ToolCall("search_files"),
-            Step::ToolCall("read_file"),
+            Step::SimulatedToolCall("search_files"),
+            Step::SimulatedToolCall("read_file"),
             Step::Thought(
                 "Cross-checking the findings against the surrounding context to make sure the rendered cluster remains readable while new chunks continue arriving",
             ),
-            Step::ToolCall("list_directory"),
-            Step::ToolCall("Git Commit With Fix"),
+            Step::SimulatedToolCall("list_directory"),
+            Step::McpToolCall("Git Commit With Fix"),
         ],
         _ => vec![
             Step::Thought(
                 "Exploring several possible approaches and intentionally producing enough reasoning text to make incremental rendering and wrapping visible in a narrow terminal",
             ),
-            Step::ToolCall("grep_codebase"),
-            Step::ToolCall("read_file"),
+            Step::SimulatedToolCall("grep_codebase"),
+            Step::SimulatedToolCall("read_file"),
             Step::Thought(
                 "Narrowing down the relevant files while preserving a long enough live thought stream to expose wrapping, indentation, and cluster growth",
             ),
-            Step::ToolCall("read_file"),
+            Step::SimulatedToolCall("read_file"),
             Step::Thought(
                 "Verifying edge cases and checking that the final rendered output stays legible even when long messages and tool details arrive in many small chunks",
             ),
-            Step::ToolCall("write_file"),
+            Step::SimulatedToolCall("write_file"),
         ],
     };
     if supports_mcp && prompt_index % 3 == 2 {
-        steps.push(Step::ToolCall("bash"));
-        steps.push(Step::ToolCall("confetti"));
+        steps.push(Step::McpToolCall("bash"));
+        steps.push(Step::McpToolCall("confetti"));
     }
     steps
 }
@@ -150,10 +151,10 @@ fn commit_fix_session_plan() -> Vec<Step> {
         Step::Thought(
             "Investigating the failing checks reported by the main session and applying a fix before committing",
         ),
-        Step::ToolCall("Rust Check"),
-        Step::ToolCall("Rust Lint"),
-        Step::ToolCall("Rust Test"),
-        Step::ToolCall("Git Commit"),
+        Step::McpToolCall("Rust Check"),
+        Step::McpToolCall("Rust Lint"),
+        Step::McpToolCall("Rust Test"),
+        Step::McpToolCall("Git Commit"),
     ]
 }
 
@@ -486,7 +487,7 @@ async fn main() -> Result<()> {
                                     sleep(Duration::from_millis(100)).await;
                                 }
                             }
-                            Step::ToolCall(name) => {
+                            Step::SimulatedToolCall(name) | Step::McpToolCall(name) => {
                                 let tool_call_id =
                                     ToolCallId::new(format!("lorem-tool-{seed}-{step_index}"));
                                 cx.send_notification(AgentNotification::SessionNotification(
@@ -766,7 +767,7 @@ mod plan_for_tests {
         steps
             .iter()
             .filter_map(|step| match step {
-                Step::ToolCall(name) => Some(*name),
+                Step::SimulatedToolCall(name) | Step::McpToolCall(name) => Some(*name),
                 Step::Thought(_) => None,
             })
             .collect()
@@ -807,8 +808,8 @@ mod plan_for_tests {
     #[test]
     fn third_request_with_mcp_includes_bash_before_confetti() {
         let steps = plan_for(2, true);
-        assert!(matches!(steps[steps.len() - 2], Step::ToolCall("bash")));
-        assert!(matches!(steps.last(), Some(Step::ToolCall("confetti"))));
+        assert!(matches!(steps[steps.len() - 2], Step::McpToolCall("bash")));
+        assert!(matches!(steps.last(), Some(Step::McpToolCall("confetti"))));
     }
 
     #[test]
@@ -826,8 +827,8 @@ mod plan_for_tests {
         // search_files and read_file are adjacent tool calls; since a
         // thought no longer ends the cluster, both this pair and
         // list_directory (after a thought) end up in the same cluster.
-        assert!(matches!(steps[1], Step::ToolCall("search_files")));
-        assert!(matches!(steps[2], Step::ToolCall("read_file")));
+        assert!(matches!(steps[1], Step::SimulatedToolCall("search_files")));
+        assert!(matches!(steps[2], Step::SimulatedToolCall("read_file")));
     }
 
     #[test]
