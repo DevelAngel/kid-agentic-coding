@@ -965,7 +965,7 @@ impl DrawApp for Frame<'_> {
 
                 Message::ToolCluster(cluster) => {
                     let is_focused = app.focused_cluster == Some(index);
-                    let keep_live = index + 1 == render_log.len();
+                    let keep_live = render_log.in_current_turn(index);
 
                     let selected_step = app
                         .focused_tool_call
@@ -1134,7 +1134,7 @@ fn strip_redundant_name<'a>(comment: &'a str, name: &str) -> &'a str {
 
 /// Renders a tool cluster as a summary line followed by its visible steps.
 /// `keep_live` defers the collapse of a just-settled cluster while it is
-/// still the last message.
+/// still part of the current turn (no user message sent since).
 fn render_tool_cluster(
     cluster: &ToolCluster,
     is_focused: bool,

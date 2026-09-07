@@ -41,7 +41,6 @@ impl BubbleLayout {
 
         let mut bubbles = Vec::with_capacity(log.len());
         let mut y: u16 = 0;
-        let last_index = log.len().saturating_sub(1);
 
         for (index, message) in log.messages().iter().enumerate() {
             let (rect, borders, alignment) = match message {
@@ -58,7 +57,7 @@ impl BubbleLayout {
                     framed_rect(bubble_width, width, 2 + text_lines, Alignment::Left)
                 }
                 Message::ToolCluster(cluster) => {
-                    let keep_live = index == last_index;
+                    let keep_live = log.in_current_turn(index);
                     unframed_rect(
                         bubble_width,
                         tool_cluster_row_count(cluster, bubble_width, keep_live),
