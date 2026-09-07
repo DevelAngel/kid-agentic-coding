@@ -161,6 +161,8 @@ async fn run_session(
 
             let mut turn_active = false;
 
+            let mut pending_commit_fix_done: Option<String> = None;
+
             loop {
                 tokio::select! {
                     _ = cancel_rx.recv(), if turn_active => {
@@ -227,9 +229,13 @@ async fn run_session(
                                     });
                                 } else if event_name == Some(mcp::COMMIT_FIX_DONE_EVENT) {
                                     tracing::info!(%commit_message, "commit-fix-done session event received");
-                                    let _ = session_event_tx.send(SessionEvent::CommitFixDone {
-                                        commit_message,
-                                    });
+                                    if turn_active {
+                                        pending_commit_fix_done = Some(commit_message);
+                                    } else {
+                                        let _ = session_event_tx.send(SessionEvent::CommitFixDone {
+                                            commit_message,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -238,11 +244,17 @@ async fn run_session(
 
                     update = session.read_update() => {
                         let update = update?;
-                        if matches!(&update, SessionMessage::StopReason(_)) {
+                        let turn_stopped = matches!(&update, SessionMessage::StopReason(_));
+                        if turn_stopped {
                             turn_active = false;
                             while cancel_rx.try_recv().is_ok() {}
                         }
                         handle_update(update, &session_event_tx).await?;
+                        if turn_stopped && let Some(commit_message) = pending_commit_fix_done.take() {
+                            let _ = session_event_tx.send(SessionEvent::CommitFixDone {
+                                commit_message,
+                            });
+                        }
                     }
                 }
             }
