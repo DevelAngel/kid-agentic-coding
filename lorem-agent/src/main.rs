@@ -26,7 +26,9 @@ use tokio::process::Command;
 use tokio::time::sleep;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::process;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -82,12 +84,25 @@ static CONFETTI_SERVER_ID: OnceLock<McpServerAcpId> = OnceLock::new();
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 static SESSION_MCP_SERVERS: OnceLock<Mutex<HashMap<SessionId, Vec<McpServer>>>> = OnceLock::new();
 
-/// One step in a fake agent's simulated reasoning: either a thought, a
-/// simulated tool call, or a real MCP tool call.
+type McpToolInvoker =
+    fn(McpToolContext, &'static str) -> Pin<Box<dyn Future<Output = Result<String>> + Send>>;
+
+struct McpToolCall {
+    name: &'static str,
+    argument: &'static str,
+    invoke: McpToolInvoker,
+}
+
+struct McpToolContext {
+    connection: ConnectionTo<Client>,
+    rust_server: Option<McpServerStdio>,
+    close_server: Option<McpServerStdio>,
+}
+
 enum Step {
     Thought(&'static str),
     SimulatedToolCall(&'static str),
-    McpToolCall(&'static str),
+    McpToolCall(McpToolCall),
 }
 
 /// The thought/tool-call plan for the `prompt_index`-th prompt in a
@@ -117,7 +132,11 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
                 "Cross-checking the findings against the surrounding context to make sure the rendered cluster remains readable while new chunks continue arriving",
             ),
             Step::SimulatedToolCall("list_directory"),
-            Step::McpToolCall("Git Commit With Fix"),
+            Step::McpToolCall(McpToolCall {
+                name: "Git Commit With Fix",
+                argument: "feat(lorem-agent): demonstrate commit fix workflow",
+                invoke: invoke_commit_workflow,
+            }),
         ],
         _ => vec![
             Step::Thought(
@@ -136,8 +155,12 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
         ],
     };
     if supports_mcp && prompt_index % 3 == 2 {
-        steps.push(Step::McpToolCall("bash"));
-        steps.push(Step::McpToolCall("confetti"));
+        steps.push(Step::SimulatedToolCall("bash"));
+        steps.push(Step::McpToolCall(McpToolCall {
+            name: "confetti",
+            argument: "",
+            invoke: invoke_confetti_tool,
+        }));
     }
     steps
 }
@@ -151,17 +174,30 @@ fn commit_fix_session_plan() -> Vec<Step> {
         Step::Thought(
             "Investigating the failing checks reported by the main session and applying a fix before committing",
         ),
-        Step::McpToolCall("Rust Check"),
-        Step::McpToolCall("Rust Lint"),
-        Step::McpToolCall("Rust Test"),
-        Step::McpToolCall("Git Commit"),
+        Step::McpToolCall(McpToolCall {
+            name: "Rust Check",
+            argument: "rust_check",
+            invoke: invoke_rust_tool,
+        }),
+        Step::McpToolCall(McpToolCall {
+            name: "Rust Lint",
+            argument: "rust_lint",
+            invoke: invoke_rust_tool,
+        }),
+        Step::McpToolCall(McpToolCall {
+            name: "Rust Test",
+            argument: "rust_test",
+            invoke: invoke_rust_tool,
+        }),
+        Step::McpToolCall(McpToolCall {
+            name: "Git Commit",
+            argument: "feat(lorem-agent): demonstrate commit fix workflow",
+            invoke: invoke_git_commit_tool,
+        }),
     ]
 }
 
-async fn invoke_confetti(
-    connection: ConnectionTo<Client>,
-    server_id: McpServerAcpId,
-) -> Result<()> {
+async fn run_confetti(connection: ConnectionTo<Client>, server_id: McpServerAcpId) -> Result<()> {
     let response = connection
         .send_request(ConnectMcpRequest::new(server_id))
         .block_task()
@@ -197,7 +233,7 @@ async fn invoke_confetti(
     Ok(())
 }
 
-async fn invoke_commit_workflow(message: &str) -> Result<()> {
+async fn run_commit_workflow(message: &str) -> Result<()> {
     let server = COMMIT_WORKFLOW_SERVER
         .get()
         .ok_or_else(|| eyre!("commit-workflow MCP server unavailable"))?;
@@ -220,7 +256,7 @@ async fn invoke_commit_workflow(message: &str) -> Result<()> {
     client.cancel().await?;
     Ok(())
 }
-async fn invoke_git_commit_fix_close(server: &McpServerStdio, message: &str) -> Result<()> {
+async fn run_git_commit_fix_close(server: &McpServerStdio, message: &str) -> Result<()> {
     let mut command = Command::new(&server.command);
     tracing::debug!(%message, "invoking git-commit-fix-close MCP tool");
     command.args(&server.args);
@@ -241,7 +277,7 @@ async fn invoke_git_commit_fix_close(server: &McpServerStdio, message: &str) -> 
     Ok(())
 }
 
-async fn invoke_rust_tool(server: &McpServerStdio, tool_name: &str) -> Result<()> {
+async fn run_rust_tool(server: &McpServerStdio, tool_name: &str) -> Result<()> {
     let mut command = Command::new(&server.command);
     tracing::debug!(%tool_name, "invoking rust-tools MCP tool");
     command.args(&server.args);
@@ -253,6 +289,56 @@ async fn invoke_rust_tool(server: &McpServerStdio, tool_name: &str) -> Result<()
     tracing::debug!("rust-tools MCP tool completed");
     client.cancel().await?;
     Ok(())
+}
+
+fn invoke_rust_tool(
+    context: McpToolContext,
+    tool_name: &'static str,
+) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
+        let server = context
+            .rust_server
+            .ok_or_else(|| eyre!("rust-tools MCP server unavailable"))?;
+        run_rust_tool(&server, tool_name).await?;
+        Ok(format!("{tool_name}: ok"))
+    })
+}
+
+fn invoke_commit_workflow(
+    _context: McpToolContext,
+    message: &'static str,
+) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
+        run_commit_workflow(message).await?;
+        Ok("git_commit_with_fix: ok".to_owned())
+    })
+}
+
+fn invoke_git_commit_tool(
+    context: McpToolContext,
+    message: &'static str,
+) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
+        let server = context
+            .close_server
+            .ok_or_else(|| eyre!("git-commit-fix-close MCP server unavailable"))?;
+        run_git_commit_fix_close(&server, message).await?;
+        Ok("git_commit: ok".to_owned())
+    })
+}
+
+fn invoke_confetti_tool(
+    context: McpToolContext,
+    _argument: &'static str,
+) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
+        let server_id = CONFETTI_SERVER_ID
+            .get()
+            .cloned()
+            .ok_or_else(|| eyre!("confetti MCP server unavailable"))?;
+        run_confetti(context.connection, server_id).await?;
+        Ok("confetti: ok".to_owned())
+    })
 }
 
 async fn list_acp_tools(
@@ -389,7 +475,6 @@ async fn main() -> Result<()> {
                 responder.respond(NewSessionResponse::new(session_id))
             },
             on_receive_request!(),
-
         )
         .on_receive_notification(
             async |notification: CancelNotification, _cx| {
@@ -422,9 +507,7 @@ async fn main() -> Result<()> {
                     .and_then(|mut servers| servers.remove(&request.session_id));
                 let close_server = first_prompt_servers.as_ref().and_then(|servers| {
                     servers.iter().find_map(|server| match server {
-                        McpServer::Stdio(server)
-                            if server.name == "git-commit-fix-close-tools" =>
-                        {
+                        McpServer::Stdio(server) if server.name == "git-commit-fix-close-tools" => {
                             Some(server.clone())
                         }
                         _ => None,
@@ -439,13 +522,13 @@ async fn main() -> Result<()> {
                     })
                 });
 
-
-
                 let _ = cx.clone().spawn(async move {
                     if let Some(servers) = first_prompt_servers {
                         let tools = match list_registered_tools(cx.clone(), servers).await {
                             Ok(tools) => tools,
-                            Err(error) => format!("Registered MCP tools: <failed to list tools: {error}>"),
+                            Err(error) => {
+                                format!("Registered MCP tools: <failed to list tools: {error}>")
+                            }
                         };
                         cx.send_notification(AgentNotification::SessionNotification(
                             SessionNotification::new(
@@ -464,7 +547,6 @@ async fn main() -> Result<()> {
                         None => plan_for(prompt_index, supports_mcp),
                     };
                     for (step_index, step) in steps.into_iter().enumerate() {
-
                         if CANCELLED.load(Ordering::Relaxed) {
                             responder.respond(PromptResponse::new(StopReason::Cancelled))?;
                             return Ok(());
@@ -487,7 +569,7 @@ async fn main() -> Result<()> {
                                     sleep(Duration::from_millis(100)).await;
                                 }
                             }
-                            Step::SimulatedToolCall(name) | Step::McpToolCall(name) => {
+                            Step::SimulatedToolCall(name) => {
                                 let tool_call_id =
                                     ToolCallId::new(format!("lorem-tool-{seed}-{step_index}"));
                                 cx.send_notification(AgentNotification::SessionNotification(
@@ -496,232 +578,91 @@ async fn main() -> Result<()> {
                                         SessionUpdate::ToolCall(
                                             ToolCall::new(tool_call_id.clone(), name)
                                                 .status(ToolCallStatus::InProgress)
-                                                .raw_input(if name == "bash" {
-                                                    json!({
-                                                        "command": "printf '%s\\n' 'Demonstrating a deliberately long Bash command whose arguments continue far enough to exercise wrapping in the tool-call display'"
-                                                    })
-                                                } else if name == "Git Commit With Fix" || name == "Git Commit" {
-                                                    json!({
-                                                        "message": "feat(lorem-agent): demonstrate commit fix workflow"
-                                                    })
-                                                } else {
-                                                    json!({
-                                                        "tool": name,
-                                                        "prompt_seed": seed,
-                                                        "step_index": step_index
-                                                    })
-                                                }),
+                                                .raw_input(json!({
+                                                    "tool": name,
+                                                    "prompt_seed": seed,
+                                                    "step_index": step_index
+                                                })),
                                         ),
                                     ),
                                 ))?;
-
-                                if name == "Rust Check" || name == "Rust Lint" || name == "Rust Test" {
-                                    let tool_name = match name {
-                                        "Rust Check" => "rust_check",
-                                        "Rust Lint" => "rust_lint",
-                                        _ => "rust_test",
-                                    };
-                                    tracing::debug!(%tool_name, "displaying fake Rust tool call");
-                                    sleep(TOOL_CALL_DELAY).await;
-                                    let (status, result_text) = match rust_server.as_ref() {
-                                        Some(server) => {
-                                            match invoke_rust_tool(server, tool_name).await {
-                                                Ok(()) => (
-                                                    ToolCallStatus::Completed,
-                                                    format!("{tool_name}: ok"),
-                                                ),
-                                                Err(error) => {
-                                                    tracing::debug!(
-                                                        ?error,
-                                                        "rust-tools MCP invocation failed"
-                                                    );
-                                                    (
-                                                        ToolCallStatus::Failed,
-                                                        format!("{tool_name}: failed"),
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        None => (
-                                            ToolCallStatus::Failed,
-                                            format!("{tool_name}: MCP server unavailable"),
-                                        ),
-                                    };
-                                    cx.send_notification(AgentNotification::SessionNotification(
-                                        SessionNotification::new(
-                                            request.session_id.clone(),
-                                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                                                tool_call_id,
-                                                ToolCallUpdateFields::new().status(status).content(
-                                                    vec![
-                                                        ContentBlock::Text(TextContent::new(
-                                                            result_text,
-                                                        ))
-                                                        .into(),
-                                                    ],
-                                                ),
-                                            )),
-                                        ),
-                                    ))?;
-                                } else if name == "Git Commit With Fix" {
-                                    tracing::debug!("displaying fake Git Commit With Fix tool call");
-                                    sleep(TOOL_CALL_DELAY).await;
-                                    let (status, result_text) = match invoke_commit_workflow(
-                                        "feat(lorem-agent): demonstrate commit fix workflow",
+                                sleep(TOOL_CALL_DELAY).await;
+                                let (status, result_text) = if fail_tool && step_index == 0 {
+                                    (ToolCallStatus::Failed, format!("{name}: simulated failure"))
+                                } else {
+                                    (
+                                        ToolCallStatus::Completed,
+                                        format!("{name}: ok ({} words)", REPLY_WORD_COUNT),
                                     )
-                                    .await
-                                    {
-                                        Ok(()) => (
-                                            ToolCallStatus::Completed,
-                                            "git_commit_with_fix: ok".to_owned(),
+                                };
+                                cx.send_notification(AgentNotification::SessionNotification(
+                                    SessionNotification::new(
+                                        request.session_id.clone(),
+                                        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                            tool_call_id,
+                                            ToolCallUpdateFields::new().status(status).content(
+                                                vec![
+                                                    ContentBlock::Text(TextContent::new(
+                                                        result_text,
+                                                    ))
+                                                    .into(),
+                                                ],
+                                            ),
+                                        )),
+                                    ),
+                                ))?;
+                            }
+                            Step::McpToolCall(call) => {
+                                let tool_call_id =
+                                    ToolCallId::new(format!("lorem-tool-{seed}-{step_index}"));
+                                cx.send_notification(AgentNotification::SessionNotification(
+                                    SessionNotification::new(
+                                        request.session_id.clone(),
+                                        SessionUpdate::ToolCall(
+                                            ToolCall::new(tool_call_id.clone(), call.name)
+                                                .status(ToolCallStatus::InProgress)
+                                                .raw_input(json!({"argument": call.argument})),
                                         ),
+                                    ),
+                                ))?;
+                                sleep(TOOL_CALL_DELAY).await;
+
+                                let context = McpToolContext {
+                                    connection: cx.clone(),
+                                    rust_server: rust_server.clone(),
+                                    close_server: close_server.clone(),
+                                };
+                                let (status, result_text) =
+                                    match (call.invoke)(context, call.argument).await {
+                                        Ok(result) => (ToolCallStatus::Completed, result),
                                         Err(error) => {
                                             tracing::debug!(
                                                 ?error,
-                                                "commit-workflow MCP invocation failed"
+                                                tool = call.name,
+                                                "MCP tool invocation failed"
                                             );
                                             (
                                                 ToolCallStatus::Failed,
-                                                "git_commit_with_fix: failed".to_owned(),
+                                                format!("{}: failed", call.name),
                                             )
                                         }
                                     };
-                                    cx.send_notification(AgentNotification::SessionNotification(
-                                        SessionNotification::new(
-                                            request.session_id.clone(),
-                                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                                                tool_call_id,
-                                                ToolCallUpdateFields::new().status(status).content(
-                                                    vec![
-                                                        ContentBlock::Text(TextContent::new(
-                                                            result_text,
-                                                        ))
-                                                        .into(),
-                                                    ],
-                                                ),
-                                            )),
-                                        ),
-                                    ))?;
-                                } else if name == "Git Commit" {
-                                    tracing::debug!("displaying fake Git Commit tool call");
-                                    sleep(TOOL_CALL_DELAY).await;
-                                    let (status, result_text) = match close_server.as_ref() {
-                                        Some(server) => match invoke_git_commit_fix_close(
-                                            server,
-                                            "feat(lorem-agent): demonstrate commit fix workflow",
-                                        )
-                                        .await
-                                        {
-                                            Ok(()) => (
-                                                ToolCallStatus::Completed,
-                                                "git_commit: ok".to_owned(),
+                                cx.send_notification(AgentNotification::SessionNotification(
+                                    SessionNotification::new(
+                                        request.session_id.clone(),
+                                        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                            tool_call_id,
+                                            ToolCallUpdateFields::new().status(status).content(
+                                                vec![
+                                                    ContentBlock::Text(TextContent::new(
+                                                        result_text,
+                                                    ))
+                                                    .into(),
+                                                ],
                                             ),
-                                            Err(error) => {
-                                                tracing::debug!(
-                                                    ?error,
-                                                    "git-commit-fix-close MCP invocation failed"
-                                                );
-                                                (
-                                                    ToolCallStatus::Failed,
-                                                    "git_commit: failed".to_owned(),
-                                                )
-                                            }
-                                        },
-                                        None => (
-                                            ToolCallStatus::Failed,
-                                            "git_commit: MCP server unavailable".to_owned(),
-                                        ),
-                                    };
-                                    cx.send_notification(AgentNotification::SessionNotification(
-                                        SessionNotification::new(
-                                            request.session_id.clone(),
-                                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                                                tool_call_id,
-                                                ToolCallUpdateFields::new().status(status).content(
-                                                    vec![
-                                                        ContentBlock::Text(TextContent::new(
-                                                            result_text,
-                                                        ))
-                                                        .into(),
-                                                    ],
-                                                ),
-                                            )),
-                                        ),
-                                    ))?;
-                                } else if name == "confetti" {
-
-                                    sleep(TOOL_CALL_DELAY).await;
-                                    let (status, result_text) =
-                                        match CONFETTI_SERVER_ID.get().cloned() {
-                                            Some(server_id) => {
-                                                match invoke_confetti(cx.clone(), server_id).await {
-                                                    Ok(()) => (
-                                                        ToolCallStatus::Completed,
-                                                        "confetti: ok".to_owned(),
-                                                    ),
-                                                    Err(error) => {
-                                                        tracing::debug!(
-                                                            ?error,
-                                                            "confetti MCP invocation failed"
-                                                        );
-                                                        (
-                                                            ToolCallStatus::Failed,
-                                                            "confetti: failed".to_owned(),
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                            None => (
-                                                ToolCallStatus::Failed,
-                                                "confetti: MCP server unavailable".to_owned(),
-                                            ),
-                                        };
-                                    cx.send_notification(AgentNotification::SessionNotification(
-                                        SessionNotification::new(
-                                            request.session_id.clone(),
-                                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                                                tool_call_id,
-                                                ToolCallUpdateFields::new().status(status).content(
-                                                    vec![
-                                                        ContentBlock::Text(TextContent::new(
-                                                            result_text,
-                                                        ))
-                                                        .into(),
-                                                    ],
-                                                ),
-                                            )),
-                                        ),
-                                    ))?;
-                                } else {
-                                    sleep(TOOL_CALL_DELAY).await;
-                                    let (status, result_text) = if fail_tool && step_index == 0 {
-                                        (
-                                            ToolCallStatus::Failed,
-                                            format!("{name}: simulated failure"),
-                                        )
-                                    } else {
-                                        (
-                                            ToolCallStatus::Completed,
-                                            format!("{name}: ok ({} words)", REPLY_WORD_COUNT),
-                                        )
-                                    };
-                                    cx.send_notification(AgentNotification::SessionNotification(
-                                        SessionNotification::new(
-                                            request.session_id.clone(),
-                                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                                                tool_call_id,
-                                                ToolCallUpdateFields::new().status(status).content(
-                                                    vec![
-                                                        ContentBlock::Text(TextContent::new(
-                                                            result_text,
-                                                        ))
-                                                        .into(),
-                                                    ],
-                                                ),
-                                            )),
-                                        ),
-                                    ))?;
-                                }
+                                        )),
+                                    ),
+                                ))?;
                             }
                         }
                     }
@@ -761,13 +702,14 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod plan_for_tests {
-    use super::{Step, commit_fix_session_plan, plan_for};
+    use super::{McpToolCall, Step, commit_fix_session_plan, plan_for};
 
     fn tool_call_names(steps: &[Step]) -> Vec<&'static str> {
         steps
             .iter()
             .filter_map(|step| match step {
-                Step::SimulatedToolCall(name) | Step::McpToolCall(name) => Some(*name),
+                Step::SimulatedToolCall(name) => Some(*name),
+                Step::McpToolCall(call) => Some(call.name),
                 Step::Thought(_) => None,
             })
             .collect()
@@ -808,8 +750,17 @@ mod plan_for_tests {
     #[test]
     fn third_request_with_mcp_includes_bash_before_confetti() {
         let steps = plan_for(2, true);
-        assert!(matches!(steps[steps.len() - 2], Step::McpToolCall("bash")));
-        assert!(matches!(steps.last(), Some(Step::McpToolCall("confetti"))));
+        assert!(matches!(
+            steps[steps.len() - 2],
+            Step::SimulatedToolCall("bash")
+        ));
+        assert!(matches!(
+            steps.last(),
+            Some(Step::McpToolCall(McpToolCall {
+                name: "confetti",
+                ..
+            }))
+        ));
     }
 
     #[test]
