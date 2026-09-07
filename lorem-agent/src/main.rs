@@ -19,7 +19,11 @@ use agent_client_protocol::{
 };
 use color_eyre::eyre::eyre;
 use color_eyre::{Report, Result};
-use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
+use rmcp::{
+    ServiceExt,
+    model::{CallToolRequestParams, CallToolResult},
+    transport::TokioChildProcess,
+};
 use serde_json::json;
 use serde_json::{Map, Value};
 use tokio::process::Command;
@@ -282,13 +286,28 @@ async fn run_commit_workflow(message: &str) -> Result<()> {
     client.cancel().await?;
     Ok(())
 }
+fn git_commit_tool_error(result: &CallToolResult) -> Option<String> {
+    if !result.is_error.unwrap_or(false) {
+        return None;
+    }
+
+    let message = result
+        .content
+        .iter()
+        .filter_map(|content| content.as_text())
+        .map(|content| content.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!("git commit tool failed: {message}"))
+}
+
 async fn run_git_commit_fix_close(server: &McpServerStdio, message: &str) -> Result<()> {
     let mut command = Command::new(&server.command);
     tracing::debug!(%message, "invoking git-commit-fix-close MCP tool");
     command.args(&server.args);
 
     let client = ().serve(TokioChildProcess::new(command)?).await?;
-    client
+    let result = client
         .call_tool(
             CallToolRequestParams::new("git_commit").with_arguments(
                 serde_json::json!({"message": message})
@@ -298,8 +317,13 @@ async fn run_git_commit_fix_close(server: &McpServerStdio, message: &str) -> Res
             ),
         )
         .await?;
+    if let Some(error) = git_commit_tool_error(&result) {
+        return Err(eyre!(error));
+    }
+
     tracing::debug!("git-commit-fix-close MCP tool completed");
     client.cancel().await?;
+
     Ok(())
 }
 
@@ -756,6 +780,18 @@ mod plan_for_tests {
         McpServer, McpServerStdio, McpToolCall, SessionKind, Step, commit_fix_session_plan,
         invoke_git_commit_tool, plan_for, session_kind,
     };
+    use rmcp::model::CallToolResult;
+    #[test]
+    fn git_commit_tool_error_preserves_tool_message() {
+        let result = CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+            "git commit failed: nothing to commit",
+        )]);
+
+        assert_eq!(
+            super::git_commit_tool_error(&result).as_deref(),
+            Some("git commit tool failed: git commit failed: nothing to commit")
+        );
+    }
 
     #[test]
     fn session_kind_identifies_fix_session_from_close_server() {
