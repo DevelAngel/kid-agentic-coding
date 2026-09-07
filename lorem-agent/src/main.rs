@@ -82,7 +82,31 @@ static COMMIT_WORKFLOW_SERVER: OnceLock<McpServerStdio> = OnceLock::new();
 static CONFETTI_SERVER_ID: OnceLock<McpServerAcpId> = OnceLock::new();
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
-static SESSION_MCP_SERVERS: OnceLock<Mutex<HashMap<SessionId, Vec<McpServer>>>> = OnceLock::new();
+static SESSION_MCP_SERVERS: OnceLock<Mutex<HashMap<SessionId, SessionState>>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionKind {
+    Main,
+    Fix,
+}
+
+struct SessionState {
+    kind: SessionKind,
+    servers: Vec<McpServer>,
+}
+
+fn session_kind(servers: &[McpServer]) -> SessionKind {
+    if servers.iter().any(|server| {
+        matches!(
+            server,
+            McpServer::Stdio(server) if server.name == "git-commit-fix-close-tools"
+        )
+    }) {
+        SessionKind::Fix
+    } else {
+        SessionKind::Main
+    }
+}
 
 type McpToolInvoker = fn(
     McpToolContext,
@@ -481,7 +505,13 @@ async fn main() -> Result<()> {
                     .get_or_init(|| Mutex::new(HashMap::new()))
                     .lock()
                     .map_err(|_| Error::from(ErrorCode::InternalError))?
-                    .insert(session_id.clone(), request.mcp_servers.clone());
+                    .insert(
+                        session_id.clone(),
+                        SessionState {
+                            kind: session_kind(&request.mcp_servers),
+                            servers: request.mcp_servers.clone(),
+                        },
+                    );
 
                 responder.respond(NewSessionResponse::new(session_id))
             },
@@ -512,10 +542,15 @@ async fn main() -> Result<()> {
                 let supports_mcp = !args.disable_mcp;
                 let fail_tool = args.fail_tool;
 
-                let first_prompt_servers = SESSION_MCP_SERVERS
+                let session_state = SESSION_MCP_SERVERS
                     .get()
-                    .and_then(|servers| servers.lock().ok())
-                    .and_then(|mut servers| servers.remove(&request.session_id));
+                    .and_then(|sessions| sessions.lock().ok())
+                    .and_then(|mut sessions| sessions.remove(&request.session_id));
+                let session_kind = session_state
+                    .as_ref()
+                    .map_or(SessionKind::Main, |state| state.kind);
+                let first_prompt_servers = session_state.map(|state| state.servers);
+
                 let close_server = first_prompt_servers.as_ref().and_then(|servers| {
                     servers.iter().find_map(|server| match server {
                         McpServer::Stdio(server) if server.name == "git-commit-fix-close-tools" => {
@@ -553,9 +588,9 @@ async fn main() -> Result<()> {
 
                     let seed = NEXT_PROMPT_SEED.fetch_add(REPLY_WORD_COUNT, Ordering::Relaxed);
                     let text = lorem::generate(seed, REPLY_WORD_COUNT);
-                    let steps = match close_server.clone() {
-                        Some(_) => commit_fix_session_plan(),
-                        None => plan_for(prompt_index, supports_mcp),
+                    let steps = match session_kind {
+                        SessionKind::Fix => commit_fix_session_plan(),
+                        SessionKind::Main => plan_for(prompt_index, supports_mcp),
                     };
                     for (step_index, step) in steps.into_iter().enumerate() {
                         if CANCELLED.load(Ordering::Relaxed) {
@@ -717,7 +752,44 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod plan_for_tests {
-    use super::{McpToolCall, Step, commit_fix_session_plan, plan_for};
+    use super::{
+        McpServer, McpServerStdio, McpToolCall, SessionKind, Step, commit_fix_session_plan,
+        invoke_git_commit_tool, plan_for, session_kind,
+    };
+
+    #[test]
+    fn session_kind_identifies_fix_session_from_close_server() {
+        let servers = vec![McpServer::Stdio(McpServerStdio::new(
+            "git-commit-fix-close-tools",
+            std::path::PathBuf::from("git-commit-fix-close"),
+        ))];
+        assert_eq!(session_kind(&servers), SessionKind::Fix);
+    }
+
+    #[test]
+    fn session_kind_keeps_main_session_without_close_server() {
+        let servers = vec![McpServer::Stdio(McpServerStdio::new(
+            "git-commit-fix-open-tools",
+            std::path::PathBuf::from("git-commit-fix-open"),
+        ))];
+        assert_eq!(session_kind(&servers), SessionKind::Main);
+    }
+
+    #[test]
+    fn fix_session_commit_uses_close_server_git_commit() {
+        let steps = commit_fix_session_plan();
+        let Some(Step::McpToolCall(call)) = steps.last() else {
+            panic!("fix session must end with Git Commit");
+        };
+        let expected: super::McpToolInvoker = invoke_git_commit_tool;
+
+        assert_eq!(call.name, "Git Commit");
+        assert_eq!(
+            call.argument,
+            Some("feat(lorem-agent): demonstrate commit fix workflow")
+        );
+        assert!(std::ptr::fn_addr_eq(call.invoke, expected));
+    }
 
     fn tool_call_names(steps: &[Step]) -> Vec<&'static str> {
         steps
