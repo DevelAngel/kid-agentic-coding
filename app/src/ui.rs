@@ -19,7 +19,7 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -53,6 +53,10 @@ const AGENT_NAME: &str = "Senshi";
 const AUTO_ICON: &str = "\u{2699}";
 const AUTO_COLOR: Color = Color::Yellow;
 const AUTO_NAME: &str = "Auto Prompt";
+
+/// Nerd Font glyph framing the active-model label on an agent bubble.
+const MODEL_ICON: &str = "\u{f085}";
+
 /// Rows scrolled per PageUp/PageDown press.
 const SCROLL_STEP: u16 = 3;
 
@@ -1124,11 +1128,15 @@ fn bubble_paragraph<'a>(
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
     if let Some(footer) = footer {
-        block = block.title_bottom(Span::styled(
-            format!(" {footer} "),
-            Style::default().fg(color),
-        ));
+        block = block.title_bottom(
+            Line::from(Span::styled(
+                format!(" {MODEL_ICON} {footer} {MODEL_ICON} "),
+                Style::default().fg(color),
+            ))
+            .alignment(Alignment::Right),
+        );
     }
+
     let text = render_markdown(text);
     Paragraph::new(text)
         .wrap(Wrap { trim: true })
