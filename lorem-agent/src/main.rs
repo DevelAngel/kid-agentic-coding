@@ -7,10 +7,11 @@ use clap::Parser;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentNotification, CancelNotification, ConnectMcpRequest, ContentBlock, ContentChunk,
-    InitializeRequest, InitializeResponse, McpServer, McpServerAcpId, McpServerStdio,
+    AgentNotification, CancelNotification, ConfigOptionUpdate, ConnectMcpRequest, ContentBlock,
+    ContentChunk, InitializeRequest, InitializeResponse, McpServer, McpServerAcpId, McpServerStdio,
     MessageMcpNotification, MessageMcpRequest, NewSessionRequest, NewSessionResponse,
-    PromptRequest, PromptResponse, SessionId, SessionNotification, SessionUpdate, StopReason,
+    PromptRequest, PromptResponse, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionId, SessionNotification, SessionUpdate, StopReason,
     TextContent, ToolCall, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol::{
@@ -63,6 +64,20 @@ struct Args {
 /// Number of words the fake agent replies with per prompt.
 const REPLY_WORD_COUNT: usize = 48;
 
+/// The two fake models the agent alternates between per prompt, to exercise
+/// clients that display which model produced each message.
+const MODEL_IDS: [&str; 2] = ["lorem-fast-1", "lorem-deep-1"];
+
+/// Builds the `Model`-category config option reporting `model_id` as the
+/// currently selected value, alongside both selectable choices.
+fn model_config_option(model_id: &'static str) -> SessionConfigOption {
+    let choices = MODEL_IDS
+        .iter()
+        .map(|id| SessionConfigSelectOption::new(*id, *id))
+        .collect::<Vec<_>>();
+    SessionConfigOption::select("model", "Model", model_id, choices)
+        .category(SessionConfigOptionCategory::Model)
+}
 /// How long the fake agent "thinks" before its first chunk, so a client
 /// polling for a running state actually has something to observe.
 const THINKING_DELAY: Duration = Duration::from_millis(500);
@@ -593,6 +608,16 @@ async fn main() -> Result<()> {
                 });
 
                 let _ = cx.clone().spawn(async move {
+                    let model_id = MODEL_IDS[prompt_index % MODEL_IDS.len()];
+                    cx.send_notification(AgentNotification::SessionNotification(
+                        SessionNotification::new(
+                            request.session_id.clone(),
+                            SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(vec![
+                                model_config_option(model_id),
+                            ])),
+                        ),
+                    ))?;
+
                     if let Some(servers) = first_prompt_servers {
                         let tools = match list_registered_tools(cx.clone(), servers).await {
                             Ok(tools) => tools,
@@ -772,6 +797,23 @@ async fn main() -> Result<()> {
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod model_config_option_tests {
+    use super::{MODEL_IDS, model_config_option};
+    use agent_client_protocol::schema::v1::{SessionConfigKind, SessionConfigOptionCategory};
+
+    #[test]
+    fn reports_the_given_model_as_the_current_value() {
+        let option = model_config_option(MODEL_IDS[1]);
+
+        assert_eq!(option.category, Some(SessionConfigOptionCategory::Model));
+        let SessionConfigKind::Select(select) = &option.kind else {
+            panic!("expected a select-style config option");
+        };
+        assert_eq!(select.current_value.to_string(), MODEL_IDS[1]);
+    }
 }
 
 #[cfg(test)]
