@@ -9,13 +9,16 @@ use rmcp::{
     ErrorData as McpError, ServerHandler, service, tool, tool_handler, tool_router, transport,
 };
 use serde_json::json;
+use thiserror::Error;
 use tokio::task;
 
 use std::env;
 use std::io::{self, Write};
+use std::mem;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixStream};
 use std::process::{Command, Stdio};
+use std::result;
 
 #[derive(Debug, Parser)]
 #[command(about = "Standalone MCP server for investigating and closing a commit-fix session")]
@@ -36,8 +39,19 @@ struct CommitFixDoneEvent<'a> {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct CommitParams {
-    /// Commit message used verbatim.
-    message: String,
+    /// Conventional Commit type.
+    #[serde(rename = "type")]
+    commit_type: String,
+    /// Optional scope for the commit.
+    #[serde(default)]
+    scope: Option<String>,
+    /// Commit description.
+    description: String,
+    /// Non-empty commit body.
+    body: String,
+    /// Optional breaking-change note.
+    #[serde(default)]
+    breaking_change_note: Option<String>,
     /// Amend the previous commit instead of creating a new one.
     #[serde(default)]
     amend: bool,
@@ -48,12 +62,122 @@ struct AddParams {
     /// File or directory path relative to the workspace root.
     path: String,
 }
-
 #[derive(Debug)]
 struct ProcessOutput {
     status: i32,
     stdout: String,
     stderr: String,
+}
+
+const VALID_COMMIT_TYPES: [&str; 9] = [
+    "build", "chore", "ci", "docs", "feat", "fix", "refactor", "style", "test",
+];
+
+#[derive(Debug, Error)]
+enum CommitMessageError {
+    #[error("invalid commit type: {0}")]
+    InvalidType(String),
+    #[error("commit body must not be empty")]
+    EmptyBody,
+    #[error("commit body must not contain BREAKING CHANGE")]
+    BreakingChangeInBody,
+    #[error("commit summary is {0} characters long and longer than 50 characters")]
+    LongSummary(usize),
+    #[error("commit body line {line} is {length} characters long and longer than 72 characters")]
+    LongBodyLine { line: usize, length: usize },
+}
+
+fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<CommitMessageError>> {
+    let mut errors = Vec::new();
+
+    if !VALID_COMMIT_TYPES.contains(&params.commit_type.as_str()) {
+        errors.push(CommitMessageError::InvalidType(params.commit_type.clone()));
+    }
+    if params.body.trim().is_empty() {
+        errors.push(CommitMessageError::EmptyBody);
+    }
+    if params.body.contains("BREAKING CHANGE") {
+        errors.push(CommitMessageError::BreakingChangeInBody);
+    }
+
+    let description = lowercase_first_char(&params.description);
+    let scope = params
+        .scope
+        .as_deref()
+        .map(|scope| format!("({scope})"))
+        .unwrap_or_default();
+    let breaking = if params.breaking_change_note.is_some() {
+        "!"
+    } else {
+        ""
+    };
+    let summary = format!("{}{}{}: {description}", params.commit_type, scope, breaking);
+
+    if summary.chars().count() > 50 {
+        errors.push(CommitMessageError::LongSummary(summary.chars().count()));
+    }
+    for (index, line) in params.body.lines().enumerate() {
+        if line.chars().count() > 72 {
+            errors.push(CommitMessageError::LongBodyLine {
+                line: index + 1,
+                length: line.chars().count(),
+            });
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let mut message = format!("{summary}\n\n{}", params.body);
+    if let Some(note) = &params.breaking_change_note {
+        message.push_str("\n\nBREAKING CHANGE: ");
+        message.push_str(&wrap_breaking_change_note(note));
+    }
+    Ok(message)
+}
+
+fn wrap_breaking_change_note(note: &str) -> String {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+
+    for word in note.split_whitespace() {
+        let max_width = if lines.is_empty() { 54 } else { 68 };
+        if line.is_empty() {
+            line.push_str(word);
+        } else if line.chars().count() + 1 + word.chars().count() <= max_width {
+            line.push(' ');
+            line.push_str(word);
+        } else {
+            lines.push(mem::take(&mut line));
+            line.push_str(word);
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+
+    lines.join("\n    ")
+}
+
+fn lowercase_first_char(value: &str) -> String {
+    let Some(first) = value.chars().next() else {
+        return String::new();
+    };
+    let Some(word) = value.split_whitespace().next() else {
+        return value.to_owned();
+    };
+
+    if word.chars().skip(1).any(char::is_uppercase) {
+        return value.to_owned();
+    }
+
+    let lower = first.to_lowercase().to_string();
+    if lower == first.to_string() {
+        return value.to_owned();
+    }
+
+    format!("{lower}{remaining}", remaining = &value[lower.len()..])
 }
 
 #[derive(Clone)]
@@ -133,20 +257,31 @@ impl GitCommitFixCloseTools {
         &self,
         Parameters(params): Parameters<CommitParams>,
     ) -> Result<CallToolResult, McpError> {
+        let commit_message = match build_commit_message(&params) {
+            Ok(message) => message,
+            Err(errors) => {
+                let text = errors
+                    .into_iter()
+                    .map(|error| format!("- {error}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Ok(CallToolResult::error(vec![ContentBlock::text(text)]));
+            }
+        };
         let result = if params.amend {
             command_result(
                 "git",
-                &["commit", "--amend", "-m", &params.message],
-                "git commit",
+                &["commit", "--amend", "-m", &commit_message],
+                "git commit (amend)",
             )
             .await?
         } else {
-            command_result("git", &["commit", "-m", &params.message], "git commit").await?
+            command_result("git", &["commit", "-m", &commit_message], "git commit").await?
         };
 
         let event = CommitFixDoneEvent {
             event: COMMIT_FIX_DONE_EVENT,
-            commit_message: &params.message,
+            commit_message: &commit_message,
         };
         let message = serde_json::to_vec(&event).map_err(|err| {
             McpError::internal_error(
@@ -291,9 +426,92 @@ mod tests {
 
     #[test]
     fn commit_params_default_to_create_a_new_commit() {
-        let params: CommitParams =
-            serde_json::from_value(json!({"message": "fix review feedback"})).unwrap();
+        let params: CommitParams = serde_json::from_value(json!({
+            "type": "fix",
+            "description": "Review feedback",
+            "body": "Address the review feedback.",
+        }))
+        .unwrap();
 
         assert!(!params.amend);
+        assert_eq!(params.commit_type, "fix");
+    }
+
+    #[test]
+    fn build_commit_message_normalizes_description_and_breaking_change() {
+        let params = CommitParams {
+            commit_type: "feat".to_owned(),
+            scope: Some("session".to_owned()),
+            description: "Improve commit handling".to_owned(),
+            body: "Handle commit messages centrally.".to_owned(),
+            breaking_change_note: Some("The commit input is now structured.".to_owned()),
+            amend: false,
+        };
+
+        let message = build_commit_message(&params).unwrap();
+
+        assert_eq!(
+            message,
+            "feat(session)!: improve commit handling\n\nHandle commit messages centrally.\n\nBREAKING CHANGE: The commit input is now structured."
+        );
+    }
+
+    #[test]
+    fn build_commit_message_reports_multiple_violations() {
+        let params = CommitParams {
+            commit_type: "unknown".to_owned(),
+            scope: None,
+            description: "A very long description that makes the summary too long".to_owned(),
+            body: format!("BREAKING CHANGE\n{}", "x".repeat(73)),
+            breaking_change_note: None,
+            amend: false,
+        };
+
+        let errors = build_commit_message(&params).unwrap_err();
+
+        assert_eq!(errors.len(), 4);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("invalid commit type"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("summary"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("BREAKING CHANGE"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("body line 2"))
+        );
+    }
+
+    #[test]
+    fn lowercase_first_char_handles_empty_and_unicode_text() {
+        assert_eq!(lowercase_first_char(""), "");
+        assert_eq!(lowercase_first_char("Review"), "review");
+        assert_eq!(lowercase_first_char("Änderung"), "änderung");
+    }
+
+    #[test]
+    fn breaking_change_note_wraps_and_indents_continuation_lines() {
+        let note = "This breaking change note is deliberately long enough to wrap across multiple lines while keeping continuation lines indented.";
+
+        assert_eq!(
+            wrap_breaking_change_note(note),
+            "This breaking change note is deliberately long enough\n    to wrap across multiple lines while keeping continuation lines\n    indented."
+        );
+    }
+
+    #[test]
+    fn lowercase_first_char_preserves_acronyms() {
+        assert_eq!(lowercase_first_char("Add"), "add");
+        assert_eq!(lowercase_first_char("XML parser"), "XML parser");
     }
 }
