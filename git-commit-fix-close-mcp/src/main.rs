@@ -38,6 +38,9 @@ struct CommitFixDoneEvent<'a> {
 struct CommitParams {
     /// Commit message used verbatim.
     message: String,
+    /// Amend the previous commit instead of creating a new one.
+    #[serde(default)]
+    amend: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -117,7 +120,7 @@ impl GitCommitFixCloseTools {
     }
 
     #[tool(
-        description = "Creates a Git commit with the given message and closes the commit-fix session",
+        description = "Creates a Git commit with the given message, optionally amends the previous commit, and closes the commit-fix session",
         annotations(
             title = "Git Commit",
             read_only_hint = false,
@@ -130,8 +133,16 @@ impl GitCommitFixCloseTools {
         &self,
         Parameters(params): Parameters<CommitParams>,
     ) -> Result<CallToolResult, McpError> {
-        let result =
-            command_result("git", &["commit", "-m", &params.message], "git commit").await?;
+        let result = if params.amend {
+            command_result(
+                "git",
+                &["commit", "--amend", "-m", &params.message],
+                "git commit",
+            )
+            .await?
+        } else {
+            command_result("git", &["commit", "-m", &params.message], "git commit").await?
+        };
 
         let event = CommitFixDoneEvent {
             event: COMMIT_FIX_DONE_EVENT,
@@ -276,5 +287,13 @@ mod tests {
                 .to_string()
                 .contains("git commit failed: commit failed")
         );
+    }
+
+    #[test]
+    fn commit_params_default_to_create_a_new_commit() {
+        let params: CommitParams =
+            serde_json::from_value(json!({"message": "fix review feedback"})).unwrap();
+
+        assert!(!params.amend);
     }
 }
