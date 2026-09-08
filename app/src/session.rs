@@ -11,7 +11,8 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelNotification, InitializeRequest, NewSessionRequest, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionNotification, SessionUpdate, ToolCall, ToolCallContent, ToolCallUpdate, ToolKind,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionNotification,
+    SessionUpdate, ToolCall, ToolCallContent, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
@@ -324,6 +325,12 @@ async fn handle_update(
                                 result,
                             });
                         }
+                        SessionUpdate::ConfigOptionUpdate(update) => {
+                            if let Some(model) = model_from_config_options(&update.config_options) {
+                                let _ = event_tx.send(SessionEvent::ModelChanged(model));
+                            }
+                        }
+
                         sn => {
                             tracing::debug!("{:?} dropped", sn);
                         }
@@ -368,6 +375,19 @@ fn tool_call_title(kind: ToolKind, title: String) -> String {
     } else {
         title
     }
+}
+
+/// Extracts the current value of the model selector, if the agent reports one.
+fn model_from_config_options(config_options: &[SessionConfigOption]) -> Option<String> {
+    config_options.iter().find_map(|option| {
+        if option.category != Some(SessionConfigOptionCategory::Model) {
+            return None;
+        }
+        match &option.kind {
+            SessionConfigKind::Select(select) => Some(select.current_value.to_string()),
+            _ => None,
+        }
+    })
 }
 
 /// Renders a tool call's result content into a display string, joining
