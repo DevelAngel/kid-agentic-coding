@@ -40,6 +40,9 @@ pub enum SessionEvent {
         parameters: Option<String>,
         result: Option<String>,
     },
+    /// The agent reported a new active model.
+    ModelChanged(String),
+
     /// The agent requests permission to proceed.
     ///
     /// Reply with `Some(option_id)` to select an option, or `None` to cancel.
