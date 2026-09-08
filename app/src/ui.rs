@@ -313,6 +313,10 @@ impl App {
                     }
                 }
             }
+            SessionEvent::ModelChanged(model) => {
+                tracing::debug!(%model, "event: model_changed");
+                self.chat_log.set_current_model(model);
+            }
         }
     }
 
@@ -933,6 +937,7 @@ impl DrawApp for Frame<'_> {
                             USER_COLOR,
                             &m.text,
                             &visible_bubble,
+                            None,
                         ),
                         render_rect,
                     );
@@ -945,6 +950,7 @@ impl DrawApp for Frame<'_> {
                             AUTO_COLOR,
                             &m.text,
                             &visible_bubble,
+                            None,
                         ),
                         render_rect,
                     );
@@ -958,6 +964,7 @@ impl DrawApp for Frame<'_> {
                             AGENT_COLOR,
                             &m.text,
                             &visible_bubble,
+                            m.model.as_deref(),
                         ),
                         render_rect,
                     );
@@ -1098,15 +1105,17 @@ impl DrawApp for Frame<'_> {
         self.render_widget(paragraph, popup_area);
     }
 }
-/// Builds the framed paragraph for a User/Agent bubble.
+/// Builds the framed paragraph for a User/Agent bubble. `footer`, when set,
+/// is shown as a label on the bubble's bottom border.
 fn bubble_paragraph<'a>(
     icon: &str,
     name: &str,
     color: Color,
     text: &'a str,
     visible_bubble: &VisibleBubble,
+    footer: Option<&str>,
 ) -> Paragraph<'a> {
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(visible_bubble.borders)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(color))
@@ -1114,6 +1123,12 @@ fn bubble_paragraph<'a>(
             format!(" {icon} {name} "),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
+    if let Some(footer) = footer {
+        block = block.title_bottom(Span::styled(
+            format!(" {footer} "),
+            Style::default().fg(color),
+        ));
+    }
     let text = render_markdown(text);
     Paragraph::new(text)
         .wrap(Wrap { trim: true })
