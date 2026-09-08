@@ -21,6 +21,9 @@ pub struct UserMessage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentMessage {
     pub text: String,
+    /// The model that produced this message, if the agent has reported one.
+    /// Fixed at creation time so later model switches don't rewrite history.
+    pub model: Option<String>,
 }
 
 /// Outcome of an interactive session.
@@ -175,6 +178,7 @@ pub struct EntryId {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChatLog {
     messages: Vec<Message>,
+    current_model: Option<String>,
 }
 
 impl ChatLog {
@@ -226,13 +230,21 @@ impl ChatLog {
             }));
     }
 
+    /// Sets the model reported as currently active. New agent messages are
+    /// stamped with this value; existing messages are unaffected.
+    pub fn set_current_model(&mut self, model: impl Into<String>) {
+        self.current_model = Some(model.into());
+    }
+
     /// Appends an agent message. Ends whatever tool cluster is currently
     /// open, so the next thought or tool call starts a fresh one. Returns
     /// a handle for later appending via `append_to_agent`.
     pub fn push_agent(&mut self, text: impl Into<String>) -> EntryId {
         let message_index = self.messages.len();
-        self.messages
-            .push(Message::Agent(AgentMessage { text: text.into() }));
+        self.messages.push(Message::Agent(AgentMessage {
+            text: text.into(),
+            model: self.current_model.clone(),
+        }));
         EntryId {
             message_index,
             step_index: 0,

@@ -28,6 +28,44 @@ fn push_agent_appends_agent_message() {
 }
 
 #[test]
+fn agent_message_has_no_model_before_any_model_is_set() {
+    let mut log = ChatLog::new();
+    log.push_agent("hi there");
+
+    assert!(matches!(log.messages()[0], Message::Agent(ref m) if m.model.is_none()));
+}
+
+#[test]
+fn agent_message_is_stamped_with_the_current_model() {
+    let mut log = ChatLog::new();
+    log.set_current_model("claude-sonnet-5");
+    log.push_agent("hi there");
+
+    assert!(matches!(
+        log.messages()[0],
+        Message::Agent(ref m) if m.model.as_deref() == Some("claude-sonnet-5")
+    ));
+}
+
+#[test]
+fn model_switch_only_affects_later_messages() {
+    let mut log = ChatLog::new();
+    log.set_current_model("claude-sonnet-5");
+    log.push_agent("first");
+    log.set_current_model("claude-opus-5");
+    log.push_agent("second");
+
+    let Message::Agent(first) = &log.messages()[0] else {
+        panic!("expected an agent message");
+    };
+    let Message::Agent(second) = &log.messages()[1] else {
+        panic!("expected an agent message");
+    };
+    assert_eq!(first.model.as_deref(), Some("claude-sonnet-5"));
+    assert_eq!(second.model.as_deref(), Some("claude-opus-5"));
+}
+
+#[test]
 fn push_session_notice_appends_outcome() {
     let mut log = ChatLog::new();
     log.push_session_notice(SessionNoticeKind::Error, "Session failed: connection lost");
