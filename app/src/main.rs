@@ -1,7 +1,7 @@
 mod log_buffer;
 mod ui;
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::Result;
 use kid_agentic_coding::PromptRunner;
@@ -9,20 +9,6 @@ use log_buffer::LogBuffer;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::time::ChronoLocal;
-
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Run interactive ACP terminal UI
-    Tui {
-        /// Skips confetti MCP tool registration even when the agent supports it.
-        #[arg(long)]
-        disable_confetti: bool,
-
-        /// Agent command and arguments, or a single JSON configuration
-        #[arg(required = true, num_args = 1..)]
-        agent_args: Vec<String>,
-    },
-}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -32,8 +18,13 @@ enum Command {
     long_about = None
 )]
 struct Args {
-    #[command(subcommand)]
-    command: Command,
+    /// Skips confetti MCP tool registration even when the agent supports it.
+    #[arg(long)]
+    disable_confetti: bool,
+
+    /// Agent command and arguments, or a single JSON configuration
+    #[arg(required = true, num_args = 1..)]
+    agent_args: Vec<String>,
 
     #[command(flatten)]
     verbosity: Verbosity<InfoLevel>,
@@ -55,15 +46,8 @@ async fn main() -> Result<()> {
         .init();
     tracing::debug!("logging initialized");
 
-    match args.command {
-        Command::Tui {
-            disable_confetti,
-            agent_args,
-        } => {
-            let agent = PromptRunner::parse_agent_args(&agent_args)?;
-            ui::run(agent, log_buffer, disable_confetti).await?;
-        }
-    }
+    let agent = PromptRunner::parse_agent_args(&args.agent_args)?;
+    ui::run(agent, log_buffer, args.disable_confetti).await?;
     Ok(())
 }
 
