@@ -4,15 +4,11 @@ mod ui;
 use clap::{Parser, Subcommand};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::Result;
-use color_eyre::eyre::WrapErr;
 use kid_agentic_coding::PromptRunner;
 use log_buffer::LogBuffer;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::time::ChronoLocal;
-
-use std::ffi::OsString;
-use std::process::{self, Command as ProcessCommand};
 
 #[derive(Subcommand, Debug)]
 enum Command {
@@ -26,10 +22,6 @@ enum Command {
         #[arg(required = true, num_args = 1..)]
         agent_args: Vec<String>,
     },
-
-    /// Dispatches unknown commands to `kid-agentic-coding-*` binaries.
-    #[command(external_subcommand)]
-    External(Vec<OsString>),
 }
 
 #[derive(Parser, Debug)]
@@ -70,15 +62,6 @@ async fn main() -> Result<()> {
         } => {
             let agent = PromptRunner::parse_agent_args(&agent_args)?;
             ui::run(agent, log_buffer, disable_confetti).await?;
-        }
-        Command::External(mut args) => {
-            let command = args.remove(0);
-            let binary = format!("kid-agentic-coding-{}", command.to_string_lossy());
-            let status = ProcessCommand::new(&binary)
-                .args(args)
-                .status()
-                .wrap_err(format!("failed to start binary {}", binary))?;
-            process::exit(status.code().unwrap_or(1));
         }
     }
     Ok(())
