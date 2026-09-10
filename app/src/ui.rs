@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use std::future;
 use std::io::{self, Stdout};
 use std::mem;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Nerd Font glyph and accent color for the user (mage).
@@ -665,6 +666,7 @@ async fn run_app(
     app: &mut App,
     main_session: &mut SessionHandle,
     agent_config: &AcpAgentConfig,
+    fs_socket_dir: Option<PathBuf>,
     term_events: &mut UnboundedReceiver<Event>,
 ) -> io::Result<()> {
     let mut spinner = time::interval(Duration::from_millis(250));
@@ -701,6 +703,7 @@ async fn run_app(
                                 app,
                                 main_session,
                                 agent_config,
+                                fs_socket_dir.clone(),
                                 instructions,
                                 commit_message,
                             )
@@ -749,6 +752,7 @@ async fn open_commit_fix_session(
     app: &mut App,
     main_session: &mut SessionHandle,
     agent_config: &AcpAgentConfig,
+    fs_socket_dir: Option<PathBuf>,
     instructions: String,
     commit_message: String,
 ) -> SessionHandle {
@@ -763,8 +767,12 @@ async fn open_commit_fix_session(
 
     tracing::info!("main session cancelled; starting commit-fix session");
     let fix_component = AcpAgent::new(agent_config.clone());
-    let fix_session =
-        start_interactive_session(fix_component, true, Some(COMMIT_FIX_WORKFLOW.to_owned()));
+    let fix_session = start_interactive_session(
+        fix_component,
+        true,
+        Some(COMMIT_FIX_WORKFLOW.to_owned()),
+        fs_socket_dir,
+    );
     tracing::info!("commit-fix session started");
 
     app.chat_log.push_session_transition(COMMIT_FIX_WORKFLOW);
@@ -1331,9 +1339,15 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 
 /// Runs the interactive terminal UI against the given agent component until
 /// the user quits, restoring the terminal afterwards regardless of outcome.
-pub async fn run(agent: AcpAgent, log_buffer: LogBuffer, disable_confetti: bool) -> io::Result<()> {
+pub async fn run(
+    agent: AcpAgent,
+    log_buffer: LogBuffer,
+    disable_confetti: bool,
+    fs_socket_dir: Option<PathBuf>,
+) -> io::Result<()> {
     let agent_config = agent.config().clone();
-    let mut session = start_interactive_session(agent, disable_confetti, None);
+    let mut session =
+        start_interactive_session(agent, disable_confetti, None, fs_socket_dir.clone());
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
     let mut app = App::with_log_buffer(log_buffer);
@@ -1343,6 +1357,7 @@ pub async fn run(agent: AcpAgent, log_buffer: LogBuffer, disable_confetti: bool)
         &mut app,
         &mut session,
         &agent_config,
+        fs_socket_dir,
         &mut term_events,
     )
     .await;
