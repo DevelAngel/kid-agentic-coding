@@ -1404,7 +1404,7 @@ dependencies = [
 
 [[package]]
 name = "kid-agentic-coding"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-rmcp",
@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "kid-agentic-coding-confetti"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "kid-agentic-coding-git-commit-fix-close"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1457,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "kid-agentic-coding-git-commit-fix-open"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "kid-agentic-coding-rust"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1553,7 +1553,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lorem-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-client-protocol",
  "clap",
