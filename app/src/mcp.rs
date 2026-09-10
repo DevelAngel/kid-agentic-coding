@@ -16,9 +16,11 @@ use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedSender;
 
 use std::env;
+use std::fs;
 use std::io;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener};
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -139,6 +141,7 @@ fn next_socket_id() -> u64 {
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Unique name of this process's workflow bridge socket.
 pub fn workflow_socket_name() -> String {
     format!(
         "kid-agentic-coding-workflow-{}-{}",
@@ -147,7 +150,7 @@ pub fn workflow_socket_name() -> String {
     )
 }
 
-/// Creates a Linux abstract-namespace Unix socket for the stdio MCP bridge.
+/// Unique name of this process's confetti bridge socket.
 pub fn confetti_socket_name() -> String {
     format!(
         "kid-agentic-coding-confetti-{}-{}",
@@ -156,18 +159,146 @@ pub fn confetti_socket_name() -> String {
     )
 }
 
-pub fn bind_confetti_socket(socket_name: &str) -> io::Result<UnixListener> {
-    let address = SocketAddr::from_abstract_name(socket_name.as_bytes())?;
+/// Path of a bridge socket in the filesystem fallback directory. Used when
+/// the agent is sandboxed and cannot reach Linux abstract-namespace sockets.
+pub fn fs_socket_path(directory: &Path, socket_name: &str) -> PathBuf {
+    directory.join(format!("{socket_name}.sock"))
+}
+
+/// Resolves a bridge socket identifier to a socket address. Identifiers
+/// containing a path separator are filesystem paths; bare identifiers are
+/// Linux abstract-namespace names.
+pub fn socket_address(socket: &str) -> io::Result<SocketAddr> {
+    if socket.contains('/') {
+        Ok(SocketAddr::from_pathname(Path::new(socket))?)
+    } else {
+        Ok(SocketAddr::from_abstract_name(socket.as_bytes())?)
+    }
+}
+
+fn bind_bridge_socket(socket: &str) -> io::Result<UnixListener> {
+    let address = socket_address(socket)?;
+    if let Some(path) = address.as_pathname() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // A stale socket file from a previous or crashed run would make the
+        // bind fail, so it is removed before rebinding.
+        if let Err(err) = fs::remove_file(path)
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            return Err(err);
+        }
+    }
     let listener = UnixListener::bind_addr(&address)?;
     listener.set_nonblocking(true)?;
     Ok(listener)
 }
 
-pub fn bind_workflow_socket(socket_name: &str) -> io::Result<UnixListener> {
-    let address = SocketAddr::from_abstract_name(socket_name.as_bytes())?;
-    let listener = UnixListener::bind_addr(&address)?;
-    listener.set_nonblocking(true)?;
-    Ok(listener)
+pub fn bind_confetti_socket(socket: &str) -> io::Result<UnixListener> {
+    bind_bridge_socket(socket)
+}
+
+pub fn bind_workflow_socket(socket: &str) -> io::Result<UnixListener> {
+    bind_bridge_socket(socket)
+}
+
+/// Removes a filesystem bridge socket file when the session that bound it
+/// ends. Abstract-namespace sockets vanish with the binding process and need
+/// no such cleanup.
+pub struct SocketFileGuard {
+    path: Option<PathBuf>,
+}
+
+impl SocketFileGuard {
+    pub fn new(path: Option<PathBuf>) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for SocketFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take()
+            && let Err(err) = fs::remove_file(&path)
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(?err, path = %path.display(), "failed to remove bridge socket file");
+        }
+    }
+}
+
+#[cfg(test)]
+mod bridge_socket_tests {
+    use super::{SocketFileGuard, bind_workflow_socket, fs_socket_path, socket_address};
+    use std::os::unix::net::UnixStream;
+    use std::path::Path;
+
+    #[test]
+    fn fs_socket_path_extends_the_fallback_directory() {
+        assert_eq!(
+            fs_socket_path(
+                Path::new("/run/user/1000/kid-agentic-coding"),
+                "kid-agentic-coding-workflow-1-2"
+            ),
+            Path::new("/run/user/1000/kid-agentic-coding/kid-agentic-coding-workflow-1-2.sock")
+        );
+    }
+
+    #[test]
+    fn socket_address_distinguishes_paths_from_abstract_names() {
+        assert!(
+            socket_address("/run/user/1000/kid-agentic-coding/bridge.sock")
+                .expect("socket address is valid")
+                .as_pathname()
+                .is_some()
+        );
+        assert!(
+            socket_address("kid-agentic-coding-workflow-1-2")
+                .expect("socket address is valid")
+                .as_pathname()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn filesystem_socket_is_reachable_and_removed_by_the_guard() {
+        let path = std::env::temp_dir().join(format!(
+            "kid-agentic-coding-bridge-{}.sock",
+            std::process::id()
+        ));
+        let identifier = path.display().to_string();
+
+        let guard = SocketFileGuard::new(Some(path.clone()));
+        let listener = bind_workflow_socket(&identifier).expect("bind succeeds");
+        assert!(path.exists());
+        UnixStream::connect(&path).expect("socket is reachable via the path");
+        drop(listener);
+        assert!(path.exists());
+        drop(guard);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn binding_replaces_a_stale_socket_file() {
+        let path = std::env::temp_dir().join(format!(
+            "kid-agentic-coding-stale-{}.sock",
+            std::process::id()
+        ));
+        let identifier = path.display().to_string();
+        std::fs::write(&path, b"stale").expect("stale file is created");
+
+        let _listener = bind_workflow_socket(&identifier).expect("bind over a stale file succeeds");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn guard_tolerates_a_missing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "kid-agentic-coding-missing-{}.sock",
+            std::process::id()
+        ));
+        let _ = SocketFileGuard::new(Some(path));
+    }
 }
 
 #[cfg(test)]

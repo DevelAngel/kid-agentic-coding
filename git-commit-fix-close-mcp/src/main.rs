@@ -17,13 +17,14 @@ use std::io::{self, Write};
 use std::mem;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixStream};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::result;
 
 #[derive(Debug, Parser)]
 #[command(about = "Standalone MCP server for investigating and closing a commit-fix session")]
 struct Args {
-    /// Name of the abstract-namespace Unix socket used for workflow events.
+    /// Name or path of the Unix socket used for workflow events.
     #[arg(long)]
     socket: String,
 }
@@ -290,10 +291,11 @@ impl GitCommitFixCloseTools {
             )
         })?;
         notify_bridge(&self.socket_name, &message).map_err(|err| {
-            tracing::error!(?err, "commit-fix-done event notification failed");
+            let message = bridge_error(&self.socket_name, &err);
+            tracing::error!("{message}");
             McpError::internal_error(
                 "failed to notify commit-fix-done bridge",
-                Some(json!({"reason": err.to_string()})),
+                Some(json!({"reason": message})),
             )
         })?;
         tracing::debug!("commit-fix-done event sent");
@@ -315,11 +317,35 @@ impl ServerHandler for GitCommitFixCloseTools {
     }
 }
 
-fn notify_bridge(socket_name: &str, message: &[u8]) -> io::Result<()> {
-    let addr = SocketAddr::from_abstract_name(socket_name.as_bytes())?;
-    let mut stream = UnixStream::connect_addr(&addr)?;
+fn notify_bridge(socket: &str, message: &[u8]) -> io::Result<()> {
+    let mut stream = connect_to_bridge(socket)?;
     stream.write_all(message)?;
     stream.write_all(b"\n")
+}
+
+/// Identifiers containing a path separator address a filesystem socket
+/// (the sandboxed-agent fallback); bare identifiers are
+/// abstract-namespace names.
+fn connect_to_bridge(socket: &str) -> io::Result<UnixStream> {
+    if socket.contains('/') {
+        UnixStream::connect(Path::new(socket))
+    } else {
+        UnixStream::connect_addr(&SocketAddr::from_abstract_name(socket.as_bytes())?)
+    }
+}
+
+/// Full description of a failed bridge connection: which socket was
+/// attempted, the underlying OS error, and the fix for the common
+/// sandboxed-agent case. Used both for the startup probe log and for tool
+/// errors so the agent can relay actionable guidance to the user.
+fn bridge_error(socket: &str, err: &io::Error) -> String {
+    format!(
+        "bridge socket '{socket}' is unreachable: {err}. If the agent runs sandboxed, \
+         start kid-agentic-coding with --fs-socket-dir pointing at a writable \
+         directory that is mounted into the sandbox (e.g. \
+         $XDG_RUNTIME_DIR/kid-agentic-coding), because Linux abstract-namespace \
+         sockets cannot cross a sandbox boundary."
+    )
 }
 
 async fn command_result(
@@ -395,6 +421,13 @@ async fn main() -> Result<()> {
     tracing::debug!("git logging initialized");
 
     let args = Args::parse();
+    // Probe the bridge socket, but never abort on failure: exiting here
+    // would leave the agent waiting for this server to become ready, and
+    // server stderr is not reliably visible to the user anyway. Tool calls
+    // report the same error when they need the bridge.
+    if let Err(err) = connect_to_bridge(&args.socket) {
+        tracing::error!("{}", bridge_error(&args.socket, &err));
+    }
     let server = GitCommitFixCloseTools::new(args.socket);
     let transport = transport::io::stdio();
     let running = service::serve_server(server, transport).await?;
@@ -513,5 +546,30 @@ mod tests {
     fn lowercase_first_char_preserves_acronyms() {
         assert_eq!(lowercase_first_char("Add"), "add");
         assert_eq!(lowercase_first_char("XML parser"), "XML parser");
+    }
+
+    #[test]
+    fn startup_probe_reaches_a_listening_session() {
+        let path = std::env::temp_dir().join(format!(
+            "kid-agentic-coding-bridge-ping-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind succeeds");
+
+        connect_to_bridge(&path.display().to_string()).expect("listening socket is reachable");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn bridge_error_names_the_socket_and_the_fs_socket_dir_flag() {
+        let socket = format!("kid-agentic-coding-bridge-test-{}", std::process::id());
+        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file or directory");
+        let message = bridge_error(&socket, &err);
+
+        assert!(message.contains(&socket));
+        assert!(message.contains("--fs-socket-dir"));
+        assert!(message.contains("sandbox"));
     }
 }

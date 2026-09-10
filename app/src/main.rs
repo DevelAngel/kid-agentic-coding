@@ -6,6 +6,7 @@ use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::Result;
 use kid_agentic_coding::PromptRunner;
 use log_buffer::LogBuffer;
+use std::path::PathBuf;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::time::ChronoLocal;
@@ -21,6 +22,16 @@ struct Args {
     /// Skips confetti MCP tool registration even when the agent supports it.
     #[arg(long)]
     disable_confetti: bool,
+
+    /// Uses filesystem sockets under DIR for the MCP bridge instead of
+    /// Linux abstract-namespace sockets, which cannot cross a sandbox
+    /// boundary. When the agent is sandboxed, DIR must be mounted
+    /// writable into the sandbox; the conventional choice is
+    /// `$XDG_RUNTIME_DIR/kid-agentic-coding`, e.g.
+    /// `/run/user/1000/kid-agentic-coding`. The directory is created
+    /// automatically before the agent starts.
+    #[arg(long, value_name = "DIR")]
+    fs_socket_dir: Option<PathBuf>,
 
     /// Agent command and arguments, or a single JSON configuration
     #[arg(required = true, num_args = 1..)]
@@ -47,7 +58,7 @@ async fn main() -> Result<()> {
     tracing::debug!("logging initialized");
 
     let agent = PromptRunner::parse_agent_args(&args.agent_args)?;
-    ui::run(agent, log_buffer, args.disable_confetti).await?;
+    ui::run(agent, log_buffer, args.disable_confetti, args.fs_socket_dir).await?;
     Ok(())
 }
 
@@ -67,4 +78,33 @@ fn env_filter(verbosity: &Verbosity<InfoLevel>, log_baseline: LevelFilter) -> En
         .add_directive(baseline.into())
         .add_directive(directive)
         .add_directive(agent_stderr)
+}
+
+#[cfg(test)]
+mod args_tests {
+    use super::Args;
+    use clap::Parser;
+    use std::path::PathBuf;
+
+    #[test]
+    fn fs_socket_dir_is_disabled_by_default() {
+        let args = Args::parse_from(["kid-agentic-coding", "opencode", "acp"]);
+
+        assert_eq!(args.fs_socket_dir, None);
+    }
+
+    #[test]
+    fn fs_socket_dir_accepts_an_explicit_directory() {
+        let args = Args::parse_from([
+            "kid-agentic-coding",
+            "--fs-socket-dir",
+            "/run/user/1000/kid-agentic-coding",
+            "opencode",
+        ]);
+
+        assert_eq!(
+            args.fs_socket_dir,
+            Some(PathBuf::from("/run/user/1000/kid-agentic-coding"))
+        );
+    }
 }

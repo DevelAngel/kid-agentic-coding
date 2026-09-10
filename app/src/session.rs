@@ -39,6 +39,7 @@ pub fn start_interactive_session(
     component: impl ConnectTo<Client> + 'static,
     disable_confetti: bool,
     workflow_name: Option<String>,
+    fs_socket_dir: Option<PathBuf>,
 ) -> SessionHandle {
     let (prompt_tx, prompt_rx) = mpsc::unbounded_channel::<String>();
     let (cancel_tx, cancel_rx) = mpsc::unbounded_channel::<()>();
@@ -51,6 +52,7 @@ pub fn start_interactive_session(
         event_tx,
         disable_confetti,
         workflow_name.clone(),
+        fs_socket_dir,
     ));
 
     SessionHandle {
@@ -71,7 +73,21 @@ async fn run_session(
     event_tx: UnboundedSender<SessionEvent>,
     disable_confetti: bool,
     workflow_name: Option<String>,
+    fs_socket_dir: Option<PathBuf>,
 ) {
+    // A sandboxed agent may have the fallback directory mounted into its
+    // mount namespace when it starts, so the directory must exist before
+    // the agent process is spawned, not when the sockets are bound.
+    if let Some(directory) = fs_socket_dir.as_ref()
+        && let Err(err) = std::fs::create_dir_all(directory)
+    {
+        let _ = event_tx.send(SessionEvent::Error(format!(
+            "failed to create bridge socket directory '{}': {err}",
+            directory.display()
+        )));
+        tracing::error!(?err, dir = %directory.display(), "failed to create bridge socket directory");
+        return;
+    }
     let session_event_tx = event_tx.clone();
     let result = Client
         .builder()
@@ -83,13 +99,33 @@ async fn run_session(
             let mut confetti_listener: Option<UnixListener> = None;
             #[allow(unused_assignments)]
             let mut workflow_listener: Option<UnixListener> = None;
+            let mut confetti_socket_guard = mcp::SocketFileGuard::new(None);
+            let mut workflow_socket_guard = mcp::SocketFileGuard::new(None);
 
-            let workflow_socket_name = mcp::workflow_socket_name();
+            // Linux abstract-namespace sockets cannot cross a sandbox
+            // boundary, so when a fallback directory is set the bridge
+            // sockets live on filesystem paths inside it instead.
+            let workflow_socket = match fs_socket_dir.as_ref() {
+                Some(directory) => {
+                    let socket_name = mcp::workflow_socket_name();
+                    let path = mcp::fs_socket_path(directory, &socket_name);
+                    let identifier = path.display().to_string();
+                    workflow_socket_guard = mcp::SocketFileGuard::new(Some(path));
+                    identifier
+                }
+                None => mcp::workflow_socket_name(),
+            };
+            if let Some(directory) = fs_socket_dir.as_ref() {
+                tracing::info!(
+                    dir = %directory.display(),
+                    "bridge sockets use the filesystem fallback; a sandboxed agent can only reach them if this directory is mounted writable into the sandbox"
+                );
+            }
             let mut session = if workflow_name.is_some() {
                 workflow_listener = Some(UnixListener::from_std(
-                    mcp::bind_workflow_socket(&workflow_socket_name).map_err(Error::into_internal_error)?
+                    mcp::bind_workflow_socket(&workflow_socket).map_err(Error::into_internal_error)?
                 ).map_err(Error::into_internal_error)?);
-                match mcp::stdio_mcp_servers_for_fix_session(&workflow_socket_name) {
+                match mcp::stdio_mcp_servers_for_fix_session(&workflow_socket) {
 
                     Ok(servers) => cx
                         .build_session_from(
@@ -109,9 +145,9 @@ async fn run_session(
                 }
             } else if disable_confetti {
                 workflow_listener = Some(UnixListener::from_std(
-                    mcp::bind_workflow_socket(&workflow_socket_name).map_err(Error::into_internal_error)?
+                    mcp::bind_workflow_socket(&workflow_socket).map_err(Error::into_internal_error)?
                 ).map_err(Error::into_internal_error)?);
-                let servers = mcp::stdio_mcp_servers_without_confetti(&workflow_socket_name).map_err(Error::into_internal_error)?;
+                let servers = mcp::stdio_mcp_servers_without_confetti(&workflow_socket).map_err(Error::into_internal_error)?;
                 cx.build_session_from(
                     NewSessionRequest::new(PathBuf::from(SESSION_ROOT)).mcp_servers(servers),
                 )
@@ -120,9 +156,9 @@ async fn run_session(
                 .await?
             } else if mcp::supports_mcp(&init_response) {
                 workflow_listener = Some(UnixListener::from_std(
-                    mcp::bind_workflow_socket(&workflow_socket_name).map_err(Error::into_internal_error)?
+                    mcp::bind_workflow_socket(&workflow_socket).map_err(Error::into_internal_error)?
                 ).map_err(Error::into_internal_error)?);
-                let servers = mcp::stdio_mcp_servers_without_confetti(&workflow_socket_name).map_err(Error::into_internal_error)?;
+                let servers = mcp::stdio_mcp_servers_without_confetti(&workflow_socket).map_err(Error::into_internal_error)?;
                 match cx
                     .build_session_from(
                         NewSessionRequest::new(PathBuf::from(SESSION_ROOT)).mcp_servers(servers),
@@ -141,16 +177,25 @@ async fn run_session(
                     }
                 }
             } else {
-                let confetti_socket_name = mcp::confetti_socket_name();
+                let confetti_socket = match fs_socket_dir.as_ref() {
+                    Some(directory) => {
+                        let socket_name = mcp::confetti_socket_name();
+                        let path = mcp::fs_socket_path(directory, &socket_name);
+                        let identifier = path.display().to_string();
+                        confetti_socket_guard = mcp::SocketFileGuard::new(Some(path));
+                        identifier
+                    }
+                    None => mcp::confetti_socket_name(),
+                };
                 confetti_listener = Some(UnixListener::from_std(
-                    mcp::bind_confetti_socket(&confetti_socket_name).map_err(Error::into_internal_error)?
+                    mcp::bind_confetti_socket(&confetti_socket).map_err(Error::into_internal_error)?
                 ).map_err(Error::into_internal_error)?);
                 workflow_listener = Some(UnixListener::from_std(
-                    mcp::bind_workflow_socket(&workflow_socket_name).map_err(Error::into_internal_error)?
+                    mcp::bind_workflow_socket(&workflow_socket).map_err(Error::into_internal_error)?
                 ).map_err(Error::into_internal_error)?);
                 let servers = mcp::stdio_mcp_servers(
-                    &confetti_socket_name,
-                    &workflow_socket_name,
+                    &confetti_socket,
+                    &workflow_socket,
                 ) .map_err(Error::into_internal_error)?;
                 cx.build_session_from(
                     NewSessionRequest::new(PathBuf::from(SESSION_ROOT)).mcp_servers(servers),
@@ -259,6 +304,11 @@ async fn run_session(
                     }
                 }
             }
+
+            // Removes the filesystem bridge socket files of the fallback
+            // directory, if the session used one.
+            drop(confetti_socket_guard);
+            drop(workflow_socket_guard);
 
             Ok(())
         })
