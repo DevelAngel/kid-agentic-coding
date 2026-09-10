@@ -207,7 +207,7 @@ impl App {
                 }
 
                 if text.is_empty() {
-                    return; // Skip whitespace-only chunks
+                    return; // Skip empty chunks
                 }
 
                 tracing::debug!(

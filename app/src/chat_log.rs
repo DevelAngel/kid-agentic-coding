@@ -251,17 +251,13 @@ impl ChatLog {
         }
     }
 
-    /// Appends text to an existing agent message, cleaning up extra whitespace.
+    /// Appends streamed text to an existing agent message. Chunks are raw
+    /// deltas of the model's output, so they are appended verbatim to
+    /// reconstruct the original text, spacing and line breaks exactly.
     /// A no-op if `id` no longer refers to an agent message.
     pub fn append_to_agent(&mut self, id: EntryId, text: &str) {
         if let Some(Message::Agent(msg)) = self.messages.get_mut(id.message_index) {
-            let cleaned = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            if !cleaned.is_empty() {
-                if !msg.text.is_empty() {
-                    msg.text.push(' ');
-                }
-                msg.text.push_str(&cleaned);
-            }
+            msg.text.push_str(text);
         }
     }
 
@@ -363,23 +359,15 @@ impl ChatLog {
         }
     }
 
-    /// Appends text to an existing thought step, cleaning up extra whitespace.
-    /// Removes multiple consecutive spaces and unnecessary newlines.
+    /// Appends streamed text to an existing thought step. Chunks are raw
+    /// deltas of the model's output, so they are appended verbatim to
+    /// reconstruct the original text, spacing and line breaks exactly.
     /// A no-op if `id` no longer refers to a thought step.
     pub fn append_to_thought(&mut self, id: EntryId, text: &str) {
         if let Some(Message::ToolCluster(cluster)) = self.messages.get_mut(id.message_index)
             && let Some(Step::Thought(thought)) = cluster.steps.get_mut(id.step_index)
         {
-            // Clean up: remove multiple spaces, trim each line
-            let cleaned = text.split_whitespace().collect::<Vec<_>>().join(" ");
-
-            if !cleaned.is_empty() {
-                // Add space separator only if thought already has content
-                if !thought.is_empty() {
-                    thought.push(' ');
-                }
-                thought.push_str(&cleaned);
-            }
+            thought.push_str(text);
         }
     }
 
@@ -448,6 +436,57 @@ mod tests {
         log.push_thought("\n\t");
 
         assert!(log.is_empty());
+    }
+
+    #[test]
+    fn agent_chunks_split_mid_word_are_appended_verbatim() {
+        let mut log = ChatLog::new();
+
+        let id = log.push_agent("\"Ready");
+        log.append_to_agent(id, " for review\" is the state of a");
+        log.append_to_agent(id, " pull/");
+        log.append_to_agent(id, "merge request");
+        log.append_to_agent(id, " — (e.g., you");
+        log.append_to_agent(id, " toggle a");
+        log.append_to_agent(id, " draft PR)  with extra space");
+
+        let Message::Agent(message) = &log.messages()[0] else {
+            panic!("expected an agent message");
+        };
+        assert_eq!(
+            message.text,
+            "\"Ready for review\" is the state of a pull/merge request — (e.g., you toggle a draft PR)  with extra space"
+        );
+    }
+
+    #[test]
+    fn agent_chunks_preserve_line_breaks() {
+        let mut log = ChatLog::new();
+
+        let id = log.push_agent("first line");
+        log.append_to_agent(id, "\n\nsecond paragraph");
+
+        let Message::Agent(message) = &log.messages()[0] else {
+            panic!("expected an agent message");
+        };
+        assert_eq!(message.text, "first line\n\nsecond paragraph");
+    }
+
+    #[test]
+    fn thought_chunks_split_mid_word_are_appended_verbatim() {
+        let mut log = ChatLog::new();
+
+        let id = log.push_thought("check (e");
+        log.append_to_thought(id, ".g., ");
+        log.append_to_thought(id, "pull/merge first");
+
+        let Message::ToolCluster(cluster) = &log.messages()[0] else {
+            panic!("expected a tool cluster");
+        };
+        let Step::Thought(thought) = &cluster.steps()[0] else {
+            panic!("expected a thought step");
+        };
+        assert_eq!(thought, "check (e.g., pull/merge first");
     }
 
     #[test]
