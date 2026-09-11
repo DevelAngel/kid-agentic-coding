@@ -6,6 +6,7 @@ use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::Result;
 use kid_agentic_coding::PromptRunner;
 use log_buffer::LogBuffer;
+use std::env;
 use std::path::PathBuf;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -57,8 +58,19 @@ async fn main() -> Result<()> {
         .init();
     tracing::debug!("logging initialized");
 
+    let fs_socket_dir = args
+        .fs_socket_dir
+        .map(|path| {
+            if path.is_absolute() {
+                Ok(path)
+            } else {
+                env::current_dir().map(|directory| directory.join(path))
+            }
+        })
+        .transpose()?;
+
     let agent = PromptRunner::parse_agent_args(&args.agent_args)?;
-    ui::run(agent, log_buffer, args.disable_confetti, args.fs_socket_dir).await?;
+    ui::run(agent, log_buffer, args.disable_confetti, fs_socket_dir).await?;
     Ok(())
 }
 
@@ -91,10 +103,6 @@ mod args_tests {
         let args = Args::parse_from(["kid-agentic-coding", "opencode", "acp"]);
 
         assert_eq!(args.fs_socket_dir, None);
-    }
-
-    #[test]
-    fn fs_socket_dir_accepts_an_explicit_directory() {
         let args = Args::parse_from([
             "kid-agentic-coding",
             "--fs-socket-dir",
