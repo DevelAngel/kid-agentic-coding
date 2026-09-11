@@ -188,7 +188,7 @@ impl App {
         match event {
             SessionEvent::Confetti => {
                 tracing::debug!("event: confetti");
-                self.last_thought_entry_id = None;
+                self.settle_thought();
                 self.last_agent_message_entry_id = None;
                 self.confetti = Some(Confetti::new());
             }
@@ -216,7 +216,7 @@ impl App {
                     has_entry = self.last_agent_message_entry_id.is_some(),
                     "event: chunk"
                 );
-                self.last_thought_entry_id = None;
+                self.settle_thought();
 
                 if let Some(entry_id) = self.last_agent_message_entry_id {
                     // Append to existing agent message
@@ -229,13 +229,13 @@ impl App {
             }
             SessionEvent::PermissionRequest { options, reply } => {
                 tracing::debug!(option_count = options.len(), "event: permission_request");
-                self.last_thought_entry_id = None;
+                self.settle_thought();
                 self.last_agent_message_entry_id = None;
                 self.pending_permission = Some(PendingPermission { options, reply });
             }
             SessionEvent::Stopped(reason) => {
                 tracing::debug!(?reason, "event: stopped");
-                self.last_thought_entry_id = None;
+                self.settle_thought();
                 self.last_agent_message_entry_id = None;
                 if !self.agent_buffer.is_empty() {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
@@ -247,7 +247,7 @@ impl App {
             }
             SessionEvent::Error(error) => {
                 tracing::debug!(%error, "event: error");
-                self.last_thought_entry_id = None;
+                self.settle_thought();
                 self.last_agent_message_entry_id = None;
                 if !self.agent_buffer.is_empty() {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
@@ -284,7 +284,7 @@ impl App {
                 result,
             } => {
                 tracing::debug!(%title, %id, ?status, "event: tool_call");
-                self.last_thought_entry_id = None;
+                self.settle_thought();
                 self.last_agent_message_entry_id = None;
                 self.flush_agent_buffer();
                 let entry_id = self
@@ -334,6 +334,15 @@ impl App {
         }
     }
 
+    /// Marks the currently streaming thought, if any, as settled and forgets
+    /// its handle. Called before every event that interrupts a thought, so
+    /// its indicator stops spinning once the model moves on.
+    fn settle_thought(&mut self) {
+        if let Some(entry_id) = self.last_thought_entry_id.take() {
+            self.chat_log.settle_thought(entry_id);
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent, session: &SessionHandle) {
         if self.pending_permission.is_some() {
             handle_permission_key(key.code, &mut self.pending_permission);
@@ -376,6 +385,7 @@ impl App {
                     self.should_quit = true;
                     return;
                 }
+                self.settle_thought();
                 self.prompt = new_prompt_textarea(session.workflow_name());
                 self.chat_log.push_user(prompt_text.clone());
                 if session.send_prompt(prompt_text).is_err() {
@@ -1208,11 +1218,20 @@ fn render_tool_cluster(
         let corner = if is_last { "\u{2570}" } else { "\u{251c}" };
         let selected = selected_step == Some(actual_index);
         let (line_color, dashes, text) = match step {
-            Step::Thought(text) => (
-                Color::White,
-                "\u{2500}\u{2500}",
-                format!("\u{1f914} {text}"),
-            ),
+            Step::Thought { status, .. } => {
+                let (status_icon, _, _) = status_style(*status);
+                let status_icon = animated_status_icon(*status, spinner_phase, status_icon);
+                let label = if *status == Status::Running {
+                    "Thinking\u{2026}"
+                } else {
+                    "Thought"
+                };
+                (
+                    Color::White,
+                    "\u{2500}\u{2500}",
+                    format!("\u{1f914} {label} {status_icon}"),
+                )
+            }
             Step::ToolCall(entry) => {
                 let (status_icon, _, _) = status_style(entry.status);
                 let status_icon = animated_status_icon(entry.status, spinner_phase, status_icon);
@@ -1370,8 +1389,12 @@ pub async fn run(
 #[cfg(test)]
 mod handle_key_tests {
     use super::{App, SCROLL_STEP};
-    use agent_client_protocol::schema::v1::{StopReason, ToolCallId, ToolCallStatus};
-    use kid_agentic_coding::{Message, SessionEvent, SessionHandle, SessionNoticeKind};
+    use agent_client_protocol::schema::v1::{
+        ContentBlock, StopReason, TextContent, ToolCallId, ToolCallStatus,
+    };
+    use kid_agentic_coding::{
+        Message, SessionEvent, SessionHandle, SessionNoticeKind, Status, Step,
+    };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
@@ -1494,6 +1517,31 @@ mod handle_key_tests {
 
         assert!(!app.should_quit);
         assert_eq!(app.chat_log.messages().len(), 1);
+    }
+
+    #[test]
+    fn regular_prompt_settles_a_running_thought() {
+        let mut app = App::new();
+        let (session, _prompt_rx) = SessionHandle::new_connected_for_test();
+
+        app.handle_session_event(SessionEvent::Thought(Box::new(ContentBlock::Text(
+            TextContent::new("thinking about this".to_owned()),
+        ))));
+        let Message::ToolCluster(cluster) = &app.chat_log.messages()[0] else {
+            panic!("expected a tool cluster");
+        };
+        assert_eq!(cluster.status(), Status::Running);
+
+        type_text(&mut app, &session, "hello agent");
+        app.handle_key(key(KeyCode::Enter), &session);
+
+        let Message::ToolCluster(cluster) = &app.chat_log.messages()[0] else {
+            panic!("expected a tool cluster");
+        };
+        let Step::Thought { status, .. } = &cluster.steps()[0] else {
+            panic!("expected a thought step");
+        };
+        assert_eq!(*status, Status::Done);
     }
 
     #[test]
@@ -1822,7 +1870,7 @@ mod session_event_tests {
     fn nth_tool_call(cluster: &ToolCluster, index: usize) -> &kid_agentic_coding::ToolCallEntry {
         let mut calls = cluster.steps().iter().filter_map(|step| match step {
             Step::ToolCall(entry) => Some(entry),
-            Step::Thought(_) => None,
+            Step::Thought { .. } => None,
         });
         calls
             .nth(index)
@@ -2157,12 +2205,12 @@ mod session_event_tests {
         let thought_count = cluster
             .steps()
             .iter()
-            .filter(|step| matches!(step, Step::Thought(_)))
+            .filter(|step| matches!(step, Step::Thought { .. }))
             .count();
         assert_eq!(thought_count, 1);
 
         // The combined thought should contain all 3 texts separated by spaces
-        if let Step::Thought(text) = &cluster.steps()[0] {
+        if let Step::Thought { text, .. } = &cluster.steps()[0] {
             assert!(text.contains("checking the code"));
             assert!(text.contains("analyzing the structure"));
             assert!(text.contains("found the issue"));
@@ -2191,8 +2239,93 @@ mod session_event_tests {
         };
 
         // Should have thought followed by tool call
-        assert!(matches!(cluster.steps()[0], Step::Thought(_)));
+        assert!(matches!(cluster.steps()[0], Step::Thought { .. }));
         assert!(matches!(cluster.steps()[1], Step::ToolCall(_)));
+    }
+
+    #[test]
+    fn running_thought_settles_when_a_tool_call_follows() {
+        let mut app = App::new();
+
+        app.handle_session_event(thought("thinking about this"));
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: ToolCallId::new("call-1".to_owned()),
+            title: "run_tests".to_owned(),
+            status: ToolCallStatus::Pending,
+            parameters: None,
+            result: None,
+        });
+
+        let Step::Thought { status, .. } = &tool_cluster(&app, 0).steps()[0] else {
+            panic!("expected a thought step");
+        };
+        assert_eq!(*status, Status::Done);
+    }
+
+    #[test]
+    fn running_thought_settles_when_the_turn_stops() {
+        let mut app = App::new();
+
+        app.handle_session_event(thought("final thoughts"));
+        app.handle_session_event(SessionEvent::Stopped(
+            agent_client_protocol::schema::v1::StopReason::EndTurn,
+        ));
+
+        let Step::Thought { status, .. } = &tool_cluster(&app, 0).steps()[0] else {
+            panic!("expected a thought step");
+        };
+        assert_eq!(*status, Status::Done);
+    }
+
+    #[test]
+    fn running_thought_settles_when_agent_speech_follows() {
+        let mut app = App::new();
+
+        app.handle_session_event(thought("thinking about this"));
+        app.handle_session_event(chunk("and here is what I found."));
+
+        let Step::Thought { status, .. } = &tool_cluster(&app, 0).steps()[0] else {
+            panic!("expected a thought step");
+        };
+        assert_eq!(*status, Status::Done);
+    }
+
+    #[test]
+    fn thinking_is_rendered_as_an_indicator_not_the_streamed_text() {
+        let mut app = App::new();
+
+        app.handle_session_event(thought("a long internal reasoning"));
+        app.handle_session_event(thought(" that keeps streaming"));
+
+        let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0, 80);
+        let lines: Vec<String> = rendered.lines.iter().map(|line| line.to_string()).collect();
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| { line.contains("Thinking\u{2026}") && line.contains("\u{25d0}") })
+        );
+        assert!(!lines.iter().any(|line| line.contains("reasoning")));
+    }
+
+    #[test]
+    fn settled_thought_indicator_shows_a_static_marker_and_no_text() {
+        let mut app = App::new();
+
+        app.handle_session_event(thought("internal reasoning to hide"));
+        app.handle_session_event(SessionEvent::Stopped(
+            agent_client_protocol::schema::v1::StopReason::EndTurn,
+        ));
+
+        let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0, 80);
+        let lines: Vec<String> = rendered.lines.iter().map(|line| line.to_string()).collect();
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("\u{1f914} Thought \u{2713}"))
+        );
+        assert!(!lines.iter().any(|line| line.contains("reasoning")));
     }
 }
 

@@ -1,7 +1,7 @@
 //! Pure layout computation for chat bubbles: bounding rects, border sets,
 //! and scroll bounds. No terminal or I/O access.
 
-use crate::chat_log::{ChatLog, Message, Step, ToolCluster};
+use crate::chat_log::{ChatLog, Message, Status, Step, ToolCluster};
 use crate::markdown;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Borders, Paragraph, Wrap};
@@ -293,7 +293,14 @@ fn tool_cluster_row_count(cluster: &ToolCluster, width: u16, keep_live: bool) ->
             let is_last = index + 1 == shown.len();
             let corner = if is_last { "╰" } else { "├" };
             let text = match step {
-                Step::Thought(text) => format!("🤔 {text}"),
+                Step::Thought { status, .. } => {
+                    let label = if *status == Status::Running {
+                        "Thinking…"
+                    } else {
+                        "Thought"
+                    };
+                    format!("🤔 {label} •")
+                }
                 Step::ToolCall(entry) => {
                     let comment = entry
                         .result
@@ -351,10 +358,10 @@ mod tests {
     }
 
     #[test]
-    fn expanded_wrapped_last_thought_reserves_following_bubble_space() {
+    fn long_thought_occupies_a_single_indicator_row() {
         let mut log = ChatLog::new();
         log.push_thought(
-            "This is a deliberately long thought that must wrap across multiple rows in the tool cluster.",
+            "This is a deliberately long thought that would wrap across multiple rows if rendered.",
         );
         log.push_agent("Speech after the thought");
         log.toggle_cluster(0);
@@ -362,7 +369,9 @@ mod tests {
         let layout = BubbleLayout::new(&log, 40, 20);
         let bubbles = layout.bubbles();
 
-        assert!(bubbles[0].rect.height > 2);
+        // summary + one fixed-size thinking indicator row, regardless of
+        // the thought's length
+        assert_eq!(bubbles[0].rect.height, 2);
         assert_eq!(bubbles[1].rect.y, bubbles[0].rect.height);
     }
 }
