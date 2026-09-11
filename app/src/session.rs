@@ -127,15 +127,19 @@ async fn run_session(
                     "bridge sockets use the filesystem fallback; a sandboxed agent can only reach them if this directory is mounted writable into the sandbox"
                 );
             }
+            let session_root = session_root
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(SESSION_ROOT));
+
             let mut session = if workflow_name.is_some() {
                 workflow_listener = Some(UnixListener::from_std(
                     mcp::bind_workflow_socket(&workflow_socket).map_err(Error::into_internal_error)?
                 ).map_err(Error::into_internal_error)?);
-                match mcp::stdio_mcp_servers_for_fix_session(&workflow_socket) {
+                match mcp::stdio_mcp_servers_for_fix_session(&workflow_socket, &session_root) {
 
                     Ok(servers) => cx
                         .build_session_from(
-                            NewSessionRequest::new(session_root.clone().unwrap_or_else(|| PathBuf::from(SESSION_ROOT)))
+                            NewSessionRequest::new(session_root.clone())
                                 .mcp_servers(servers),
                         )
                         .block_task()
@@ -143,8 +147,7 @@ async fn run_session(
                         .await?,
                     Err(err) => {
                         tracing::error!(?err, "fix-session tool registration failed");
-                        cx.build_session(session_root.clone().unwrap_or_else(|| PathBuf::from(SESSION_ROOT)))
-
+                        cx.build_session(session_root.clone())
                             .block_task()
                             .start_session()
                             .await?
@@ -282,7 +285,6 @@ async fn run_session(
                                             .get("cwd")
                                             .and_then(Value::as_str)
                                             .map(PathBuf::from),
-
                                         commit_message,
                                     });
                                 } else if event_name == Some(mcp::COMMIT_FIX_DONE_EVENT) {

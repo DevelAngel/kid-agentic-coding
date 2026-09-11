@@ -24,8 +24,10 @@ pub(crate) fn next_session_id() -> String {
 pub enum SessionEvent {
     /// A chunk of agent message content.
     Chunk(Box<ContentBlock>),
+
     /// A chunk of the agent's internal reasoning.
     Thought(Box<ContentBlock>),
+
     /// A new tool call has been initiated.
     ToolCall {
         id: ToolCallId,
@@ -34,6 +36,7 @@ pub enum SessionEvent {
         parameters: Option<String>,
         result: Option<String>,
     },
+
     /// A status or content update for an existing tool call.
     ToolCallUpdate {
         id: ToolCallId,
@@ -41,6 +44,7 @@ pub enum SessionEvent {
         parameters: Option<String>,
         result: Option<String>,
     },
+
     /// The agent reported a new active model.
     ModelChanged(String),
 
@@ -51,6 +55,7 @@ pub enum SessionEvent {
         options: Vec<PermissionOption>,
         reply: Sender<Option<String>>,
     },
+
     /// The commit workflow requested a dedicated fix session.
     CommitFix {
         instructions: String,

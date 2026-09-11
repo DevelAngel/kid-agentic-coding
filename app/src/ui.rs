@@ -708,7 +708,6 @@ async fn run_app(
                         instructions,
                         commit_message,
                         cwd,
-
                     } if fix_session.is_none() => {
                         fix_session = Some(
                             open_commit_fix_session(
@@ -717,10 +716,8 @@ async fn run_app(
                                 agent_config,
                                 fs_socket_dir.clone(),
                                 instructions,
-
                                 commit_message,
                                 cwd,
-
                             )
                             .await,
                         );
