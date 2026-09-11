@@ -67,7 +67,13 @@ pub struct ToolCallEntry {
 /// [`Status::Done`]/[`Status::Failed`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
-    Thought(String),
+    Thought {
+        /// The streamed thought text. Captured for inspection but not
+        /// rendered; the UI only shows a thinking indicator whose status
+        /// follows [`Status::Running`] → [`Status::Done`].
+        text: String,
+        status: Status,
+    },
     ToolCall(ToolCallEntry),
 }
 
@@ -101,22 +107,23 @@ impl ToolCluster {
             .count()
     }
 
-    /// Aggregate status across the cluster's tool call steps:
-    /// [`Status::Running`] if any is running, else [`Status::Failed`] if
-    /// any failed, else [`Status::Done`] only if every tool call step is
-    /// done (or there are none, i.e. a thoughts-only cluster), else
-    /// [`Status::Pending`].
+    /// Aggregate status across the cluster's steps: [`Status::Running`]
+    /// if any step is running (a streaming thought or a running tool
+    /// call), else [`Status::Failed`] if any failed, else
+    /// [`Status::Done`] only if every step is done (or there are none),
+    /// else [`Status::Pending`].
     pub fn status(&self) -> Status {
         let mut aggregate = Status::Done;
         for step in &self.steps {
-            let Step::ToolCall(entry) = step else {
-                continue;
+            let status = match step {
+                Step::Thought { status, .. } => *status,
+                Step::ToolCall(entry) => entry.status,
             };
-            match entry.status {
+            match status {
                 Status::Running => return Status::Running,
                 Status::Failed => aggregate = Status::Failed,
                 Status::Pending if aggregate != Status::Failed => aggregate = Status::Pending,
-                Status::Done | Status::Pending => {}
+                Status::Pending | Status::Done => {}
             }
         }
         aggregate
@@ -262,7 +269,10 @@ impl ChatLog {
     }
 
     /// Appends a thought, joining the open cluster at the end of the log
-    /// if there is one, or starting a new one otherwise. Thoughts that are
+    /// if there is one, or starting a new one otherwise. The step starts
+    /// as [`Status::Running`], since it only exists once the model is
+    /// streaming thought chunks; settle it via
+    /// [`Self::settle_thought`] when the stream ends. Thoughts that are
     /// empty after trimming are dropped (logged at debug level) instead of
     /// rendering as a blank step.
     pub fn push_thought(&mut self, text: impl Into<String>) -> EntryId {
@@ -274,7 +284,10 @@ impl ChatLog {
                 step_index: 0,
             };
         }
-        self.push_step(Step::Thought(text))
+        self.push_step(Step::Thought {
+            text,
+            status: Status::Running,
+        })
     }
 
     /// Appends a pending tool call, joining the open cluster at the end of
@@ -365,9 +378,24 @@ impl ChatLog {
     /// A no-op if `id` no longer refers to a thought step.
     pub fn append_to_thought(&mut self, id: EntryId, text: &str) {
         if let Some(Message::ToolCluster(cluster)) = self.messages.get_mut(id.message_index)
-            && let Some(Step::Thought(thought)) = cluster.steps.get_mut(id.step_index)
+            && let Some(Step::Thought {
+                text: existing_text,
+                ..
+            }) = cluster.steps.get_mut(id.step_index)
         {
-            thought.push_str(text);
+            existing_text.push_str(text);
+        }
+    }
+
+    /// Marks the thought step identified by `id` as settled, i.e. no
+    /// longer streaming, so its indicator switches from the live spinner
+    /// to the static done icon. A no-op if `id` no longer refers to a
+    /// thought step.
+    pub fn settle_thought(&mut self, id: EntryId) {
+        if let Some(Message::ToolCluster(cluster)) = self.messages.get_mut(id.message_index)
+            && let Some(Step::Thought { status, .. }) = cluster.steps.get_mut(id.step_index)
+        {
+            *status = Status::Done;
         }
     }
 
@@ -425,7 +453,7 @@ impl ChatLog {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatLog, Message, Step};
+    use super::{ChatLog, Message, Status, Step};
 
     #[test]
     fn empty_and_whitespace_thoughts_are_dropped() {
@@ -483,10 +511,49 @@ mod tests {
         let Message::ToolCluster(cluster) = &log.messages()[0] else {
             panic!("expected a tool cluster");
         };
-        let Step::Thought(thought) = &cluster.steps()[0] else {
+        let Step::Thought { text, status } = &cluster.steps()[0] else {
             panic!("expected a thought step");
         };
-        assert_eq!(thought, "check (e.g., pull/merge first");
+        assert_eq!(text, "check (e.g., pull/merge first");
+        assert_eq!(*status, Status::Running);
+    }
+
+    #[test]
+    fn fresh_thought_makes_the_cluster_run() {
+        let mut log = ChatLog::new();
+
+        let id = log.push_thought("considering the options");
+
+        let fresh_status = match &log.messages()[0] {
+            Message::ToolCluster(cluster) => cluster.status(),
+            _ => panic!("expected a tool cluster"),
+        };
+        assert_eq!(fresh_status, Status::Running);
+
+        log.settle_thought(id);
+
+        let Message::ToolCluster(cluster) = &log.messages()[0] else {
+            panic!("expected a tool cluster");
+        };
+        assert_eq!(cluster.status(), Status::Done);
+    }
+
+    #[test]
+    fn settle_thought_does_not_touch_a_tool_call_at_the_same_index() {
+        let mut log = ChatLog::new();
+        log.push_thought("thinking");
+        let id = log.push_tool_call("git_status");
+
+        log.settle_thought(id);
+
+        let cluster = match &log.messages()[0] {
+            Message::ToolCluster(cluster) => cluster,
+            _ => panic!("expected a tool cluster"),
+        };
+        let Step::ToolCall(entry) = &cluster.steps()[1] else {
+            panic!("expected a tool call");
+        };
+        assert_eq!(entry.status, Status::Pending);
     }
 
     #[test]
@@ -501,7 +568,10 @@ mod tests {
         };
         assert!(matches!(
             cluster.steps()[0],
-            Step::Thought(ref t) if t == "checking existing error handling"
+            Step::Thought {
+                ref text,
+                status: Status::Running,
+            } if text == "checking existing error handling"
         ));
     }
 }

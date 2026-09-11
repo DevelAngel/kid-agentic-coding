@@ -144,7 +144,7 @@ fn push_thought_starts_a_tool_cluster() {
     assert_eq!(cluster.steps().len(), 1);
     assert!(matches!(
         cluster.steps()[0],
-        Step::Thought(ref t) if t == "checking existing error handling"
+        Step::Thought { ref text, .. } if text == "checking existing error handling"
     ));
 }
 
@@ -178,7 +178,7 @@ fn thought_between_tool_calls_stays_in_the_same_cluster() {
     let cluster = tool_cluster(&log, 0);
     assert_eq!(cluster.steps().len(), 3);
     assert!(matches!(cluster.steps()[0], Step::ToolCall(_)));
-    assert!(matches!(cluster.steps()[1], Step::Thought(_)));
+    assert!(matches!(cluster.steps()[1], Step::Thought { .. }));
     assert!(matches!(cluster.steps()[2], Step::ToolCall(_)));
 }
 
@@ -229,7 +229,10 @@ fn update_tool_call_status_does_not_touch_a_thought_at_the_same_index() {
 
     log.update_tool_call_status(id, Status::Done);
 
-    assert!(matches!(tool_cluster(&log, 0).steps()[0], Step::Thought(_)));
+    assert!(matches!(
+        tool_cluster(&log, 0).steps()[0],
+        Step::Thought { .. }
+    ));
     let Step::ToolCall(entry) = &tool_cluster(&log, 0).steps()[1] else {
         panic!("expected a tool call");
     };
@@ -257,7 +260,10 @@ fn update_tool_call_result_does_not_touch_a_thought_at_the_same_index() {
 
     log.update_tool_call_result(id, "ok".to_owned());
 
-    assert!(matches!(tool_cluster(&log, 0).steps()[0], Step::Thought(_)));
+    assert!(matches!(
+        tool_cluster(&log, 0).steps()[0],
+        Step::Thought { .. }
+    ));
     let Step::ToolCall(entry) = &tool_cluster(&log, 0).steps()[1] else {
         panic!("expected a tool call");
     };
@@ -306,9 +312,13 @@ fn status_is_done_once_every_tool_call_is_done() {
 }
 
 #[test]
-fn status_of_a_thoughts_only_cluster_is_done() {
+fn a_fresh_thought_makes_the_cluster_run_until_settled() {
     let mut log = ChatLog::new();
-    log.push_thought("just thinking, no tools needed");
+    let id = log.push_thought("just thinking, no tools needed");
+
+    assert_eq!(tool_cluster(&log, 0).status(), Status::Running);
+
+    log.settle_thought(id);
 
     assert_eq!(tool_cluster(&log, 0).status(), Status::Done);
 }
