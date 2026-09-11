@@ -1,7 +1,7 @@
 mod log_buffer;
 mod ui;
 
-use clap::Parser;
+use clap::{Parser, ValueHint};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::Result;
 use kid_agentic_coding::PromptRunner;
@@ -30,7 +30,7 @@ struct Args {
     /// `$XDG_RUNTIME_DIR/kid-agentic-coding`, e.g.
     /// `/run/user/1000/kid-agentic-coding`. The directory is created
     /// automatically before the agent starts.
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
     fs_socket_dir: Option<PathBuf>,
 
     /// Agent command and arguments, or a single JSON configuration

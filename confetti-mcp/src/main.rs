@@ -147,26 +147,28 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod bridge_tests {
     use super::{bridge_error, connect_to_bridge};
-    use std::io::ErrorKind;
+    use std::io::{self, ErrorKind};
+    use std::os::unix::net::UnixListener;
+    use std::{env, fs, process};
 
     #[test]
     fn startup_probe_reaches_a_listening_session() {
-        let path = std::env::temp_dir().join(format!(
+        let path = env::temp_dir().join(format!(
             "kid-agentic-coding-bridge-ping-{}.sock",
-            std::process::id()
+            process::id()
         ));
-        let _ = std::fs::remove_file(&path);
-        let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind succeeds");
+        let _ = fs::remove_file(&path);
+        let _listener = UnixListener::bind(&path).expect("bind succeeds");
 
         connect_to_bridge(&path.display().to_string()).expect("listening socket is reachable");
 
-        let _ = std::fs::remove_file(&path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn bridge_error_names_the_socket_and_the_fs_socket_dir_flag() {
-        let socket = format!("kid-agentic-coding-bridge-test-{}", std::process::id());
-        let err = std::io::Error::new(ErrorKind::NotFound, "no such file or directory");
+        let socket = format!("kid-agentic-coding-bridge-test-{}", process::id());
+        let err = io::Error::new(ErrorKind::NotFound, "no such file or directory");
         let message = bridge_error(&socket, &err);
 
         assert!(message.contains(&socket));

@@ -5,6 +5,7 @@
 
 use crate::bridge::{SessionEvent, SessionHandle, next_session_id};
 use crate::mcp;
+use crate::mcp::SocketFileGuard;
 use crate::prompt::PromptRunner;
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -22,6 +23,7 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
+use std::fs;
 use std::future;
 use std::path::PathBuf;
 
@@ -79,7 +81,7 @@ async fn run_session(
     // mount namespace when it starts, so the directory must exist before
     // the agent process is spawned, not when the sockets are bound.
     if let Some(directory) = fs_socket_dir.as_ref()
-        && let Err(err) = std::fs::create_dir_all(directory)
+        && let Err(err) = fs::create_dir_all(directory)
     {
         let _ = event_tx.send(SessionEvent::Error(format!(
             "failed to create bridge socket directory '{}': {err}",
@@ -99,8 +101,8 @@ async fn run_session(
             let mut confetti_listener: Option<UnixListener> = None;
             #[allow(unused_assignments)]
             let mut workflow_listener: Option<UnixListener> = None;
-            let mut confetti_socket_guard = mcp::SocketFileGuard::new(None);
-            let mut workflow_socket_guard = mcp::SocketFileGuard::new(None);
+            let mut confetti_socket_guard = SocketFileGuard::new(None);
+            let mut workflow_socket_guard = SocketFileGuard::new(None);
 
             // Linux abstract-namespace sockets cannot cross a sandbox
             // boundary, so when a fallback directory is set the bridge
@@ -110,7 +112,7 @@ async fn run_session(
                     let socket_name = mcp::workflow_socket_name();
                     let path = mcp::fs_socket_path(directory, &socket_name);
                     let identifier = path.display().to_string();
-                    workflow_socket_guard = mcp::SocketFileGuard::new(Some(path));
+                    workflow_socket_guard = SocketFileGuard::new(Some(path));
                     identifier
                 }
                 None => mcp::workflow_socket_name(),
@@ -182,7 +184,7 @@ async fn run_session(
                         let socket_name = mcp::confetti_socket_name();
                         let path = mcp::fs_socket_path(directory, &socket_name);
                         let identifier = path.display().to_string();
-                        confetti_socket_guard = mcp::SocketFileGuard::new(Some(path));
+                        confetti_socket_guard = SocketFileGuard::new(Some(path));
                         identifier
                     }
                     None => mcp::confetti_socket_name(),

@@ -232,6 +232,7 @@ mod bridge_socket_tests {
     use super::{SocketFileGuard, bind_workflow_socket, fs_socket_path, socket_address};
     use std::os::unix::net::UnixStream;
     use std::path::Path;
+    use std::{env, fs, process};
 
     #[test]
     fn fs_socket_path_extends_the_fallback_directory() {
@@ -262,10 +263,8 @@ mod bridge_socket_tests {
 
     #[test]
     fn filesystem_socket_is_reachable_and_removed_by_the_guard() {
-        let path = std::env::temp_dir().join(format!(
-            "kid-agentic-coding-bridge-{}.sock",
-            std::process::id()
-        ));
+        let path =
+            env::temp_dir().join(format!("kid-agentic-coding-bridge-{}.sock", process::id()));
         let identifier = path.display().to_string();
 
         let guard = SocketFileGuard::new(Some(path.clone()));
@@ -280,23 +279,18 @@ mod bridge_socket_tests {
 
     #[test]
     fn binding_replaces_a_stale_socket_file() {
-        let path = std::env::temp_dir().join(format!(
-            "kid-agentic-coding-stale-{}.sock",
-            std::process::id()
-        ));
+        let path = env::temp_dir().join(format!("kid-agentic-coding-stale-{}.sock", process::id()));
         let identifier = path.display().to_string();
-        std::fs::write(&path, b"stale").expect("stale file is created");
+        fs::write(&path, b"stale").expect("stale file is created");
 
         let _listener = bind_workflow_socket(&identifier).expect("bind over a stale file succeeds");
-        let _ = std::fs::remove_file(&path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn guard_tolerates_a_missing_file() {
-        let path = std::env::temp_dir().join(format!(
-            "kid-agentic-coding-missing-{}.sock",
-            std::process::id()
-        ));
+        let path =
+            env::temp_dir().join(format!("kid-agentic-coding-missing-{}.sock", process::id()));
         let _ = SocketFileGuard::new(Some(path));
     }
 }
