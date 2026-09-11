@@ -85,6 +85,16 @@ pub fn rust_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
     )))
 }
 
+/// Builds the stdio MCP server configuration for the python-mcp tools, used
+/// by agents without MCP-over-ACP support.
+pub fn python_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
+    let command = env::current_exe()?.with_file_name("kid-agentic-coding-python");
+    Ok(SchemaMcpServer::Stdio(McpServerStdio::new(
+        "python-tools",
+        command,
+    )))
+}
+
 /// Builds the stdio MCP server configuration for the git-commit-fix-open tool.
 /// The socket receives semantic workflow events from the server process.
 pub fn git_commit_fix_open_stdio_mcp_server(socket_name: &str) -> io::Result<SchemaMcpServer> {
@@ -112,6 +122,7 @@ pub fn stdio_mcp_servers(
     Ok(vec![
         confetti_stdio_mcp_server(socket_name)?,
         rust_stdio_mcp_server()?,
+        python_stdio_mcp_server()?,
         git_commit_fix_open_stdio_mcp_server(workflow_socket_name)?,
     ])
 }
@@ -121,6 +132,7 @@ pub fn stdio_mcp_servers_without_confetti(
 ) -> io::Result<Vec<SchemaMcpServer>> {
     Ok(vec![
         rust_stdio_mcp_server()?,
+        python_stdio_mcp_server()?,
         git_commit_fix_open_stdio_mcp_server(workflow_socket_name)?,
     ])
 }
@@ -130,6 +142,7 @@ pub fn stdio_mcp_servers_for_fix_session(
 ) -> io::Result<Vec<SchemaMcpServer>> {
     Ok(vec![
         rust_stdio_mcp_server()?,
+        python_stdio_mcp_server()?,
         git_commit_fix_close_stdio_mcp_server(workflow_socket_name)?,
     ])
 }
