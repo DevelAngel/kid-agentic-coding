@@ -14,6 +14,7 @@ use agent_client_protocol::{
 };
 use ansi_to_tui::IntoText;
 
+use std::iter;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -264,6 +265,13 @@ impl PromptRunner {
             }
             arguments => AcpAgent::from_args(arguments)?,
         };
+        let config = agent.config();
+        let command_line = iter::once(config.command().display().to_string())
+            .chain(config.arguments().iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        tracing::info!(%command_line, "agent program");
+
         let agent = agent.with_debug(|line, direction| {
             if direction == LineDirection::Stderr {
                 let clean_line = match line.as_bytes().to_vec().into_text() {
