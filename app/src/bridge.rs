@@ -6,6 +6,7 @@
 use agent_client_protocol::schema::v1::{
     ContentBlock, PermissionOption, StopReason, ToolCallId, ToolCallStatus,
 };
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -54,7 +55,9 @@ pub enum SessionEvent {
     CommitFix {
         instructions: String,
         commit_message: String,
+        cwd: Option<PathBuf>,
     },
+
     /// The fix session committed its changes, closing the commit-fix workflow.
     CommitFixDone { commit_message: String },
 

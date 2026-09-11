@@ -14,7 +14,7 @@ use serde_json::json;
 use std::io::{self, Write};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(about = "Standalone MCP server for the git_commit_with_fix tool")]
@@ -28,6 +28,7 @@ struct Args {
 struct GitCommitWithFixParams {
     /// The commit message to carry into the fix session.
     message: String,
+    cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,6 +36,7 @@ struct CommitFixEvent<'a> {
     event: &'static str,
     instructions: &'static str,
     commit_message: &'a str,
+    cwd: Option<&'a Path>,
 }
 
 const COMMIT_FIX_EVENT: &str = "commit-fix";
@@ -76,6 +78,7 @@ impl GitCommitFixOpenTools {
             event: COMMIT_FIX_EVENT,
             instructions: COMMIT_FIX_INSTRUCTIONS,
             commit_message: &params.message,
+            cwd: params.cwd.as_deref(),
         };
         let message = serde_json::to_vec(&event).map_err(|err| {
             McpError::internal_error(
@@ -181,6 +184,7 @@ mod tests {
             event: COMMIT_FIX_EVENT,
             instructions: COMMIT_FIX_INSTRUCTIONS,
             commit_message: "feat: preserve workflow",
+            cwd: None,
         };
 
         let value = serde_json::to_value(event).expect("event is serializable");

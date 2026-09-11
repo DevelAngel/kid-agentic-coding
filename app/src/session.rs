@@ -42,6 +42,7 @@ pub fn start_interactive_session(
     disable_confetti: bool,
     workflow_name: Option<String>,
     fs_socket_dir: Option<PathBuf>,
+    session_root: Option<PathBuf>,
 ) -> SessionHandle {
     let (prompt_tx, prompt_rx) = mpsc::unbounded_channel::<String>();
     let (cancel_tx, cancel_rx) = mpsc::unbounded_channel::<()>();
@@ -54,6 +55,7 @@ pub fn start_interactive_session(
         event_tx,
         disable_confetti,
         workflow_name.clone(),
+        session_root,
         fs_socket_dir,
     ));
 
@@ -68,6 +70,7 @@ pub fn start_interactive_session(
 
 /// Connects to the agent, initializes it, and relays prompts and updates
 /// between the ACP session and the event channel until the handle is dropped.
+#[allow(clippy::too_many_arguments)]
 async fn run_session(
     component: impl ConnectTo<Client> + 'static,
     mut cancel_rx: UnboundedReceiver<()>,
@@ -76,6 +79,7 @@ async fn run_session(
     disable_confetti: bool,
     workflow_name: Option<String>,
     fs_socket_dir: Option<PathBuf>,
+    session_root: Option<PathBuf>,
 ) {
     // A sandboxed agent may have the fallback directory mounted into its
     // mount namespace when it starts, so the directory must exist before
@@ -131,7 +135,7 @@ async fn run_session(
 
                     Ok(servers) => cx
                         .build_session_from(
-                            NewSessionRequest::new(PathBuf::from(SESSION_ROOT))
+                            NewSessionRequest::new(session_root.clone().unwrap_or_else(|| PathBuf::from(SESSION_ROOT)))
                                 .mcp_servers(servers),
                         )
                         .block_task()
@@ -139,7 +143,8 @@ async fn run_session(
                         .await?,
                     Err(err) => {
                         tracing::error!(?err, "fix-session tool registration failed");
-                        cx.build_session(PathBuf::from(SESSION_ROOT))
+                        cx.build_session(session_root.clone().unwrap_or_else(|| PathBuf::from(SESSION_ROOT)))
+
                             .block_task()
                             .start_session()
                             .await?
@@ -273,6 +278,11 @@ async fn run_session(
                                     tracing::info!(%commit_message, "commit-fix session event received");
                                     let _ = session_event_tx.send(SessionEvent::CommitFix {
                                         instructions,
+                                        cwd: value
+                                            .get("cwd")
+                                            .and_then(Value::as_str)
+                                            .map(PathBuf::from),
+
                                         commit_message,
                                     });
                                 } else if event_name == Some(mcp::COMMIT_FIX_DONE_EVENT) {

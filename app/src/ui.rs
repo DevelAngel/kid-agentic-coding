@@ -707,6 +707,8 @@ async fn run_app(
                     SessionEvent::CommitFix {
                         instructions,
                         commit_message,
+                        cwd,
+
                     } if fix_session.is_none() => {
                         fix_session = Some(
                             open_commit_fix_session(
@@ -715,7 +717,10 @@ async fn run_app(
                                 agent_config,
                                 fs_socket_dir.clone(),
                                 instructions,
+
                                 commit_message,
+                                cwd,
+
                             )
                             .await,
                         );
@@ -765,6 +770,7 @@ async fn open_commit_fix_session(
     fs_socket_dir: Option<PathBuf>,
     instructions: String,
     commit_message: String,
+    cwd: Option<PathBuf>,
 ) -> SessionHandle {
     main_session.cancel();
     while let Some(event) = main_session.recv_event().await {
@@ -781,6 +787,7 @@ async fn open_commit_fix_session(
         fix_component,
         true,
         Some(COMMIT_FIX_WORKFLOW.to_owned()),
+        cwd,
         fs_socket_dir,
     );
     tracing::info!("commit-fix session started");
@@ -1372,7 +1379,7 @@ pub async fn run(
 ) -> io::Result<()> {
     let agent_config = agent.config().clone();
     let mut session =
-        start_interactive_session(agent, disable_confetti, None, fs_socket_dir.clone());
+        start_interactive_session(agent, disable_confetti, None, fs_socket_dir.clone(), None);
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
     let mut app = App::with_log_buffer(log_buffer);
