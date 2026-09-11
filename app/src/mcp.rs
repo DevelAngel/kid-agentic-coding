@@ -133,14 +133,54 @@ pub fn stdio_mcp_servers_without_confetti(
     )?])
 }
 
+fn find_lockfile(root: &Path, file_name: &str) -> io::Result<Option<PathBuf>> {
+    let mut directories = vec![root.to_path_buf()];
+
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+
+            if file_type.is_file() && entry.file_name() == file_name {
+                return Ok(Some(path));
+            }
+            if file_type.is_dir() {
+                directories.push(path);
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 pub fn stdio_mcp_servers_for_fix_session(
     workflow_socket_name: &str,
+    session_root: &Path,
 ) -> io::Result<Vec<SchemaMcpServer>> {
-    Ok(vec![
-        rust_stdio_mcp_server()?,
-        python_stdio_mcp_server()?,
-        git_commit_fix_close_stdio_mcp_server(workflow_socket_name)?,
-    ])
+    let rust_lockfile = find_lockfile(session_root, "Cargo.lock")?;
+    if rust_lockfile.is_some() {
+        tracing::info!("Rust tools enabled: Cargo.lock found in fix-session workspace");
+    } else {
+        tracing::warn!("Rust tools disabled: no Cargo.lock found in fix-session workspace");
+    }
+
+    let python_lockfile = find_lockfile(session_root, "uv.lock")?;
+    if python_lockfile.is_some() {
+        tracing::info!("Python tools enabled: uv.lock found in fix-session workspace");
+    } else {
+        tracing::warn!("Python tools disabled: no uv.lock found in fix-session workspace");
+    }
+
+    let mut servers = Vec::with_capacity(3);
+    if rust_lockfile.is_some() {
+        servers.push(rust_stdio_mcp_server()?);
+    }
+    if python_lockfile.is_some() {
+        servers.push(python_stdio_mcp_server()?);
+    }
+    servers.push(git_commit_fix_close_stdio_mcp_server(workflow_socket_name)?);
+    Ok(servers)
 }
 
 /// Monotonic counter distinguishing sockets bound within the same process,
@@ -350,5 +390,91 @@ mod supports_mcp_tests {
         let response = InitializeResponse::new(ProtocolVersion::V1);
 
         assert!(!supports_mcp(&response));
+    }
+}
+
+#[cfg(test)]
+mod fix_session_toolchain_tests {
+    use super::{find_lockfile, stdio_mcp_servers_for_fix_session};
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process;
+
+    fn temp_workspace() -> PathBuf {
+        let path = env::temp_dir().join(format!(
+            "kid-agentic-coding-lockfiles-{}-{}",
+            process::id(),
+            super::next_socket_id()
+        ));
+        fs::create_dir_all(&path).expect("workspace is created");
+        path
+    }
+
+    #[test]
+    fn finds_lockfiles_in_the_workspace_root() {
+        let workspace = temp_workspace();
+        fs::write(workspace.join("Cargo.lock"), b"").expect("Cargo.lock is created");
+        fs::write(workspace.join("uv.lock"), b"").expect("uv.lock is created");
+
+        assert!(
+            find_lockfile(&workspace, "Cargo.lock")
+                .expect("lockfile search succeeds")
+                .is_some()
+        );
+        assert!(
+            find_lockfile(&workspace, "uv.lock")
+                .expect("lockfile search succeeds")
+                .is_some()
+        );
+
+        fs::remove_dir_all(workspace).expect("workspace is removed");
+    }
+
+    #[test]
+    fn finds_lockfiles_in_workspace_subdirectories() {
+        let workspace = temp_workspace();
+        let rust_project = workspace.join("rust-project");
+        let python_project = workspace.join("python-project");
+        fs::create_dir_all(&rust_project).expect("Rust project is created");
+        fs::create_dir_all(&python_project).expect("Python project is created");
+        fs::write(rust_project.join("Cargo.lock"), b"").expect("Cargo.lock is created");
+        fs::write(python_project.join("uv.lock"), b"").expect("uv.lock is created");
+
+        let servers = stdio_mcp_servers_for_fix_session("workflow", &workspace)
+            .expect("MCP server registration succeeds");
+        assert_eq!(servers.len(), 3);
+
+        fs::remove_dir_all(workspace).expect("workspace is removed");
+    }
+
+    #[test]
+    fn registers_only_git_tools_without_lockfiles() {
+        let workspace = temp_workspace();
+
+        let servers = stdio_mcp_servers_for_fix_session("workflow", &workspace)
+            .expect("MCP server registration succeeds");
+        assert_eq!(servers.len(), 1);
+
+        fs::remove_dir_all(workspace).expect("workspace is removed");
+    }
+
+    #[test]
+    fn registers_only_the_matching_toolchain() {
+        let workspace = temp_workspace();
+        fs::write(workspace.join("Cargo.lock"), b"").expect("Cargo.lock is created");
+
+        let servers = stdio_mcp_servers_for_fix_session("workflow", &workspace)
+            .expect("MCP server registration succeeds");
+        assert_eq!(servers.len(), 2);
+
+        fs::remove_file(workspace.join("Cargo.lock")).expect("Cargo.lock is removed");
+        fs::write(workspace.join("uv.lock"), b"").expect("uv.lock is created");
+
+        let servers = stdio_mcp_servers_for_fix_session("workflow", &workspace)
+            .expect("MCP server registration succeeds");
+        assert_eq!(servers.len(), 2);
+
+        fs::remove_dir_all(workspace).expect("workspace is removed");
     }
 }
