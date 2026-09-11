@@ -121,7 +121,6 @@ pub fn stdio_mcp_servers(
 ) -> io::Result<Vec<SchemaMcpServer>> {
     Ok(vec![
         confetti_stdio_mcp_server(socket_name)?,
-        python_stdio_mcp_server()?,
         git_commit_fix_open_stdio_mcp_server(workflow_socket_name)?,
     ])
 }
@@ -129,10 +128,9 @@ pub fn stdio_mcp_servers(
 pub fn stdio_mcp_servers_without_confetti(
     workflow_socket_name: &str,
 ) -> io::Result<Vec<SchemaMcpServer>> {
-    Ok(vec![
-        python_stdio_mcp_server()?,
-        git_commit_fix_open_stdio_mcp_server(workflow_socket_name)?,
-    ])
+    Ok(vec![git_commit_fix_open_stdio_mcp_server(
+        workflow_socket_name,
+    )?])
 }
 
 pub fn stdio_mcp_servers_for_fix_session(
