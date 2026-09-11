@@ -2,9 +2,10 @@ use anyhow::Result;
 use anyhow::anyhow;
 use clap::Parser;
 use rmcp::handler::server::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::schemars::JsonSchema;
-use rmcp::serde::Serialize;
+use rmcp::serde::{Deserialize, Serialize};
 use rmcp::{
     ErrorData as McpError, Json, ServerHandler, service, tool, tool_handler, tool_router, transport,
 };
@@ -12,11 +13,17 @@ use tokio::task;
 
 use std::env;
 use std::io::{self, ErrorKind};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Parser)]
 #[command(about = "Standalone MCP server for Python tools")]
 struct Args {}
+
+#[derive(Default, Deserialize, JsonSchema)]
+struct PythonToolParams {
+    cwd: Option<PathBuf>,
+}
 
 #[derive(Serialize, JsonSchema)]
 struct PythonToolResult {
@@ -63,8 +70,17 @@ impl PythonTools {
             open_world_hint = false
         )
     )]
-    async fn python_check(&self) -> Result<Json<PythonToolResult>, McpError> {
-        run_uv(&["run", "ruff", "check", "--fix"], "ruff check", Some("uv")).await
+    async fn python_check(
+        &self,
+        Parameters(params): Parameters<PythonToolParams>,
+    ) -> Result<Json<PythonToolResult>, McpError> {
+        run_uv(
+            &["run", "ruff", "check", "--fix"],
+            "ruff check",
+            Some("uv"),
+            params.cwd.as_deref(),
+        )
+        .await
     }
 
     #[tool(
@@ -77,8 +93,17 @@ impl PythonTools {
             open_world_hint = false
         )
     )]
-    async fn python_lint_ty(&self) -> Result<Json<PythonToolResult>, McpError> {
-        run_uv(&["run", "ty", "check"], "ty check", Some("uv")).await
+    async fn python_lint_ty(
+        &self,
+        Parameters(params): Parameters<PythonToolParams>,
+    ) -> Result<Json<PythonToolResult>, McpError> {
+        run_uv(
+            &["run", "ty", "check"],
+            "ty check",
+            Some("uv"),
+            params.cwd.as_deref(),
+        )
+        .await
     }
 
     #[tool(
@@ -91,8 +116,11 @@ impl PythonTools {
             open_world_hint = false
         )
     )]
-    async fn python_lint(&self) -> Result<Json<PythonToolResult>, McpError> {
-        run_uv(&["run", "mypy"], "mypy", Some("uv")).await
+    async fn python_lint(
+        &self,
+        Parameters(params): Parameters<PythonToolParams>,
+    ) -> Result<Json<PythonToolResult>, McpError> {
+        run_uv(&["run", "mypy"], "mypy", Some("uv"), params.cwd.as_deref()).await
     }
 
     #[tool(
@@ -105,7 +133,10 @@ impl PythonTools {
             open_world_hint = false
         )
     )]
-    async fn python_test(&self) -> Result<Json<PythonToolResult>, McpError> {
+    async fn python_test(
+        &self,
+        Parameters(params): Parameters<PythonToolParams>,
+    ) -> Result<Json<PythonToolResult>, McpError> {
         run_uv(
             &[
                 "run",
@@ -118,6 +149,7 @@ impl PythonTools {
             ],
             "pytest",
             Some("uv"),
+            params.cwd.as_deref(),
         )
         .await
     }
@@ -132,11 +164,15 @@ impl PythonTools {
             open_world_hint = false
         )
     )]
-    async fn python_build_packages(&self) -> Result<Json<PythonToolResult>, McpError> {
+    async fn python_build_packages(
+        &self,
+        Parameters(params): Parameters<PythonToolParams>,
+    ) -> Result<Json<PythonToolResult>, McpError> {
         run_uv(
             &["build", "--all-packages", "--out-dir", "dist"],
             "uv build",
             Some("uv"),
+            params.cwd.as_deref(),
         )
         .await
     }
@@ -146,8 +182,9 @@ async fn run_uv(
     args: &[&str],
     operation: &str,
     missing_dependency: Option<&str>,
+    cwd: Option<&Path>,
 ) -> Result<Json<PythonToolResult>, McpError> {
-    let project_root = env::current_dir().map_err(|err| {
+    let workspace_root = env::current_dir().map_err(|err| {
         McpError::internal_error(
             "failed to determine working directory",
             PythonToolError {
@@ -157,12 +194,13 @@ async fn run_uv(
             .into_json_value(),
         )
     })?;
+    let working_directory = cwd.map(PathBuf::from).unwrap_or(workspace_root);
 
     let args = args.iter().map(ToString::to_string).collect::<Vec<_>>();
     let output = task::spawn_blocking(move || {
         Command::new("uv")
             .args(&args)
-            .current_dir(project_root)
+            .current_dir(working_directory)
             .stdin(Stdio::null())
             .output()
     })

@@ -2,9 +2,10 @@ use anyhow::Result;
 use anyhow::anyhow;
 use clap::Parser;
 use rmcp::handler::server::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::schemars::JsonSchema;
-use rmcp::serde::Serialize;
+use rmcp::serde::{Deserialize, Serialize};
 use rmcp::{
     ErrorData as McpError, Json, ServerHandler, service, tool, tool_handler, tool_router, transport,
 };
@@ -12,11 +13,17 @@ use tokio::task;
 
 use std::env;
 use std::io::{self, ErrorKind};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Parser)]
 #[command(about = "Standalone MCP server for Rust tools")]
 struct Args {}
+
+#[derive(Default, Deserialize, JsonSchema)]
+struct RustToolParams {
+    cwd: Option<PathBuf>,
+}
 
 #[derive(Serialize, JsonSchema)]
 struct RustToolResult {
@@ -63,8 +70,17 @@ impl RustTools {
             open_world_hint = false
         )
     )]
-    async fn rust_check(&self) -> Result<Json<RustToolResult>, McpError> {
-        run_cargo(&["check", "--quiet", "--all-targets"], "cargo check", None).await
+    async fn rust_check(
+        &self,
+        Parameters(params): Parameters<RustToolParams>,
+    ) -> Result<Json<RustToolResult>, McpError> {
+        run_cargo(
+            &["check", "--quiet", "--all-targets"],
+            "cargo check",
+            None,
+            params.cwd.as_deref(),
+        )
+        .await
     }
 
     #[tool(
@@ -77,8 +93,11 @@ impl RustTools {
             open_world_hint = false
         )
     )]
-    async fn rust_lint(&self) -> Result<Json<RustToolResult>, McpError> {
-        run_cargo(&["clippy"], "cargo clippy", None).await
+    async fn rust_lint(
+        &self,
+        Parameters(params): Parameters<RustToolParams>,
+    ) -> Result<Json<RustToolResult>, McpError> {
+        run_cargo(&["clippy"], "cargo clippy", None, params.cwd.as_deref()).await
     }
 
     #[tool(
@@ -91,11 +110,15 @@ impl RustTools {
             open_world_hint = false
         )
     )]
-    async fn rust_test(&self) -> Result<Json<RustToolResult>, McpError> {
+    async fn rust_test(
+        &self,
+        Parameters(params): Parameters<RustToolParams>,
+    ) -> Result<Json<RustToolResult>, McpError> {
         run_cargo(
             &["nextest", "run", "--cargo-quiet"],
             "cargo nextest",
             Some("cargo-nextest"),
+            params.cwd.as_deref(),
         )
         .await
     }
@@ -105,6 +128,7 @@ async fn run_cargo(
     args: &[&str],
     operation: &str,
     missing_dependency: Option<&str>,
+    cwd: Option<&Path>,
 ) -> Result<Json<RustToolResult>, McpError> {
     let workspace_root = env::current_dir().map_err(|err| {
         McpError::internal_error(
@@ -116,12 +140,13 @@ async fn run_cargo(
             .into_json_value(),
         )
     })?;
+    let working_directory = cwd.map(PathBuf::from).unwrap_or(workspace_root);
 
     let args = args.iter().map(ToString::to_string).collect::<Vec<_>>();
     let output = task::spawn_blocking(move || {
         Command::new("cargo")
             .args(&args)
-            .current_dir(workspace_root)
+            .current_dir(working_directory)
             .stdin(Stdio::null())
             .output()
     })

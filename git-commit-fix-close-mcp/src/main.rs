@@ -17,7 +17,7 @@ use std::io::{self, Write};
 use std::mem;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::result;
 
@@ -56,13 +56,27 @@ struct CommitParams {
     /// Amend the previous commit instead of creating a new one.
     #[serde(default)]
     amend: bool,
+    /// Working directory for the Git command.
+    #[serde(default)]
+    cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct AddParams {
     /// File or directory path relative to the workspace root.
-    path: String,
+    path: PathBuf,
+    /// Working directory for the Git command.
+    #[serde(default)]
+    cwd: Option<PathBuf>,
 }
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+struct CwdParams {
+    /// Working directory for the Git command.
+    #[serde(default)]
+    cwd: Option<PathBuf>,
+}
+
 #[derive(Debug)]
 struct ProcessOutput {
     status: i32,
@@ -209,8 +223,18 @@ impl GitCommitFixCloseTools {
             open_world_hint = false
         )
     )]
-    async fn git_status(&self) -> Result<CallToolResult, McpError> {
-        command_result("git", &["status", "--short"], "git status").await
+
+    async fn git_status(
+        &self,
+        Parameters(params): Parameters<CwdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        command_result(
+            "git",
+            &["status", "--short"],
+            "git status",
+            params.cwd.as_deref(),
+        )
+        .await
     }
 
     #[tool(
@@ -223,8 +247,12 @@ impl GitCommitFixCloseTools {
             open_world_hint = false
         )
     )]
-    async fn git_diff(&self) -> Result<CallToolResult, McpError> {
-        command_result("git", &["diff"], "git diff").await
+
+    async fn git_diff(
+        &self,
+        Parameters(params): Parameters<CwdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        command_result("git", &["diff"], "git diff", params.cwd.as_deref()).await
     }
 
     #[tool(
@@ -241,7 +269,14 @@ impl GitCommitFixCloseTools {
         &self,
         Parameters(params): Parameters<AddParams>,
     ) -> Result<CallToolResult, McpError> {
-        command_result("git", &["add", &params.path], "git add").await
+        let path = params.path.to_string_lossy();
+        command_result(
+            "git",
+            &["add", path.as_ref()],
+            "git add",
+            params.cwd.as_deref(),
+        )
+        .await
     }
 
     #[tool(
@@ -269,15 +304,23 @@ impl GitCommitFixCloseTools {
                 return Ok(CallToolResult::error(vec![ContentBlock::text(text)]));
             }
         };
+
         let result = if params.amend {
             command_result(
                 "git",
                 &["commit", "--amend", "-m", &commit_message],
                 "git commit (amend)",
+                params.cwd.as_deref(),
             )
             .await?
         } else {
-            command_result("git", &["commit", "-m", &commit_message], "git commit").await?
+            command_result(
+                "git",
+                &["commit", "-m", &commit_message],
+                "git commit",
+                params.cwd.as_deref(),
+            )
+            .await?
         };
 
         let event = CommitFixDoneEvent {
@@ -352,8 +395,9 @@ async fn command_result(
     program: &str,
     args: &[&str],
     operation: &str,
+    cwd: Option<&Path>,
 ) -> Result<CallToolResult, McpError> {
-    let output = run_process(program, args, operation).await?;
+    let output = run_process(program, cwd, args, operation).await?;
     if output.status == 0 {
         Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "{}{}",
@@ -373,6 +417,7 @@ async fn command_result(
 
 async fn run_process(
     program: &str,
+    cwd: Option<&Path>,
     args: &[&str],
     operation: &str,
 ) -> Result<ProcessOutput, McpError> {
@@ -382,12 +427,14 @@ async fn run_process(
             Some(json!({"reason": err.to_string()})),
         )
     })?;
+    let working_directory = cwd.map(PathBuf::from).unwrap_or(workspace_root);
+
     let program = program.to_owned();
     let args = args.iter().map(ToString::to_string).collect::<Vec<_>>();
     let output = task::spawn_blocking(move || {
         Command::new(program)
             .args(args)
-            .current_dir(workspace_root)
+            .current_dir(working_directory)
             .stdin(Stdio::null())
             .output()
     })
@@ -449,6 +496,7 @@ mod tests {
             "sh",
             &["-c", "printf 'commit failed' >&2; exit 1"],
             "git commit",
+            None,
         )
         .await
         .unwrap_err();
@@ -458,6 +506,45 @@ mod tests {
                 .to_string()
                 .contains("git commit failed: commit failed")
         );
+    }
+
+    #[tokio::test]
+    async fn command_result_uses_requested_working_directory() {
+        let directory =
+            env::temp_dir().join(format!("kid-agentic-coding-git-cwd-{}", process::id()));
+        fs::create_dir_all(&directory).expect("create temp directory");
+        let output = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&directory)
+            .output()
+            .expect("git init runs");
+        assert!(output.status.success());
+
+        let result = command_result(
+            "git",
+            &["rev-parse", "--show-toplevel"],
+            "git rev-parse",
+            Some(&directory),
+        )
+        .await
+        .expect("git runs in the requested directory");
+
+        assert_eq!(
+            result.content[0].as_text().unwrap().text.trim(),
+            directory.display().to_string()
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn command_result_rejects_an_invalid_working_directory() {
+        let directory =
+            env::temp_dir().join(format!("kid-agentic-coding-git-missing-{}", process::id()));
+        let error = command_result("git", &["status"], "git status", Some(&directory))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("failed to execute git status"));
     }
 
     #[test]
@@ -480,6 +567,7 @@ mod tests {
             scope: Some("session".to_owned()),
             description: "Improve commit handling".to_owned(),
             body: "Handle commit messages centrally.".to_owned(),
+            cwd: None,
             breaking_change_note: Some("The commit input is now structured.".to_owned()),
             amend: false,
         };
@@ -501,6 +589,7 @@ mod tests {
             body: format!("BREAKING CHANGE\n{}", "x".repeat(73)),
             breaking_change_note: None,
             amend: false,
+            cwd: None,
         };
 
         let errors = build_commit_message(&params).unwrap_err();
