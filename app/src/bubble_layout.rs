@@ -293,13 +293,19 @@ fn tool_cluster_row_count(cluster: &ToolCluster, width: u16, keep_live: bool) ->
             let is_last = index + 1 == shown.len();
             let corner = if is_last { "╰" } else { "├" };
             let text = match step {
-                Step::Thought { status, .. } => {
+                Step::Thought {
+                    status, word_count, ..
+                } => {
                     let label = if *status == Status::Running {
                         "Thinking…"
                     } else {
                         "Thought"
                     };
-                    format!("🤔 {label} •")
+                    match *word_count {
+                        0 => format!("🤔 {label}"),
+                        1 => format!("🤔 {label} · 1 word"),
+                        count => format!("🤔 {label} · {count} words"),
+                    }
                 }
                 Step::ToolCall(entry) => {
                     let comment = entry

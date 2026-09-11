@@ -72,9 +72,70 @@ pub enum Step {
         /// rendered; the UI only shows a thinking indicator whose status
         /// follows [`Status::Running`] → [`Status::Done`].
         text: String,
+        word_count: usize,
+        word_open: bool,
         status: Status,
     },
     ToolCall(ToolCallEntry),
+}
+
+impl Step {
+    fn thought(text: String) -> Self {
+        let mut step = Self::Thought {
+            text: String::new(),
+            word_count: 0,
+            word_open: false,
+            status: Status::Running,
+        };
+        step.update_word_count(&text);
+        if let Self::Thought {
+            text: step_text, ..
+        } = &mut step
+        {
+            *step_text = text;
+        }
+        step
+    }
+
+    fn update_word_count(&mut self, text: &str) {
+        let Step::Thought {
+            word_count,
+            word_open,
+            ..
+        } = self
+        else {
+            return;
+        };
+
+        for character in text.chars() {
+            if character.is_whitespace() {
+                if *word_open {
+                    *word_count += 1;
+                    *word_open = false;
+                }
+            } else {
+                *word_open = true;
+            }
+        }
+    }
+
+    fn settle_thought(&mut self) {
+        let Step::Thought {
+            word_count,
+            word_open,
+            status,
+            ..
+        } = self
+        else {
+            return;
+        };
+
+        if *word_open {
+            *word_count += 1;
+            *word_open = false;
+        }
+        *status = Status::Done;
+    }
 }
 
 /// A run of consecutive thoughts and tool calls, rendered as one
@@ -284,10 +345,7 @@ impl ChatLog {
                 step_index: 0,
             };
         }
-        self.push_step(Step::Thought {
-            text,
-            status: Status::Running,
-        })
+        self.push_step(Step::thought(text))
     }
 
     /// Appends a pending tool call, joining the open cluster at the end of
@@ -378,12 +436,16 @@ impl ChatLog {
     /// A no-op if `id` no longer refers to a thought step.
     pub fn append_to_thought(&mut self, id: EntryId, text: &str) {
         if let Some(Message::ToolCluster(cluster)) = self.messages.get_mut(id.message_index)
-            && let Some(Step::Thought {
+            && let Some(step @ Step::Thought { .. }) = cluster.steps.get_mut(id.step_index)
+        {
+            if let Step::Thought {
                 text: existing_text,
                 ..
-            }) = cluster.steps.get_mut(id.step_index)
-        {
-            existing_text.push_str(text);
+            } = step
+            {
+                existing_text.push_str(text);
+            }
+            step.update_word_count(text);
         }
     }
 
@@ -393,9 +455,9 @@ impl ChatLog {
     /// thought step.
     pub fn settle_thought(&mut self, id: EntryId) {
         if let Some(Message::ToolCluster(cluster)) = self.messages.get_mut(id.message_index)
-            && let Some(Step::Thought { status, .. }) = cluster.steps.get_mut(id.step_index)
+            && let Some(step @ Step::Thought { .. }) = cluster.steps.get_mut(id.step_index)
         {
-            *status = Status::Done;
+            step.settle_thought();
         }
     }
 
@@ -511,11 +573,51 @@ mod tests {
         let Message::ToolCluster(cluster) = &log.messages()[0] else {
             panic!("expected a tool cluster");
         };
-        let Step::Thought { text, status } = &cluster.steps()[0] else {
+        let Step::Thought { text, status, .. } = &cluster.steps()[0] else {
             panic!("expected a thought step");
         };
         assert_eq!(text, "check (e.g., pull/merge first");
+
         assert_eq!(*status, Status::Running);
+    }
+
+    #[test]
+    fn thought_word_count_waits_for_word_boundaries() {
+        let mut log = ChatLog::new();
+
+        let id = log.push_thought("check (e");
+        log.append_to_thought(id, ".g., ");
+        log.append_to_thought(id, "pull/merge first");
+
+        let Message::ToolCluster(cluster) = &log.messages()[0] else {
+            panic!("expected a tool cluster");
+        };
+        let Step::Thought {
+            word_count,
+            word_open,
+            ..
+        } = &cluster.steps()[0]
+        else {
+            panic!("expected a thought step");
+        };
+        assert_eq!(*word_count, 3);
+        assert!(*word_open);
+
+        log.settle_thought(id);
+
+        let Message::ToolCluster(cluster) = &log.messages()[0] else {
+            panic!("expected a tool cluster");
+        };
+        let Step::Thought {
+            word_count,
+            word_open,
+            ..
+        } = &cluster.steps()[0]
+        else {
+            panic!("expected a thought step");
+        };
+        assert_eq!(*word_count, 4);
+        assert!(!*word_open);
     }
 
     #[test]
@@ -570,7 +672,7 @@ mod tests {
             cluster.steps()[0],
             Step::Thought {
                 ref text,
-                status: Status::Running,
+                status: Status::Running, ..
             } if text == "checking existing error handling"
         ));
     }

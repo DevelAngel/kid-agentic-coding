@@ -1218,7 +1218,9 @@ fn render_tool_cluster(
         let corner = if is_last { "\u{2570}" } else { "\u{251c}" };
         let selected = selected_step == Some(actual_index);
         let (line_color, dashes, text) = match step {
-            Step::Thought { status, .. } => {
+            Step::Thought {
+                status, word_count, ..
+            } => {
                 let (status_icon, _, _) = status_style(*status);
                 let status_icon = animated_status_icon(*status, spinner_phase, status_icon);
                 let label = if *status == Status::Running {
@@ -1229,7 +1231,11 @@ fn render_tool_cluster(
                 (
                     Color::White,
                     "\u{2500}\u{2500}",
-                    format!("\u{1f914} {label} {status_icon}"),
+                    match *word_count {
+                        0 => format!("🤔 {label} {status_icon}"),
+                        1 => format!("🤔 {label} · 1 word {status_icon}"),
+                        count => format!("🤔 {label} · {count} words {status_icon}"),
+                    },
                 )
             }
             Step::ToolCall(entry) => {
@@ -2323,7 +2329,7 @@ mod session_event_tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("\u{1f914} Thought \u{2713}"))
+                .any(|line| line.contains("\u{1f914} Thought · 4 words \u{2713}"))
         );
         assert!(!lines.iter().any(|line| line.contains("reasoning")));
     }
