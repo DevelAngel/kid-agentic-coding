@@ -1471,6 +1471,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kid-agentic-coding-python"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rmcp 3.1.4",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kid-agentic-coding-rust"
 version = "0.2.0"
 dependencies = [
