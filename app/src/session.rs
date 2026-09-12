@@ -5,7 +5,7 @@
 
 use crate::bridge::{SessionEvent, SessionHandle, next_session_id};
 use crate::mcp;
-use crate::mcp::SocketFileGuard;
+use crate::mcp::{BridgeSockets, FsSocketDir, SocketFileGuard};
 use crate::prompt::PromptRunner;
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -41,7 +41,7 @@ pub fn start_interactive_session(
     component: impl ConnectTo<Client> + 'static,
     disable_confetti: bool,
     workflow_name: Option<String>,
-    fs_socket_dir: Option<PathBuf>,
+    fs_socket_dir: FsSocketDir,
     session_root: Option<PathBuf>,
 ) -> SessionHandle {
     let (prompt_tx, prompt_rx) = mpsc::unbounded_channel::<String>();
@@ -55,8 +55,8 @@ pub fn start_interactive_session(
         event_tx,
         disable_confetti,
         workflow_name.clone(),
-        session_root,
         fs_socket_dir,
+        session_root,
     ));
 
     SessionHandle {
@@ -78,7 +78,7 @@ async fn run_session(
     event_tx: UnboundedSender<SessionEvent>,
     disable_confetti: bool,
     workflow_name: Option<String>,
-    fs_socket_dir: Option<PathBuf>,
+    fs_socket_dir: FsSocketDir,
     session_root: Option<PathBuf>,
 ) {
     // A sandboxed agent may have the fallback directory mounted into its
@@ -102,15 +102,13 @@ async fn run_session(
                 .send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
+            let supports_mcp = mcp::supports_mcp(&init_response);
             let mut confetti_listener: Option<UnixListener> = None;
             #[allow(unused_assignments)]
             let mut workflow_listener: Option<UnixListener> = None;
             let mut confetti_socket_guard = SocketFileGuard::new(None);
             let mut workflow_socket_guard = SocketFileGuard::new(None);
 
-            // Linux abstract-namespace sockets cannot cross a sandbox
-            // boundary, so when a fallback directory is set the bridge
-            // sockets live on filesystem paths inside it instead.
             let workflow_socket = match fs_socket_dir.as_ref() {
                 Some(directory) => {
                     let socket_name = mcp::workflow_socket_name();
@@ -121,6 +119,22 @@ async fn run_session(
                 }
                 None => mcp::workflow_socket_name(),
             };
+
+            let confetti_socket = if workflow_name.is_none() && !disable_confetti && !supports_mcp {
+                match fs_socket_dir.as_ref() {
+                    Some(directory) => {
+                        let socket_name = mcp::confetti_socket_name();
+                        let path = mcp::fs_socket_path(directory, &socket_name);
+                        let identifier = path.display().to_string();
+                        confetti_socket_guard = SocketFileGuard::new(Some(path));
+                        Some(identifier)
+                    }
+                    None => Some(mcp::confetti_socket_name()),
+                }
+            } else {
+                None
+            };
+
             if let Some(directory) = fs_socket_dir.as_ref() {
                 tracing::info!(
                     dir = %directory.display(),
@@ -132,19 +146,27 @@ async fn run_session(
                 .unwrap_or_else(|| PathBuf::from(SESSION_ROOT));
 
             let mut session = if workflow_name.is_some() {
-                workflow_listener = Some(UnixListener::from_std(
-                    mcp::bind_workflow_socket(&workflow_socket).map_err(Error::into_internal_error)?
-                ).map_err(Error::into_internal_error)?);
-                match mcp::stdio_mcp_servers_for_fix_session(&workflow_socket, &session_root) {
-
-                    Ok(servers) => cx
-                        .build_session_from(
-                            NewSessionRequest::new(session_root.clone())
-                                .mcp_servers(servers),
-                        )
-                        .block_task()
-                        .start_session()
-                        .await?,
+                let sockets = BridgeSockets::new(workflow_socket, None)
+                    .bind_workflow()
+                    .map_err(Error::into_internal_error)?;
+                let servers = sockets
+                    .stdio_mcp_servers_for_fix_session(&session_root)
+                    .map_err(Error::into_internal_error)?;
+                let (workflow_std_listener, _) = sockets
+                    .into_listeners()
+                    .map_err(Error::into_internal_error)?;
+                workflow_listener = Some(
+                    UnixListener::from_std(workflow_std_listener)
+                        .map_err(Error::into_internal_error)?,
+                );
+                match cx.build_session_from(
+                    NewSessionRequest::new(session_root.clone()).mcp_servers(servers),
+                )
+                .block_task()
+                .start_session()
+                .await
+                {
+                    Ok(session) => session,
                     Err(err) => {
                         tracing::error!(?err, "fix-session tool registration failed");
                         cx.build_session(session_root.clone())
@@ -154,21 +176,39 @@ async fn run_session(
                     }
                 }
             } else if disable_confetti {
-                workflow_listener = Some(UnixListener::from_std(
-                    mcp::bind_workflow_socket(&workflow_socket).map_err(Error::into_internal_error)?
-                ).map_err(Error::into_internal_error)?);
-                let servers = mcp::stdio_mcp_servers_without_confetti(&workflow_socket).map_err(Error::into_internal_error)?;
+                let sockets = BridgeSockets::new(workflow_socket, None)
+                    .bind_workflow()
+                    .map_err(Error::into_internal_error)?;
+                let servers = sockets
+                    .stdio_mcp_servers_without_confetti()
+                    .map_err(Error::into_internal_error)?;
+                let (workflow_std_listener, _) = sockets
+                    .into_listeners()
+                    .map_err(Error::into_internal_error)?;
+                workflow_listener = Some(
+                    UnixListener::from_std(workflow_std_listener)
+                        .map_err(Error::into_internal_error)?,
+                );
                 cx.build_session_from(
                     NewSessionRequest::new(PathBuf::from(SESSION_ROOT)).mcp_servers(servers),
                 )
                 .block_task()
                 .start_session()
                 .await?
-            } else if mcp::supports_mcp(&init_response) {
-                workflow_listener = Some(UnixListener::from_std(
-                    mcp::bind_workflow_socket(&workflow_socket).map_err(Error::into_internal_error)?
-                ).map_err(Error::into_internal_error)?);
-                let servers = mcp::stdio_mcp_servers_without_confetti(&workflow_socket).map_err(Error::into_internal_error)?;
+            } else if supports_mcp {
+                let sockets = BridgeSockets::new(workflow_socket, None)
+                    .bind_workflow()
+                    .map_err(Error::into_internal_error)?;
+                let servers = sockets
+                    .stdio_mcp_servers_without_confetti()
+                    .map_err(Error::into_internal_error)?;
+                let (workflow_std_listener, _) = sockets
+                    .into_listeners()
+                    .map_err(Error::into_internal_error)?;
+                workflow_listener = Some(
+                    UnixListener::from_std(workflow_std_listener)
+                        .map_err(Error::into_internal_error)?,
+                );
                 match cx
                     .build_session_from(
                         NewSessionRequest::new(PathBuf::from(SESSION_ROOT)).mcp_servers(servers),
@@ -187,26 +227,25 @@ async fn run_session(
                     }
                 }
             } else {
-                let confetti_socket = match fs_socket_dir.as_ref() {
-                    Some(directory) => {
-                        let socket_name = mcp::confetti_socket_name();
-                        let path = mcp::fs_socket_path(directory, &socket_name);
-                        let identifier = path.display().to_string();
-                        confetti_socket_guard = SocketFileGuard::new(Some(path));
-                        identifier
-                    }
-                    None => mcp::confetti_socket_name(),
-                };
-                confetti_listener = Some(UnixListener::from_std(
-                    mcp::bind_confetti_socket(&confetti_socket).map_err(Error::into_internal_error)?
-                ).map_err(Error::into_internal_error)?);
-                workflow_listener = Some(UnixListener::from_std(
-                    mcp::bind_workflow_socket(&workflow_socket).map_err(Error::into_internal_error)?
-                ).map_err(Error::into_internal_error)?);
-                let servers = mcp::stdio_mcp_servers(
-                    &confetti_socket,
-                    &workflow_socket,
-                ) .map_err(Error::into_internal_error)?;
+                let sockets = BridgeSockets::new(workflow_socket, confetti_socket)
+                    .bind_workflow()
+                    .map_err(Error::into_internal_error)?
+                    .bind_confetti()
+                    .map_err(Error::into_internal_error)?;
+                let servers = sockets
+                    .stdio_mcp_servers()
+                    .map_err(Error::into_internal_error)?;
+                let (workflow_std_listener, confetti_std_listener) = sockets
+                    .into_listeners()
+                    .map_err(Error::into_internal_error)?;
+                workflow_listener = Some(
+                    UnixListener::from_std(workflow_std_listener)
+                        .map_err(Error::into_internal_error)?,
+                );
+                confetti_listener = Some(
+                    UnixListener::from_std(confetti_std_listener)
+                        .map_err(Error::into_internal_error)?,
+                );
                 cx.build_session_from(
                     NewSessionRequest::new(PathBuf::from(SESSION_ROOT)).mcp_servers(servers),
                 )
