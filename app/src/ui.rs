@@ -5,7 +5,7 @@ use kid_agentic_coding::{
     BubbleLayout, ChatLog, EntryId, Message, PromptRunner, ScrollAnchor, SessionEvent,
     SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
 };
-use kid_agentic_coding::{render_markdown, start_interactive_session};
+use kid_agentic_coding::{FsSocketDir, render_markdown, start_interactive_session};
 
 use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig};
@@ -676,7 +676,7 @@ async fn run_app(
     app: &mut App,
     main_session: &mut SessionHandle,
     agent_config: &AcpAgentConfig,
-    fs_socket_dir: Option<PathBuf>,
+    fs_socket_dir: FsSocketDir,
     term_events: &mut UnboundedReceiver<Event>,
 ) -> io::Result<()> {
     let mut spinner = time::interval(Duration::from_millis(250));
@@ -764,7 +764,7 @@ async fn open_commit_fix_session(
     app: &mut App,
     main_session: &mut SessionHandle,
     agent_config: &AcpAgentConfig,
-    fs_socket_dir: Option<PathBuf>,
+    fs_socket_dir: FsSocketDir,
     instructions: String,
     commit_message: String,
     cwd: Option<PathBuf>,
@@ -784,8 +784,8 @@ async fn open_commit_fix_session(
         fix_component,
         true,
         Some(COMMIT_FIX_WORKFLOW.to_owned()),
-        cwd,
         fs_socket_dir,
+        cwd,
     );
     tracing::info!("commit-fix session started");
 
@@ -1372,7 +1372,7 @@ pub async fn run(
     agent: AcpAgent,
     log_buffer: LogBuffer,
     disable_confetti: bool,
-    fs_socket_dir: Option<PathBuf>,
+    fs_socket_dir: FsSocketDir,
 ) -> io::Result<()> {
     let agent_config = agent.config().clone();
     let mut session =

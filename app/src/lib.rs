@@ -12,6 +12,8 @@ mod prompt;
 mod session;
 
 pub use bridge::{SessionClosed, SessionEvent, SessionHandle};
+pub use mcp::FsSocketDir;
+
 pub use bubble_layout::{Alignment, Bubble, BubbleLayout, ScrollAnchor, VisibleBubble};
 pub use chat_log::{
     AgentMessage, AutoMessage, ChatLog, EntryId, Message, SessionNotice, SessionNoticeKind, Status,
