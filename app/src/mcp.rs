@@ -320,7 +320,7 @@ impl BridgeSockets<WorkflowBound> {
 }
 
 impl BridgeSockets<AllBound> {
-    pub fn into_listeners(self) -> io::Result<(UnixListener, Option<UnixListener>)> {
+    pub fn into_listeners(self) -> io::Result<(UnixListener, UnixListener)> {
         let workflow_listener = match self.workflow_listener {
             Some(listener) => listener,
             None => {
@@ -330,7 +330,16 @@ impl BridgeSockets<AllBound> {
                 ));
             }
         };
-        Ok((workflow_listener, self.confetti_listener))
+        let confetti_listener = match self.confetti_listener {
+            Some(listener) => listener,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "confetti socket is not bound",
+                ));
+            }
+        };
+        Ok((workflow_listener, confetti_listener))
     }
 }
 

@@ -242,15 +242,10 @@ async fn run_session(
                     UnixListener::from_std(workflow_std_listener)
                         .map_err(Error::into_internal_error)?,
                 );
-                confetti_listener = Some(UnixListener::from_std(
-                    confetti_std_listener.ok_or_else(|| {
-                        Error::into_internal_error(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "confetti socket is not bound",
-                        ))
-                    })?,
-                )
-                .map_err(Error::into_internal_error)?);
+                confetti_listener = Some(
+                    UnixListener::from_std(confetti_std_listener)
+                        .map_err(Error::into_internal_error)?,
+                );
                 cx.build_session_from(
                     NewSessionRequest::new(PathBuf::from(SESSION_ROOT)).mcp_servers(servers),
                 )
