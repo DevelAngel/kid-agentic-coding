@@ -18,6 +18,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use std::env;
 use std::fs;
 use std::io;
+use std::marker::PhantomData;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener};
 use std::path::{Path, PathBuf};
@@ -224,6 +225,114 @@ pub fn socket_address(socket: &str) -> io::Result<SocketAddr> {
         Ok(SocketAddr::from_abstract_name(socket.as_bytes())?)
     }
 }
+pub struct Unbound;
+pub struct WorkflowBound;
+pub struct AllBound;
+
+pub struct BridgeSockets<State> {
+    workflow_socket: String,
+    confetti_socket: Option<String>,
+    workflow_listener: Option<UnixListener>,
+    confetti_listener: Option<UnixListener>,
+    state: PhantomData<State>,
+}
+
+impl BridgeSockets<Unbound> {
+    pub fn new(workflow_socket: String, confetti_socket: Option<String>) -> Self {
+        Self {
+            workflow_socket,
+            confetti_socket,
+            workflow_listener: None,
+            confetti_listener: None,
+            state: PhantomData,
+        }
+    }
+
+    pub fn bind_workflow(mut self) -> io::Result<BridgeSockets<WorkflowBound>> {
+        self.workflow_listener = Some(bind_bridge_socket(&self.workflow_socket)?);
+        Ok(BridgeSockets {
+            workflow_socket: self.workflow_socket,
+            confetti_socket: self.confetti_socket,
+            workflow_listener: self.workflow_listener,
+            confetti_listener: self.confetti_listener,
+            state: PhantomData,
+        })
+    }
+}
+
+impl BridgeSockets<WorkflowBound> {
+    pub fn bind_confetti(mut self) -> io::Result<BridgeSockets<AllBound>> {
+        let socket = match self.confetti_socket.as_deref() {
+            Some(socket) => socket,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "confetti socket is not configured",
+                ));
+            }
+        };
+        self.confetti_listener = Some(bind_bridge_socket(socket)?);
+        Ok(BridgeSockets {
+            workflow_socket: self.workflow_socket,
+            confetti_socket: self.confetti_socket,
+            workflow_listener: self.workflow_listener,
+            confetti_listener: self.confetti_listener,
+            state: PhantomData,
+        })
+    }
+
+    pub fn stdio_mcp_servers_without_confetti(&self) -> io::Result<Vec<SchemaMcpServer>> {
+        stdio_mcp_servers_without_confetti(&self.workflow_socket)
+    }
+
+    pub fn stdio_mcp_servers_for_fix_session(
+        &self,
+        session_root: &Path,
+    ) -> io::Result<Vec<SchemaMcpServer>> {
+        stdio_mcp_servers_for_fix_session(&self.workflow_socket, session_root)
+    }
+}
+impl BridgeSockets<AllBound> {
+    pub fn stdio_mcp_servers(&self) -> io::Result<Vec<SchemaMcpServer>> {
+        let confetti_socket = self.confetti_socket.as_deref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "confetti socket is not configured",
+            )
+        })?;
+        stdio_mcp_servers(confetti_socket, &self.workflow_socket)
+    }
+}
+
+impl BridgeSockets<WorkflowBound> {
+    pub fn into_listeners(self) -> io::Result<(UnixListener, Option<UnixListener>)> {
+        let workflow_listener = match self.workflow_listener {
+            Some(listener) => listener,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "workflow socket is not bound",
+                ));
+            }
+        };
+        Ok((workflow_listener, self.confetti_listener))
+    }
+}
+
+impl BridgeSockets<AllBound> {
+    pub fn into_listeners(self) -> io::Result<(UnixListener, Option<UnixListener>)> {
+        let workflow_listener = match self.workflow_listener {
+            Some(listener) => listener,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "workflow socket is not bound",
+                ));
+            }
+        };
+        Ok((workflow_listener, self.confetti_listener))
+    }
+}
 
 fn bind_bridge_socket(socket: &str) -> io::Result<UnixListener> {
     let address = socket_address(socket)?;
@@ -239,17 +348,11 @@ fn bind_bridge_socket(socket: &str) -> io::Result<UnixListener> {
             return Err(err);
         }
     }
+    tracing::debug!(socket, ?address, "binding bridge socket");
     let listener = UnixListener::bind_addr(&address)?;
+    tracing::debug!(socket, "bridge socket bound successfully");
     listener.set_nonblocking(true)?;
     Ok(listener)
-}
-
-pub fn bind_confetti_socket(socket: &str) -> io::Result<UnixListener> {
-    bind_bridge_socket(socket)
-}
-
-pub fn bind_workflow_socket(socket: &str) -> io::Result<UnixListener> {
-    bind_bridge_socket(socket)
 }
 
 /// Removes a filesystem bridge socket file when the session that bound it
@@ -278,7 +381,7 @@ impl Drop for SocketFileGuard {
 
 #[cfg(test)]
 mod bridge_socket_tests {
-    use super::{SocketFileGuard, bind_workflow_socket, fs_socket_path, socket_address};
+    use super::{BridgeSockets, SocketFileGuard, Unbound, fs_socket_path, socket_address};
     use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::{env, fs, process};
@@ -317,7 +420,12 @@ mod bridge_socket_tests {
         let identifier = path.display().to_string();
 
         let guard = SocketFileGuard::new(Some(path.clone()));
-        let listener = bind_workflow_socket(&identifier).expect("bind succeeds");
+        let listener = BridgeSockets::<Unbound>::new(identifier, None)
+            .bind_workflow()
+            .expect("bind succeeds")
+            .into_listeners()
+            .expect("workflow socket is bound")
+            .0;
         assert!(path.exists());
         UnixStream::connect(&path).expect("socket is reachable via the path");
         drop(listener);
@@ -332,7 +440,12 @@ mod bridge_socket_tests {
         let identifier = path.display().to_string();
         fs::write(&path, b"stale").expect("stale file is created");
 
-        let _listener = bind_workflow_socket(&identifier).expect("bind over a stale file succeeds");
+        let _listener = BridgeSockets::<Unbound>::new(identifier, None)
+            .bind_workflow()
+            .expect("bind over a stale file succeeds")
+            .into_listeners()
+            .expect("workflow socket is bound")
+            .0;
         let _ = fs::remove_file(&path);
     }
 
