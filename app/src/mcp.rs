@@ -117,22 +117,35 @@ pub fn git_commit_fix_close_stdio_mcp_server(socket_name: &str) -> io::Result<Sc
     ))
 }
 
+/// Builds the stdio MCP server configuration for the gh issue tools.
+pub fn gh_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
+    let command = env::current_exe()?.with_file_name("kid-agentic-coding-gh");
+    Ok(SchemaMcpServer::Stdio(McpServerStdio::new(
+        "gh-issue-tools",
+        command,
+    )))
+}
+
 pub fn stdio_mcp_servers(
     socket_name: &str,
     workflow_socket_name: &str,
+    session_root: &Path,
 ) -> io::Result<Vec<SchemaMcpServer>> {
-    Ok(vec![
+    let mut servers = vec![
         confetti_stdio_mcp_server(socket_name)?,
         git_commit_fix_open_stdio_mcp_server(workflow_socket_name)?,
-    ])
+    ];
+    push_gh_issue_tools(&mut servers, session_root)?;
+    Ok(servers)
 }
 
 pub fn stdio_mcp_servers_without_confetti(
     workflow_socket_name: &str,
+    session_root: &Path,
 ) -> io::Result<Vec<SchemaMcpServer>> {
-    Ok(vec![git_commit_fix_open_stdio_mcp_server(
-        workflow_socket_name,
-    )?])
+    let mut servers = vec![git_commit_fix_open_stdio_mcp_server(workflow_socket_name)?];
+    push_gh_issue_tools(&mut servers, session_root)?;
+    Ok(servers)
 }
 
 fn find_lockfile(root: &Path, file_name: &str) -> io::Result<Option<PathBuf>> {
@@ -154,6 +167,125 @@ fn find_lockfile(root: &Path, file_name: &str) -> io::Result<Option<PathBuf>> {
     }
 
     Ok(None)
+}
+
+/// Registers the gh issue tools only when a repository with a
+/// github.com-hosted remote is found in the workspace tree, following the
+/// fix-session toolchain gating pattern.
+fn push_gh_issue_tools(servers: &mut Vec<SchemaMcpServer>, session_root: &Path) -> io::Result<()> {
+    if has_github_repo(session_root) {
+        servers.push(gh_stdio_mcp_server()?);
+        tracing::info!(
+            "GitHub issue tools enabled: github.com-hosted repository found in workspace"
+        );
+    } else {
+        tracing::warn!(
+            "GitHub issue tools disabled: no github.com-hosted repository found in workspace"
+        );
+    }
+    Ok(())
+}
+
+/// Maximum directory depth scanned below the session root when looking for a
+/// repository with a github.com-hosted remote.
+const GITHUB_REPO_SCAN_MAX_DEPTH: u32 = 3;
+
+/// Whether any directory in the tree rooted at `root` is a repository with a
+/// github.com-hosted remote. The scan descends at most
+/// `GITHUB_REPO_SCAN_MAX_DEPTH` levels below the root. A directory containing
+/// a `.git` entry (repo root or worktree) is checked via git and never
+/// descended into.
+fn has_github_repo(root: &Path) -> bool {
+    let mut stack = vec![(root.to_path_buf(), 0u32)];
+
+    while let Some((directory, depth)) = stack.pop() {
+        let entries: Vec<(String, PathBuf, bool)> = match fs::read_dir(&directory) {
+            Ok(entries) => entries
+                .flatten()
+                .map(|entry| {
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        entry.path(),
+                        entry.file_type().is_ok_and(|t| t.is_dir()),
+                    )
+                })
+                .collect(),
+            Err(err) => {
+                tracing::debug!(
+                    directory = %directory.display(),
+                    ?err,
+                    "skipping unreadable directory during GitHub repository scan"
+                );
+                continue;
+            }
+        };
+
+        if entries.iter().any(|(name, _, _)| name == ".git") {
+            if git_repo_has_github_remote(&directory) {
+                return true;
+            }
+            continue;
+        }
+
+        for (name, path, is_dir) in entries {
+            let child_depth = depth + 1;
+            if is_dir
+                && name != "target"
+                && name != "node_modules"
+                && child_depth <= GITHUB_REPO_SCAN_MAX_DEPTH
+            {
+                stack.push((path, child_depth));
+            }
+        }
+    }
+
+    false
+}
+
+/// Whether any remote of the repository rooted at `repo` is hosted on
+/// github.com. Global and system git configuration is excluded so only the
+/// repository's own remotes count.
+fn git_repo_has_github_remote(repo: &Path) -> bool {
+    let output = match process::Command::new("git")
+        .args(["config", "--get-regexp", "^remote\\..*\\.url$"])
+        .current_dir(repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            tracing::warn!(?err, "failed to run git while checking for a GitHub remote");
+            return false;
+        }
+    };
+
+    if !output.status.success() {
+        // Exit status 1 means no remote is configured, 128 means git could
+        // not interpret the directory as a repository.
+        return false;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.split_once(' ').map_or("", |(_, url)| url))
+        .any(is_github_remote_url)
+}
+
+/// Strict github.com host match covering https://, ssh:// and scp-style
+/// `git@github.com:` URLs while excluding GitHub Enterprise hosts.
+fn is_github_remote_url(url: &str) -> bool {
+    let url = url.trim();
+    let host = if let Some((_, rest)) = url.split_once("://") {
+        rest.split(['/', ':']).next().unwrap_or("")
+    } else if let Some((host, _path)) = url.split_once(':') {
+        host
+    } else {
+        return false;
+    };
+
+    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+    host.eq_ignore_ascii_case("github.com")
 }
 
 pub fn stdio_mcp_servers_for_fix_session(
@@ -288,8 +420,11 @@ impl BridgeSockets<WorkflowBound> {
         })
     }
 
-    pub fn stdio_mcp_servers_without_confetti(&self) -> io::Result<Vec<SchemaMcpServer>> {
-        stdio_mcp_servers_without_confetti(&self.workflow_socket)
+    pub fn stdio_mcp_servers_without_confetti(
+        &self,
+        session_root: &Path,
+    ) -> io::Result<Vec<SchemaMcpServer>> {
+        stdio_mcp_servers_without_confetti(&self.workflow_socket, session_root)
     }
 
     pub fn stdio_mcp_servers_for_fix_session(
@@ -300,14 +435,14 @@ impl BridgeSockets<WorkflowBound> {
     }
 }
 impl BridgeSockets<AllBound> {
-    pub fn stdio_mcp_servers(&self) -> io::Result<Vec<SchemaMcpServer>> {
+    pub fn stdio_mcp_servers(&self, session_root: &Path) -> io::Result<Vec<SchemaMcpServer>> {
         let confetti_socket = self.confetti_socket.as_deref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "confetti socket is not configured",
             )
         })?;
-        stdio_mcp_servers(confetti_socket, &self.workflow_socket)
+        stdio_mcp_servers(confetti_socket, &self.workflow_socket, session_root)
     }
 }
 
@@ -603,6 +738,107 @@ mod fix_session_toolchain_tests {
         let servers = stdio_mcp_servers_for_fix_session("workflow", &workspace)
             .expect("MCP server registration succeeds");
         assert_eq!(servers.len(), 2);
+
+        fs::remove_dir_all(workspace).expect("workspace is removed");
+    }
+}
+
+#[cfg(test)]
+mod github_registration_tests {
+    use super::{is_github_remote_url, stdio_mcp_servers, stdio_mcp_servers_without_confetti};
+    use std::env;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process;
+
+    const GITHUB_REMOTE: &str = "https://github.com/owner/repo.git";
+    const NON_GITHUB_REMOTE: &str = "https://gitlab.com/owner/repo.git";
+
+    fn temp_workspace() -> PathBuf {
+        let path = env::temp_dir().join(format!(
+            "kid-agentic-coding-github-{}-{}",
+            process::id(),
+            super::next_socket_id()
+        ));
+        fs::create_dir_all(&path).expect("workspace is created");
+        path
+    }
+
+    fn make_repo(root: &Path, remote_url: &str) {
+        process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .output()
+            .expect("git init runs");
+        process::Command::new("git")
+            .args(["remote", "add", "origin", remote_url])
+            .current_dir(root)
+            .output()
+            .expect("git remote add runs");
+    }
+
+    #[test]
+    fn is_github_remote_url_matches_only_github_com_hosts() {
+        assert!(is_github_remote_url("https://github.com/owner/repo.git"));
+        assert!(is_github_remote_url("git@github.com:owner/repo.git"));
+        assert!(is_github_remote_url("ssh://git@github.com/owner/repo.git"));
+        assert!(!is_github_remote_url(
+            "https://github.example.com/owner/repo.git"
+        ));
+        assert!(!is_github_remote_url("https://gitlab.com/owner/repo.git"));
+        assert!(!is_github_remote_url("owner/repo.git"));
+    }
+
+    #[test]
+    fn registers_gh_tools_for_a_github_repo_at_the_workspace_root() {
+        let workspace = temp_workspace();
+        make_repo(&workspace, GITHUB_REMOTE);
+
+        let servers = stdio_mcp_servers("confetti", "workflow", &workspace)
+            .expect("MCP server registration succeeds");
+        assert_eq!(servers.len(), 3);
+
+        fs::remove_dir_all(workspace).expect("workspace is removed");
+    }
+
+    #[test]
+    fn registers_gh_tools_for_a_nested_github_repo() {
+        let workspace = temp_workspace();
+        let project = workspace.join("projects").join("web");
+        fs::create_dir_all(&project).expect("project dir is created");
+        make_repo(&project, GITHUB_REMOTE);
+
+        let servers = stdio_mcp_servers_without_confetti("workflow", &workspace)
+            .expect("MCP server registration succeeds");
+        assert_eq!(servers.len(), 2);
+
+        fs::remove_dir_all(workspace).expect("workspace is removed");
+    }
+
+    #[test]
+    fn skips_gh_tools_without_a_github_repo() {
+        let workspace = temp_workspace();
+        let project = workspace.join("project");
+        fs::create_dir_all(&project).expect("project dir is created");
+        make_repo(&project, NON_GITHUB_REMOTE);
+
+        let servers = stdio_mcp_servers_without_confetti("workflow", &workspace)
+            .expect("MCP server registration succeeds");
+        assert_eq!(servers.len(), 1);
+
+        fs::remove_dir_all(workspace).expect("workspace is removed");
+    }
+
+    #[test]
+    fn skips_github_repos_beyond_the_scan_depth_limit() {
+        let workspace = temp_workspace();
+        let project = workspace.join("a").join("b").join("c").join("d");
+        fs::create_dir_all(&project).expect("project dir is created");
+        make_repo(&project, GITHUB_REMOTE);
+
+        let servers = stdio_mcp_servers_without_confetti("workflow", &workspace)
+            .expect("MCP server registration succeeds");
+        assert_eq!(servers.len(), 1);
 
         fs::remove_dir_all(workspace).expect("workspace is removed");
     }
