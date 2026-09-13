@@ -186,13 +186,19 @@ fn push_gh_issue_tools(servers: &mut Vec<SchemaMcpServer>, session_root: &Path) 
     Ok(())
 }
 
-/// Whether any directory in the tree rooted at `root` is a repository with a
-/// github.com-hosted remote. A directory containing a `.git` entry (repo root
-/// or worktree) is checked via git and never descended into.
-fn has_github_repo(root: &Path) -> bool {
-    let mut stack = vec![root.to_path_buf()];
+/// Maximum directory depth scanned below the session root when looking for a
+/// repository with a github.com-hosted remote.
+const GITHUB_REPO_SCAN_MAX_DEPTH: u32 = 3;
 
-    while let Some(directory) = stack.pop() {
+/// Whether any directory in the tree rooted at `root` is a repository with a
+/// github.com-hosted remote. The scan descends at most
+/// `GITHUB_REPO_SCAN_MAX_DEPTH` levels below the root. A directory containing
+/// a `.git` entry (repo root or worktree) is checked via git and never
+/// descended into.
+fn has_github_repo(root: &Path) -> bool {
+    let mut stack = vec![(root.to_path_buf(), 0u32)];
+
+    while let Some((directory, depth)) = stack.pop() {
         let entries: Vec<(String, PathBuf, bool)> = match fs::read_dir(&directory) {
             Ok(entries) => entries
                 .flatten()
@@ -222,8 +228,13 @@ fn has_github_repo(root: &Path) -> bool {
         }
 
         for (name, path, is_dir) in entries {
-            if is_dir && name != "target" && name != "node_modules" {
-                stack.push(path);
+            let child_depth = depth + 1;
+            if is_dir
+                && name != "target"
+                && name != "node_modules"
+                && child_depth <= GITHUB_REPO_SCAN_MAX_DEPTH
+            {
+                stack.push((path, child_depth));
             }
         }
     }
@@ -810,6 +821,20 @@ mod github_registration_tests {
         let project = workspace.join("project");
         fs::create_dir_all(&project).expect("project dir is created");
         make_repo(&project, NON_GITHUB_REMOTE);
+
+        let servers = stdio_mcp_servers_without_confetti("workflow", &workspace)
+            .expect("MCP server registration succeeds");
+        assert_eq!(servers.len(), 1);
+
+        fs::remove_dir_all(workspace).expect("workspace is removed");
+    }
+
+    #[test]
+    fn skips_github_repos_beyond_the_scan_depth_limit() {
+        let workspace = temp_workspace();
+        let project = workspace.join("a").join("b").join("c").join("d");
+        fs::create_dir_all(&project).expect("project dir is created");
+        make_repo(&project, GITHUB_REMOTE);
 
         let servers = stdio_mcp_servers_without_confetti("workflow", &workspace)
             .expect("MCP server registration succeeds");
