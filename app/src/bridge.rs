@@ -59,7 +59,8 @@ pub enum SessionEvent {
     /// The commit workflow requested a dedicated fix session.
     CommitFix {
         instructions: String,
-        commit_message: String,
+        amend: bool,
+        context: String,
         cwd: Option<PathBuf>,
     },
 

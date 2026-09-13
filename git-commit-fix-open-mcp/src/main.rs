@@ -26,8 +26,13 @@ struct Args {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GitCommitWithFixParams {
-    /// The commit message to carry into the fix session.
-    message: String,
+    /// Free-form story-telling text describing the change. Deliberately
+    /// not a pre-formatted commit message: the fix session composes the
+    /// correctly formatted commit message itself from this context.
+    context: String,
+    /// Whether the fix session should amend the previous commit instead
+    /// of creating a new one.
+    amend: bool,
     cwd: Option<PathBuf>,
 }
 
@@ -35,12 +40,13 @@ struct GitCommitWithFixParams {
 struct CommitFixEvent<'a> {
     event: &'static str,
     instructions: &'static str,
-    commit_message: &'a str,
+    amend: bool,
+    context: &'a str,
     cwd: Option<&'a Path>,
 }
 
 const COMMIT_FIX_EVENT: &str = "commit-fix";
-const COMMIT_FIX_INSTRUCTIONS: &str = "The main session requested a commit-fix session. Investigate the current problem, fix the underlying issue, run the provided check, lint, and test tools, and commit the resulting changes with the supplied commit message using the available Git tools.";
+const COMMIT_FIX_INSTRUCTIONS: &str = "The main session requested a commit-fix session. Investigate the current problem, fix the underlying issue, and run the provided check, lint, and test tools. Compose a correctly formatted commit message yourself from the story-telling context supplied below - do not treat it as a pre-formatted commit message. Respect the main session's amend decision: amend the previous commit if it is set, otherwise create a new commit, and commit the resulting changes using the available Git tools.";
 
 #[derive(Clone)]
 struct GitCommitFixOpenTools {
@@ -73,11 +79,12 @@ impl GitCommitFixOpenTools {
         &self,
         Parameters(params): Parameters<GitCommitWithFixParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::info!(%params.message, "commit-fix session requested");
+        tracing::info!(%params.amend, %params.context, "commit-fix session requested");
         let event = CommitFixEvent {
             event: COMMIT_FIX_EVENT,
             instructions: COMMIT_FIX_INSTRUCTIONS,
-            commit_message: &params.message,
+            amend: params.amend,
+            context: &params.context,
             cwd: params.cwd.as_deref(),
         };
         let message = serde_json::to_vec(&event).map_err(|err| {
@@ -172,18 +179,20 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMMIT_FIX_EVENT, COMMIT_FIX_INSTRUCTIONS, CommitFixEvent, bridge_error, connect_to_bridge,
+        COMMIT_FIX_EVENT, COMMIT_FIX_INSTRUCTIONS, CommitFixEvent, GitCommitWithFixParams,
+        bridge_error, connect_to_bridge,
     };
     use std::io::{self, ErrorKind};
     use std::os::unix::net::UnixListener;
     use std::{env, fs, process};
 
     #[test]
-    fn commit_fix_event_contains_workflow_instructions_and_message() {
+    fn commit_fix_event_contains_workflow_instructions_context_and_amend() {
         let event = CommitFixEvent {
             event: COMMIT_FIX_EVENT,
             instructions: COMMIT_FIX_INSTRUCTIONS,
-            commit_message: "feat: preserve workflow",
+            amend: true,
+            context: "Replaced the commit message input with story-telling context.",
             cwd: None,
         };
 
@@ -191,7 +200,37 @@ mod tests {
 
         assert_eq!(value["event"], COMMIT_FIX_EVENT);
         assert_eq!(value["instructions"], COMMIT_FIX_INSTRUCTIONS);
-        assert_eq!(value["commit_message"], "feat: preserve workflow");
+        assert_eq!(value["amend"], true);
+        assert_eq!(
+            value["context"],
+            "Replaced the commit message input with story-telling context."
+        );
+    }
+
+    #[test]
+    fn git_commit_with_fix_params_require_context_and_amend() {
+        let missing_amend = serde_json::from_value::<GitCommitWithFixParams>(serde_json::json!({
+            "context": "Describe the change in free-form story-telling text",
+        }))
+        .expect_err("amend is required");
+        assert!(missing_amend.to_string().contains("amend"));
+
+        let missing_context = serde_json::from_value::<GitCommitWithFixParams>(serde_json::json!({
+            "amend": false,
+        }))
+        .expect_err("context is required");
+        assert!(missing_context.to_string().contains("context"));
+
+        let params = serde_json::from_value::<GitCommitWithFixParams>(serde_json::json!({
+            "context": "Describe the change in free-form story-telling text",
+            "amend": true,
+        }))
+        .expect("both fields present");
+        assert!(params.amend);
+        assert_eq!(
+            params.context,
+            "Describe the change in free-form story-telling text"
+        );
     }
 
     #[test]
