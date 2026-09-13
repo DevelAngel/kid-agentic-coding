@@ -25,7 +25,7 @@ use tokio::sync::oneshot;
 
 use std::fs;
 use std::future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Working directory the agent session operates in. `.` ties the session to
 /// the current process's working directory.
@@ -180,7 +180,7 @@ async fn run_session(
                     .bind_workflow()
                     .map_err(Error::into_internal_error)?;
                 let servers = sockets
-                    .stdio_mcp_servers_without_confetti()
+                    .stdio_mcp_servers_without_confetti(Path::new(SESSION_ROOT))
                     .map_err(Error::into_internal_error)?;
                 let (workflow_std_listener, _) = sockets
                     .into_listeners()
@@ -200,7 +200,7 @@ async fn run_session(
                     .bind_workflow()
                     .map_err(Error::into_internal_error)?;
                 let servers = sockets
-                    .stdio_mcp_servers_without_confetti()
+                    .stdio_mcp_servers_without_confetti(Path::new(SESSION_ROOT))
                     .map_err(Error::into_internal_error)?;
                 let (workflow_std_listener, _) = sockets
                     .into_listeners()
@@ -233,7 +233,7 @@ async fn run_session(
                     .bind_confetti()
                     .map_err(Error::into_internal_error)?;
                 let servers = sockets
-                    .stdio_mcp_servers()
+                    .stdio_mcp_servers(Path::new(SESSION_ROOT))
                     .map_err(Error::into_internal_error)?;
                 let (workflow_std_listener, confetti_std_listener) = sockets
                     .into_listeners()
