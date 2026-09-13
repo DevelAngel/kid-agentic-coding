@@ -69,6 +69,11 @@ const COMMIT_FIX_WORKFLOW: &str = "commit-fix-rust";
 
 /// A permission request awaiting the user's decision.
 struct PendingPermission {
+    /// Exact name of the tool invoked, looked up from the tool call's chat
+    /// entry, if it arrived before the permission request.
+    name: Option<String>,
+    title: String,
+    parameters: Option<String>,
     options: Vec<PermissionOption>,
     reply: oneshot::Sender<Option<String>>,
 }
@@ -232,11 +237,38 @@ impl App {
                     self.last_agent_message_entry_id = Some(entry_id);
                 }
             }
-            SessionEvent::PermissionRequest { options, reply } => {
-                tracing::debug!(option_count = options.len(), "event: permission_request");
+            SessionEvent::PermissionRequest {
+                tool_call_id,
+                title,
+                parameters,
+                options,
+                reply,
+            } => {
+                let name = self
+                    .tool_call_ids
+                    .get(&tool_call_id)
+                    .copied()
+                    .and_then(|entry_id| {
+                        self.chat_log
+                            .tool_call(entry_id)
+                            .map(|entry| entry.name.clone())
+                    });
+                tracing::debug!(
+                    %title,
+                    %tool_call_id,
+                    ?name,
+                    option_count = options.len(),
+                    "event: permission_request"
+                );
                 self.settle_thought();
                 self.last_agent_message_entry_id = None;
-                self.pending_permission = Some(PendingPermission { options, reply });
+                self.pending_permission = Some(PendingPermission {
+                    name,
+                    title,
+                    parameters,
+                    options,
+                    reply,
+                });
             }
             SessionEvent::Stopped(reason) => {
                 tracing::debug!(?reason, "event: stopped");
@@ -1115,19 +1147,30 @@ impl DrawApp for Frame<'_> {
     }
 
     fn draw_permission_popup(&mut self, pending: &PendingPermission, area: Rect) {
-        let popup_area = centered_rect(60, 40, area);
+        let popup_area = centered_rect(80, 70, area);
 
-        let items: Vec<ListItem> = pending
-            .options
-            .iter()
-            .enumerate()
-            .map(|(index, option)| ListItem::new(format!("{}. {}", index + 1, option.name)))
-            .collect();
+        let mut text = Text::default();
+        text.push_line(Line::from(Span::styled(
+            pending.title.clone(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        text.push_line(Line::default());
+        text.push_line(Line::raw(format_permission_parameters(
+            pending.parameters.as_deref(),
+        )));
+        text.push_line(Line::default());
+        for (index, option) in pending.options.iter().enumerate() {
+            text.push_line(Line::raw(format!("{}. {}", index + 1, option.name)));
+        }
 
-        let popup = List::new(items).block(
+        let block_title = match pending.name.as_deref() {
+            Some(name) => format!(" Permission requested: {name} (Esc to cancel) "),
+            None => " Permission requested (Esc to cancel) ".to_owned(),
+        };
+        let popup = Paragraph::new(text).wrap(Wrap { trim: false }).block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
-                .title("Permission requested (Esc to cancel)")
+                .title(block_title)
                 .style(Style::default().fg(Color::Yellow)),
         );
 
@@ -1195,6 +1238,36 @@ impl DrawApp for Frame<'_> {
         self.render_widget(paragraph, popup_area);
     }
 }
+
+/// Maximum number of characters of raw tool call parameters shown in the
+/// permission popup.
+const PERMISSION_PARAMETER_LIMIT: usize = 4000;
+
+/// Formats the raw input of a tool call for permission popup display:
+/// pretty-prints JSON objects and arrays, and truncates anything longer than
+/// [`PERMISSION_PARAMETER_LIMIT`] characters.
+fn format_permission_parameters(parameters: Option<&str>) -> String {
+    let Some(raw) = parameters else {
+        return "No parameters supplied.".to_owned();
+    };
+
+    let pretty = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .filter(|value| value.is_object() || value.is_array())
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(|| raw.to_owned());
+
+    if pretty.chars().count() <= PERMISSION_PARAMETER_LIMIT {
+        return pretty;
+    }
+
+    let truncated = pretty
+        .chars()
+        .take(PERMISSION_PARAMETER_LIMIT)
+        .collect::<String>();
+    format!("{truncated}\n\u{2026} (truncated)")
+}
+
 /// Builds the framed paragraph for a User/Agent bubble. `footer`, when set,
 /// is shown as a label on the bubble's bottom border.
 fn bubble_paragraph<'a>(
@@ -1467,14 +1540,16 @@ pub async fn run(
 
 #[cfg(test)]
 mod handle_key_tests {
-    use super::{App, SCROLL_STEP};
+    use super::{App, SCROLL_STEP, format_permission_parameters};
     use agent_client_protocol::schema::v1::{
-        ContentBlock, StopReason, TextContent, ToolCallId, ToolCallStatus,
+        ContentBlock, PermissionOption, PermissionOptionKind, StopReason, TextContent, ToolCallId,
+        ToolCallStatus,
     };
     use kid_agentic_coding::{
         Message, SessionEvent, SessionHandle, SessionNoticeKind, Status, Step,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tokio::sync::oneshot;
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
@@ -1539,6 +1614,87 @@ mod handle_key_tests {
         app.handle_session_event(SessionEvent::Stopped(StopReason::EndTurn));
 
         assert!(app.chat_log.is_empty());
+    }
+
+    #[test]
+    fn permission_request_event_resolves_the_tool_call_name() {
+        let mut app = App::new();
+        push_tool_call(&mut app, "call-1", "read_file");
+        let (reply_tx, _reply_rx) = oneshot::channel();
+
+        app.handle_session_event(SessionEvent::PermissionRequest {
+            tool_call_id: ToolCallId::new("call-1".to_owned()),
+            title: "Read app/src/ui.rs".to_owned(),
+            parameters: Some(r#"{"path":"app/src/ui.rs"}"#.to_owned()),
+            options: vec![PermissionOption::new(
+                "allow_once",
+                "Allow once",
+                PermissionOptionKind::AllowOnce,
+            )],
+            reply: reply_tx,
+        });
+
+        let Some(pending) = &app.pending_permission else {
+            panic!("expected a pending permission request");
+        };
+        assert_eq!(pending.title, "Read app/src/ui.rs");
+        assert_eq!(pending.name.as_deref(), Some("read_file"));
+        assert_eq!(
+            pending.parameters.as_deref(),
+            Some(r#"{"path":"app/src/ui.rs"}"#)
+        );
+        assert_eq!(pending.options.len(), 1);
+    }
+
+    #[test]
+    fn permission_request_without_a_known_tool_call_has_no_name() {
+        let mut app = App::new();
+        let (reply_tx, _reply_rx) = oneshot::channel();
+
+        app.handle_session_event(SessionEvent::PermissionRequest {
+            tool_call_id: ToolCallId::new("call-unknown".to_owned()),
+            title: "Tool call".to_owned(),
+            parameters: None,
+            options: vec![],
+            reply: reply_tx,
+        });
+
+        let Some(pending) = &app.pending_permission else {
+            panic!("expected a pending permission request");
+        };
+        assert_eq!(pending.name, None);
+    }
+
+    #[test]
+    fn permission_parameters_pretty_print_json_objects() {
+        assert_eq!(
+            format_permission_parameters(Some(r#"{"path":"src/lib.rs"}"#)),
+            "{\n  \"path\": \"src/lib.rs\"\n}"
+        );
+    }
+
+    #[test]
+    fn permission_parameters_fall_back_without_parameters() {
+        assert_eq!(
+            format_permission_parameters(None),
+            "No parameters supplied."
+        );
+    }
+
+    #[test]
+    fn permission_parameters_keep_non_json_raw_input() {
+        assert_eq!(
+            format_permission_parameters(Some("git log --oneline")),
+            "git log --oneline"
+        );
+    }
+
+    #[test]
+    fn permission_parameters_truncate_very_long_input() {
+        let formatted = format_permission_parameters(Some(&"a".repeat(5000)));
+
+        assert!(formatted.starts_with(&"a".repeat(4000)));
+        assert!(formatted.ends_with("\n\u{2026} (truncated)"));
     }
 
     #[test]
