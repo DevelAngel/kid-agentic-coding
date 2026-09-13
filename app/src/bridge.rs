@@ -48,10 +48,17 @@ pub enum SessionEvent {
     /// The agent reported a new active model.
     ModelChanged(String),
 
-    /// The agent requests permission to proceed.
+    /// The agent requests permission to proceed with a tool call.
     ///
-    /// Reply with `Some(option_id)` to select an option, or `None` to cancel.
+    /// `tool_call_id` links the request to the tool call announced via a
+    /// `tool_call` update, so the UI can look up the exact tool name;
+    /// `title` names the specific call and `parameters` carries the raw
+    /// input for display. Reply with `Some(option_id)` to select an option,
+    /// or `None` to cancel.
     PermissionRequest {
+        tool_call_id: ToolCallId,
+        title: String,
+        parameters: Option<String>,
         options: Vec<PermissionOption>,
         reply: Sender<Option<String>>,
     },

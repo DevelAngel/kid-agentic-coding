@@ -453,8 +453,12 @@ async fn handle_update(
                 .await
                 .if_request(async |request: RequestPermissionRequest, responder| {
                     let (reply_tx, reply_rx) = oneshot::channel();
+                    let (title, parameters) = permission_request_details(&request.tool_call);
                     let _ = event_tx.send(SessionEvent::PermissionRequest {
-                        options: request.options.clone(),
+                        tool_call_id: request.tool_call.tool_call_id,
+                        title,
+                        parameters,
+                        options: request.options,
                         reply: reply_tx,
                     });
 
@@ -488,6 +492,18 @@ fn tool_call_title(kind: ToolKind, title: String) -> String {
     } else {
         title
     }
+}
+
+/// Extracts the display title and raw input parameters of the tool call a
+/// permission request refers to.
+fn permission_request_details(tool_call: &ToolCallUpdate) -> (String, Option<String>) {
+    let fields = &tool_call.fields;
+    let title = fields
+        .title
+        .clone()
+        .unwrap_or_else(|| "Tool call".to_owned());
+    let parameters = fields.raw_input.as_ref().map(|value| value.to_string());
+    (title, parameters)
 }
 
 /// Extracts the current value of the model selector, if the agent reports one.
@@ -532,8 +548,8 @@ fn tool_call_result(content: &[ToolCallContent], raw_output: Option<&Value>) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::tool_call_title;
-    use agent_client_protocol::schema::v1::ToolKind;
+    use super::{permission_request_details, tool_call_title};
+    use agent_client_protocol::schema::v1::{ToolCallUpdate, ToolCallUpdateFields, ToolKind};
 
     #[test]
     fn shell_commands_include_the_command_in_the_title() {
@@ -548,6 +564,34 @@ mod tests {
         assert_eq!(
             tool_call_title(ToolKind::Read, "Read app/src/ui.rs".to_owned()),
             "Read app/src/ui.rs"
+        );
+    }
+
+    #[test]
+    fn permission_details_extract_title_and_raw_input() {
+        let tool_call = ToolCallUpdate::new(
+            "tool-call-1",
+            ToolCallUpdateFields::new()
+                .title("Read app/src/ui.rs")
+                .raw_input(serde_json::json!({"path": "app/src/ui.rs"})),
+        );
+
+        assert_eq!(
+            permission_request_details(&tool_call),
+            (
+                "Read app/src/ui.rs".to_owned(),
+                Some(r#"{"path":"app/src/ui.rs"}"#.to_owned())
+            )
+        );
+    }
+
+    #[test]
+    fn permission_details_fall_back_for_bare_tool_calls() {
+        let tool_call = ToolCallUpdate::new("tool-call-2", ToolCallUpdateFields::new());
+
+        assert_eq!(
+            permission_request_details(&tool_call),
+            ("Tool call".to_owned(), None)
         );
     }
 }
