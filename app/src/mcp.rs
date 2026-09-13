@@ -117,6 +117,15 @@ pub fn git_commit_fix_close_stdio_mcp_server(socket_name: &str) -> io::Result<Sc
     ))
 }
 
+/// Builds the stdio MCP server configuration for the gh issue tools.
+pub fn gh_stdio_mcp_server() -> io::Result<SchemaMcpServer> {
+    let command = env::current_exe()?.with_file_name("kid-agentic-coding-gh");
+    Ok(SchemaMcpServer::Stdio(McpServerStdio::new(
+        "gh-issue-tools",
+        command,
+    )))
+}
+
 pub fn stdio_mcp_servers(
     socket_name: &str,
     workflow_socket_name: &str,
@@ -124,15 +133,17 @@ pub fn stdio_mcp_servers(
     Ok(vec![
         confetti_stdio_mcp_server(socket_name)?,
         git_commit_fix_open_stdio_mcp_server(workflow_socket_name)?,
+        gh_stdio_mcp_server()?,
     ])
 }
 
 pub fn stdio_mcp_servers_without_confetti(
     workflow_socket_name: &str,
 ) -> io::Result<Vec<SchemaMcpServer>> {
-    Ok(vec![git_commit_fix_open_stdio_mcp_server(
-        workflow_socket_name,
-    )?])
+    Ok(vec![
+        git_commit_fix_open_stdio_mcp_server(workflow_socket_name)?,
+        gh_stdio_mcp_server()?,
+    ])
 }
 
 fn find_lockfile(root: &Path, file_name: &str) -> io::Result<Option<PathBuf>> {
