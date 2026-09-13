@@ -823,6 +823,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+ "unicode-xid",
 ]
 
 [[package]]
@@ -1454,6 +1455,22 @@ dependencies = [
  "anyhow",
  "clap",
  "rmcp 3.1.4",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kid-agentic-coding-gh"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "derive_more 1.0.0",
+ "rmcp 3.1.4",
+ "schemars 1.2.2",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
