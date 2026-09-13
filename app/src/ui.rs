@@ -706,7 +706,8 @@ async fn run_app(
                 match session_event {
                     SessionEvent::CommitFix {
                         instructions,
-                        commit_message,
+                        amend,
+                        context,
                         cwd,
                     } if fix_session.is_none() => {
                         fix_session = Some(
@@ -715,9 +716,12 @@ async fn run_app(
                                 main_session,
                                 agent_config,
                                 fs_socket_dir.clone(),
-                                instructions,
-                                commit_message,
-                                cwd,
+                                CommitFixRequest {
+                                    instructions,
+                                    amend,
+                                    context,
+                                    cwd,
+                                },
                             )
                             .await,
                         );
@@ -756,6 +760,16 @@ async fn run_app(
     Ok(())
 }
 
+/// The commit-fix request: the workflow instructions plus the main
+/// session's amend decision and story-telling context, grouped into one
+/// payload so the opener stays within the argument-count lint budget.
+struct CommitFixRequest {
+    instructions: String,
+    amend: bool,
+    context: String,
+    cwd: Option<PathBuf>,
+}
+
 /// Cancels the main session's current turn, waits for it to actually stop,
 /// then opens and seeds a fix session. Blocking on the cancel confirmation
 /// avoids a race between the main session's own event stream and the new
@@ -765,10 +779,14 @@ async fn open_commit_fix_session(
     main_session: &mut SessionHandle,
     agent_config: &AcpAgentConfig,
     fs_socket_dir: FsSocketDir,
-    instructions: String,
-    commit_message: String,
-    cwd: Option<PathBuf>,
+    fix: CommitFixRequest,
 ) -> SessionHandle {
+    let CommitFixRequest {
+        instructions,
+        amend,
+        context,
+        cwd,
+    } = fix;
     main_session.cancel();
     while let Some(event) = main_session.recv_event().await {
         let is_cancelled = matches!(event, SessionEvent::Stopped(StopReason::Cancelled));
@@ -792,8 +810,10 @@ async fn open_commit_fix_session(
     app.chat_log.push_session_transition(COMMIT_FIX_WORKFLOW);
     app.prompt = new_prompt_textarea(Some(COMMIT_FIX_WORKFLOW));
 
-    let seed_prompt =
-        format!("{instructions}\n\n[AUTO: Commit Message from Main Session]\n{commit_message}");
+    let amend_decision = if amend { "yes" } else { "no" };
+    let seed_prompt = format!(
+        "{instructions}\n\n[AUTO: Amend Decision from Main Session]\n{amend_decision}\n\n[AUTO: Story-telling Context from Main Session]\n{context}"
+    );
     tracing::debug!("sending commit-fix seed prompt");
 
     app.chat_log.push_auto(seed_prompt.clone());

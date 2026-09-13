@@ -306,27 +306,37 @@ async fn run_session(
                                 && let Ok(value) = serde_json::from_slice::<Value>(&message)
                             {
                                 let event_name = value.get("event").and_then(Value::as_str);
-                                let commit_message = value
-                                    .get("commit_message")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_owned();
                                 if event_name == Some(mcp::COMMIT_FIX_EVENT) {
                                     let instructions = value
                                         .get("instructions")
                                         .and_then(Value::as_str)
                                         .unwrap_or_default()
                                         .to_owned();
-                                    tracing::info!(%commit_message, "commit-fix session event received");
+                                    let amend = value
+                                        .get("amend")
+                                        .and_then(Value::as_bool)
+                                        .unwrap_or(false);
+                                    let context = value
+                                        .get("context")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_owned();
+                                    tracing::info!(%amend, %context, "commit-fix session event received");
                                     let _ = session_event_tx.send(SessionEvent::CommitFix {
                                         instructions,
+                                        amend,
+                                        context,
                                         cwd: value
                                             .get("cwd")
                                             .and_then(Value::as_str)
                                             .map(PathBuf::from),
-                                        commit_message,
                                     });
                                 } else if event_name == Some(mcp::COMMIT_FIX_DONE_EVENT) {
+                                    let commit_message = value
+                                        .get("commit_message")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_owned();
                                     tracing::info!(%commit_message, "commit-fix-done session event received");
                                     if turn_active {
                                         pending_commit_fix_done = Some(commit_message);

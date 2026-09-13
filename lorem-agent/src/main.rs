@@ -179,7 +179,9 @@ fn plan_for(prompt_index: usize, supports_mcp: bool) -> Vec<Step> {
             Step::SimulatedToolCall("list_directory"),
             Step::McpToolCall(McpToolCall {
                 name: "Git Commit With Fix",
-                argument: Some("feat(lorem-agent): demonstrate commit fix workflow"),
+                argument: Some(
+                    "Demonstrated the commit fix workflow by handing the work off to a fix session",
+                ),
                 invoke: invoke_commit_workflow,
             }),
         ],
@@ -278,19 +280,19 @@ async fn run_confetti(connection: ConnectionTo<Client>, server_id: McpServerAcpI
     Ok(())
 }
 
-async fn run_commit_workflow(message: &str) -> Result<()> {
+async fn run_commit_workflow(context: &str) -> Result<()> {
     let server = COMMIT_WORKFLOW_SERVER
         .get()
         .ok_or_else(|| eyre!("commit-workflow MCP server unavailable"))?;
     let mut command = Command::new(&server.command);
-    tracing::debug!(%message, "invoking commit-workflow MCP tool");
+    tracing::debug!(%context, "invoking commit-workflow MCP tool");
     command.args(&server.args);
 
     let client = ().serve(TokioChildProcess::new(command)?).await?;
     client
         .call_tool(
             CallToolRequestParams::new("git_commit_with_fix").with_arguments(
-                serde_json::json!({"message": message})
+                serde_json::json!({"amend": false, "context": context})
                     .as_object()
                     .cloned()
                     .unwrap_or_default(),
@@ -316,19 +318,24 @@ fn git_commit_tool_error(result: &CallToolResult) -> Option<String> {
     Some(format!("git commit tool failed: {message}"))
 }
 
-async fn run_git_commit_fix_close(server: &McpServerStdio, message: &str) -> Result<()> {
+async fn run_git_commit_fix_close(server: &McpServerStdio) -> Result<()> {
     let mut command = Command::new(&server.command);
-    tracing::debug!(%message, "invoking git-commit-fix-close MCP tool");
+    tracing::debug!("invoking git-commit-fix-close MCP tool");
     command.args(&server.args);
 
     let client = ().serve(TokioChildProcess::new(command)?).await?;
     let result = client
         .call_tool(
             CallToolRequestParams::new("git_commit").with_arguments(
-                serde_json::json!({"message": message})
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
+                serde_json::json!({
+                    "type": "feat",
+                    "scope": "lorem-agent",
+                    "description": "demonstrate commit fix workflow",
+                    "body": "The fix session committed and closed the commit-fix workflow",
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
             ),
         )
         .await?;
@@ -374,29 +381,26 @@ fn invoke_rust_tool(
 
 fn invoke_commit_workflow(
     _context: McpToolContext,
-    message: Option<&'static str>,
+    context: Option<&'static str>,
 ) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
     Box::pin(async move {
-        let Some(message) = message else {
-            return Err(eyre!("commit message unavailable"));
+        let Some(context) = context else {
+            return Err(eyre!("commit context unavailable"));
         };
-        run_commit_workflow(message).await?;
+        run_commit_workflow(context).await?;
         Ok("git_commit_with_fix: ok".to_owned())
     })
 }
 
 fn invoke_git_commit_tool(
     context: McpToolContext,
-    message: Option<&'static str>,
+    _argument: Option<&'static str>,
 ) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
     Box::pin(async move {
         let server = context
             .close_server
             .ok_or_else(|| eyre!("git-commit-fix-close MCP server unavailable"))?;
-        let Some(message) = message else {
-            return Err(eyre!("commit message unavailable"));
-        };
-        run_git_commit_fix_close(&server, message).await?;
+        run_git_commit_fix_close(&server).await?;
         Ok("git_commit: ok".to_owned())
     })
 }
