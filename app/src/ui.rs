@@ -14,6 +14,7 @@ use rand::RngExt;
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -21,12 +22,13 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Wrap,
+    Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Wrap,
 };
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{TextArea, WrapMode};
 use textwrap::{self, Options};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{mpsc, oneshot};
@@ -44,6 +46,7 @@ use std::time::Duration;
 const USER_ICON: &str = "\u{f0d0}";
 const USER_COLOR: Color = Color::Rgb(120, 170, 255);
 const USER_NAME: &str = "DevelAngel";
+const PLACEHOLDER_COLOR: Color = Color::Rgb(118, 118, 118);
 
 /// Nerd Font glyph and accent color for the agent (dungeon cook).
 const AGENT_ICON: &str = "\u{f0f5}";
@@ -116,6 +119,7 @@ impl Confetti {
 struct App {
     chat_log: ChatLog,
     prompt: TextArea<'static>,
+    workflow_name: Option<String>,
     agent_buffer: String,
     /// Where the viewport was anchored at the last redraw, resolved
     /// against the current layout so it survives bubble height changes
@@ -153,7 +157,8 @@ impl App {
     fn new() -> Self {
         Self {
             chat_log: ChatLog::new(),
-            prompt: new_prompt_textarea(None),
+            prompt: new_prompt_textarea(),
+            workflow_name: None,
             agent_buffer: String::new(),
             scroll_anchor: None,
             pending_scroll_delta: 0,
@@ -386,7 +391,8 @@ impl App {
                     return;
                 }
                 self.settle_thought();
-                self.prompt = new_prompt_textarea(session.workflow_name());
+                self.workflow_name = session.workflow_name().map(str::to_owned);
+                self.prompt = new_prompt_textarea();
                 self.chat_log.push_user(prompt_text.clone());
                 if session.send_prompt(prompt_text).is_err() {
                     self.chat_log.push_agent("[session closed]");
@@ -407,7 +413,8 @@ impl App {
             }
             KeyCode::Esc => {
                 session.cancel();
-                self.prompt = new_prompt_textarea(session.workflow_name());
+                self.workflow_name = session.workflow_name().map(str::to_owned);
+                self.prompt = new_prompt_textarea();
             }
             _ => {
                 self.prompt.input(key);
@@ -604,30 +611,45 @@ fn stop_reason_text(reason: StopReason) -> String {
     }
 }
 
-/// Title shows `workflow_name` when set, so it's clear at a glance which
-/// session Enter routes the prompt to.
-fn new_prompt_textarea(workflow_name: Option<&str>) -> TextArea<'static> {
-    let title = match workflow_name {
-        Some(name) => format!(" {USER_ICON} Prompt \u{2192} {name} "),
-        None => format!(" {USER_ICON} Prompt "),
-    };
+fn prompt_height(textarea: &TextArea<'_>, width: u16) -> u16 {
+    let content_width = usize::from(width.saturating_sub(3)).max(1);
+    let wrapped_lines = textarea
+        .lines()
+        .iter()
+        .map(|line| {
+            textwrap::wrap(line, Options::new(content_width).break_words(true))
+                .len()
+                .max(1)
+        })
+        .sum::<usize>();
+
+    u16::try_from(wrapped_lines.saturating_add(2).max(3)).unwrap_or(u16::MAX)
+}
+
+fn new_prompt_textarea() -> TextArea<'static> {
     let mut textarea = TextArea::default();
     textarea.set_block(
-        Block::bordered()
-            .border_type(BorderType::Rounded)
+        Block::default()
+            .borders(Borders::LEFT)
+            .padding(Padding::new(1, 1, 1, 0))
+            .border_set(BorderSet {
+                top_left: " ",
+                top_right: " ",
+                bottom_left: " ",
+                bottom_right: " ",
+                vertical_left: "┃",
+                vertical_right: " ",
+                horizontal_top: " ",
+                horizontal_bottom: " ",
+            })
             .border_style(Style::default().fg(USER_COLOR))
-            .title(Span::styled(
-                title,
-                Style::default().fg(USER_COLOR).add_modifier(Modifier::BOLD),
-            )),
+            .style(Style::default().bg(Color::Rgb(30, 30, 38))),
     );
+    textarea.set_wrap_mode(WrapMode::WordOrGlyph);
     textarea.set_cursor_line_style(Style::default());
+    textarea.set_cursor_style(Style::default());
     textarea.set_placeholder_text("Type a message, or :q / :quit to exit");
-    textarea.set_placeholder_style(
-        Style::default()
-            .fg(Color::DarkGray)
-            .bg(Color::Rgb(40, 40, 50)),
-    );
+    textarea.set_placeholder_style(Style::default().fg(PLACEHOLDER_COLOR));
     textarea
 }
 
@@ -732,9 +754,10 @@ async fn run_app(
             Some(session_event) = fix_recv => {
                 match session_event {
                     SessionEvent::CommitFixDone { commit_message } => {
+                        app.prompt = new_prompt_textarea();
                         fix_session = None;
                         app.chat_log.push_session_transition("Main Session");
-                        app.prompt = new_prompt_textarea(None);
+                        app.workflow_name = None;
                         let resume_prompt = format!(
                             "[AUTO: Commit Fix Session Closed]\nThe commit-fix session committed and closed. Commit message used:\n{commit_message}"
                         );
@@ -808,7 +831,9 @@ async fn open_commit_fix_session(
     tracing::info!("commit-fix session started");
 
     app.chat_log.push_session_transition(COMMIT_FIX_WORKFLOW);
-    app.prompt = new_prompt_textarea(Some(COMMIT_FIX_WORKFLOW));
+
+    app.prompt = new_prompt_textarea();
+    app.workflow_name = Some(COMMIT_FIX_WORKFLOW.to_owned());
 
     let amend_decision = if amend { "yes" } else { "no" };
     let seed_prompt = format!(
@@ -870,14 +895,33 @@ impl DrawApp for Frame<'_> {
     }
 
     fn draw_app(&mut self, app: &mut App) {
-        let [log_area, input_area] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(self.area());
+        let prompt_height = prompt_height(&app.prompt, self.area().width);
+        let [log_area, prompt_area, workflow_area] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(prompt_height),
+            Constraint::Length(1),
+        ])
+        .areas(self.area());
         if let Some(confetti) = app.confetti.as_ref() {
             self.draw_confetti(confetti, self.area());
         }
 
         self.draw_chat_log(app, log_area);
-        self.render_widget(&app.prompt, input_area);
+        self.render_widget(&app.prompt, prompt_area);
+        if app.focused_cluster.is_none() {
+            let cursor = app.prompt.screen_cursor();
+            self.set_cursor_position((
+                prompt_area.x + 2 + cursor.col as u16,
+                prompt_area.y + 1 + cursor.row as u16,
+            ));
+        }
+        if let Some(workflow_name) = app.workflow_name.as_deref() {
+            self.render_widget(
+                Paragraph::new(workflow_name)
+                    .style(Style::default().fg(USER_COLOR).add_modifier(Modifier::BOLD)),
+                workflow_area,
+            );
+        }
 
         if let Some(pending) = &app.pending_permission {
             self.draw_permission_popup(pending, self.area());
@@ -1376,13 +1420,17 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, SetCursorStyle::BlinkingBlock)?;
     Terminal::new(CrosstermBackend::new(stdout))
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        SetCursorStyle::DefaultUserShape,
+        LeaveAlternateScreen
+    )?;
     Ok(())
 }
 
@@ -1400,6 +1448,7 @@ pub async fn run(
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
     let mut app = App::with_log_buffer(log_buffer);
+    app.workflow_name = session.workflow_name().map(str::to_owned);
 
     let result = run_app(
         &mut terminal,
