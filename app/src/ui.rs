@@ -29,6 +29,7 @@ use ratatui::widgets::{
     ScrollbarOrientation, ScrollbarState, Wrap,
 };
 use ratatui_textarea::{TextArea, WrapMode};
+use serde_json::Value;
 use textwrap::{self, Options};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{mpsc, oneshot};
@@ -150,6 +151,7 @@ struct App {
     log_popup: bool,
     log_popup_scroll: u16,
     tool_call_popup_scroll: u16,
+    permission_popup_scroll: u16,
     /// The entry ID of the last thought step, for live appending of subsequent
     /// thought chunks. Cleared when a non-Thought event arrives.
     last_thought_entry_id: Option<EntryId>,
@@ -177,6 +179,7 @@ impl App {
             focused_tool_call: None,
             tool_call_popup: None,
             tool_call_popup_scroll: 0,
+            permission_popup_scroll: 0,
             log_buffer: LogBuffer::default(),
             log_popup: false,
             log_popup_scroll: 0,
@@ -262,6 +265,7 @@ impl App {
                 );
                 self.settle_thought();
                 self.last_agent_message_entry_id = None;
+                self.permission_popup_scroll = 0;
                 self.pending_permission = Some(PendingPermission {
                     name,
                     title,
@@ -382,7 +386,11 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent, session: &SessionHandle) {
         if self.pending_permission.is_some() {
-            handle_permission_key(key.code, &mut self.pending_permission);
+            handle_permission_key(
+                key.code,
+                &mut self.pending_permission,
+                &mut self.permission_popup_scroll,
+            );
             return;
         }
 
@@ -687,7 +695,7 @@ fn new_prompt_textarea() -> TextArea<'static> {
 
 /// Applies a key press while a permission popup is showing, resolving and
 /// clearing `pending` when an option is chosen or the request is cancelled.
-fn handle_permission_key(key: KeyCode, pending: &mut Option<PendingPermission>) {
+fn handle_permission_key(key: KeyCode, pending: &mut Option<PendingPermission>, scroll: &mut u16) {
     let Some(permission) = pending.take() else {
         return;
     };
@@ -704,6 +712,22 @@ fn handle_permission_key(key: KeyCode, pending: &mut Option<PendingPermission>) 
         }
         KeyCode::Esc => {
             let _ = permission.reply.send(None);
+        }
+        KeyCode::Up => {
+            *scroll = scroll.saturating_sub(1);
+            *pending = Some(permission);
+        }
+        KeyCode::Down => {
+            *scroll = scroll.saturating_add(1);
+            *pending = Some(permission);
+        }
+        KeyCode::PageUp => {
+            *scroll = scroll.saturating_sub(SCROLL_STEP);
+            *pending = Some(permission);
+        }
+        KeyCode::PageDown => {
+            *scroll = scroll.saturating_add(SCROLL_STEP);
+            *pending = Some(permission);
         }
         _ => {
             *pending = Some(permission);
@@ -890,7 +914,7 @@ trait DrawApp {
     fn draw_chat_log(&mut self, app: &mut App, area: Rect);
 
     /// Renders the permission popup over the given area.
-    fn draw_permission_popup(&mut self, pending: &PendingPermission, area: Rect);
+    fn draw_permission_popup(&mut self, pending: &PendingPermission, scroll: u16, area: Rect);
     /// Renders a tool call audit popup over the given area.
     fn draw_tool_call_popup(
         &mut self,
@@ -956,7 +980,7 @@ impl DrawApp for Frame<'_> {
         }
 
         if let Some(pending) = &app.pending_permission {
-            self.draw_permission_popup(pending, self.area());
+            self.draw_permission_popup(pending, app.permission_popup_scroll, self.area());
         }
 
         if let Some(entry_id) = app.tool_call_popup
@@ -1146,33 +1170,37 @@ impl DrawApp for Frame<'_> {
         self.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
 
-    fn draw_permission_popup(&mut self, pending: &PendingPermission, area: Rect) {
+    fn draw_permission_popup(&mut self, pending: &PendingPermission, scroll: u16, area: Rect) {
         let popup_area = centered_rect(80, 70, area);
 
-        let mut text = Text::default();
-        text.push_line(Line::from(Span::styled(
-            pending.title.clone(),
-            Style::default().add_modifier(Modifier::BOLD),
-        )));
-        text.push_line(Line::default());
-        text.push_line(Line::raw(format_permission_parameters(
-            pending.parameters.as_deref(),
-        )));
-        text.push_line(Line::default());
+        let mut lines = vec![
+            Line::from(Span::styled(
+                pending.title.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::default(),
+        ];
+        for line in format_permission_parameters(pending.parameters.as_deref()).lines() {
+            lines.push(Line::raw(line.to_owned()));
+        }
+        lines.push(Line::default());
         for (index, option) in pending.options.iter().enumerate() {
-            text.push_line(Line::raw(format!("{}. {}", index + 1, option.name)));
+            lines.push(Line::raw(format!("{}. {}", index + 1, option.name)));
         }
 
         let block_title = match pending.name.as_deref() {
             Some(name) => format!(" Permission requested: {name} (Esc to cancel) "),
             None => " Permission requested (Esc to cancel) ".to_owned(),
         };
-        let popup = Paragraph::new(text).wrap(Wrap { trim: false }).block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .title(block_title)
-                .style(Style::default().fg(Color::Yellow)),
-        );
+        let popup = Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0))
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .title(block_title)
+                    .style(Style::default().fg(Color::Yellow)),
+            );
 
         self.render_widget(Clear, popup_area);
         self.render_widget(popup, popup_area);
@@ -1239,33 +1267,59 @@ impl DrawApp for Frame<'_> {
     }
 }
 
-/// Maximum number of characters of raw tool call parameters shown in the
-/// permission popup.
-const PERMISSION_PARAMETER_LIMIT: usize = 4000;
-
-/// Formats the raw input of a tool call for permission popup display:
-/// pretty-prints JSON objects and arrays, and truncates anything longer than
-/// [`PERMISSION_PARAMETER_LIMIT`] characters.
+/// Formats the raw input of a tool call for permission popup display as
+/// human-readable "Field Name" / value blocks instead of raw JSON. Falls back
+/// to pretty-printed JSON for nested objects/arrays, since those are rare in
+/// practice and don't warrant recursive humanization.
 fn format_permission_parameters(parameters: Option<&str>) -> String {
     let Some(raw) = parameters else {
         return "No parameters supplied.".to_owned();
     };
 
-    let pretty = serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .filter(|value| value.is_object() || value.is_array())
-        .and_then(|value| serde_json::to_string_pretty(&value).ok())
-        .unwrap_or_else(|| raw.to_owned());
-
-    if pretty.chars().count() <= PERMISSION_PARAMETER_LIMIT {
-        return pretty;
+    match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Object(fields)) if fields.is_empty() => "No parameters supplied.".to_owned(),
+        Ok(Value::Object(fields)) => fields
+            .iter()
+            .map(|(name, value)| {
+                format!(
+                    "{}\n{}",
+                    humanize_field_name(name),
+                    format_parameter_value(value)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        Ok(value) if !value.is_null() => format_parameter_value(&value),
+        _ => raw.to_owned(),
     }
+}
 
-    let truncated = pretty
-        .chars()
-        .take(PERMISSION_PARAMETER_LIMIT)
-        .collect::<String>();
-    format!("{truncated}\n\u{2026} (truncated)")
+/// Renders a single parameter value as plain text: strings and scalars as-is,
+/// objects and arrays pretty-printed as JSON.
+fn format_parameter_value(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Object(_) | Value::Array(_) => {
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        }
+        other => other.to_string(),
+    }
+}
+
+/// Turns a snake_case or kebab-case field name into a title-cased heading,
+/// e.g. `file_path` -> "File Path".
+fn humanize_field_name(name: &str) -> String {
+    name.split(['_', '-'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Builds the framed paragraph for a User/Agent bubble. `footer`, when set,
@@ -1666,10 +1720,96 @@ mod handle_key_tests {
     }
 
     #[test]
-    fn permission_parameters_pretty_print_json_objects() {
+    fn permission_popup_page_down_scrolls_without_resolving() {
+        let mut app = App::new();
+        let session = test_session();
+        let (reply_tx, mut reply_rx) = oneshot::channel();
+
+        app.handle_session_event(SessionEvent::PermissionRequest {
+            tool_call_id: ToolCallId::new("call-1".to_owned()),
+            title: "Read app/src/ui.rs".to_owned(),
+            parameters: None,
+            options: vec![PermissionOption::new(
+                "allow_once",
+                "Allow once",
+                PermissionOptionKind::AllowOnce,
+            )],
+            reply: reply_tx,
+        });
+
+        app.handle_key(key(KeyCode::PageDown), &session);
+
+        assert!(app.pending_permission.is_some());
+        assert_eq!(app.permission_popup_scroll, SCROLL_STEP);
+        assert!(reply_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn permission_popup_scroll_resets_for_the_next_request() {
+        let mut app = App::new();
+        let session = test_session();
+        let (first_reply_tx, _first_reply_rx) = oneshot::channel();
+
+        app.handle_session_event(SessionEvent::PermissionRequest {
+            tool_call_id: ToolCallId::new("call-1".to_owned()),
+            title: "Read app/src/ui.rs".to_owned(),
+            parameters: None,
+            options: vec![],
+            reply: first_reply_tx,
+        });
+        app.handle_key(key(KeyCode::PageDown), &session);
+        assert_eq!(app.permission_popup_scroll, SCROLL_STEP);
+
+        app.handle_key(key(KeyCode::Esc), &session);
+        let (second_reply_tx, _second_reply_rx) = oneshot::channel();
+        app.handle_session_event(SessionEvent::PermissionRequest {
+            tool_call_id: ToolCallId::new("call-2".to_owned()),
+            title: "Write app/src/ui.rs".to_owned(),
+            parameters: None,
+            options: vec![],
+            reply: second_reply_tx,
+        });
+
+        assert_eq!(app.permission_popup_scroll, 0);
+    }
+
+    #[test]
+    fn permission_parameters_render_field_as_heading_and_value() {
         assert_eq!(
             format_permission_parameters(Some(r#"{"path":"src/lib.rs"}"#)),
-            "{\n  \"path\": \"src/lib.rs\"\n}"
+            "Path\nsrc/lib.rs"
+        );
+    }
+
+    #[test]
+    fn permission_parameters_humanize_snake_case_field_names() {
+        assert_eq!(
+            format_permission_parameters(Some(r#"{"file_path":"src/lib.rs"}"#)),
+            "File Path\nsrc/lib.rs"
+        );
+    }
+
+    #[test]
+    fn permission_parameters_render_multiple_fields_as_separate_blocks() {
+        assert_eq!(
+            format_permission_parameters(Some(r#"{"command":"cargo test","cwd":"/repo"}"#)),
+            "Command\ncargo test\n\nCwd\n/repo"
+        );
+    }
+
+    #[test]
+    fn permission_parameters_pretty_print_nested_values() {
+        assert_eq!(
+            format_permission_parameters(Some(r#"{"options":{"force":true}}"#)),
+            "Options\n{\n  \"force\": true\n}"
+        );
+    }
+
+    #[test]
+    fn permission_parameters_fall_back_for_empty_object() {
+        assert_eq!(
+            format_permission_parameters(Some("{}")),
+            "No parameters supplied."
         );
     }
 
@@ -1690,11 +1830,13 @@ mod handle_key_tests {
     }
 
     #[test]
-    fn permission_parameters_truncate_very_long_input() {
-        let formatted = format_permission_parameters(Some(&"a".repeat(5000)));
+    fn permission_parameters_do_not_truncate_long_input() {
+        let long_command = "a".repeat(5000);
 
-        assert!(formatted.starts_with(&"a".repeat(4000)));
-        assert!(formatted.ends_with("\n\u{2026} (truncated)"));
+        assert_eq!(
+            format_permission_parameters(Some(&long_command)),
+            long_command
+        );
     }
 
     #[test]
