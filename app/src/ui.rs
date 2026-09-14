@@ -158,13 +158,14 @@ struct App {
     /// The entry ID of the last agent message, for live appending of subsequent
     /// speech chunks. Cleared when a non-Chunk event arrives.
     last_agent_message_entry_id: Option<EntryId>,
+    agent_acting: bool,
 }
 
 impl App {
     fn new() -> Self {
         Self {
             chat_log: ChatLog::new(),
-            prompt: new_prompt_textarea(),
+            prompt: new_prompt_textarea(false),
             workflow_name: None,
             agent_buffer: String::new(),
             scroll_anchor: None,
@@ -185,6 +186,7 @@ impl App {
             log_popup_scroll: 0,
             last_thought_entry_id: None,
             last_agent_message_entry_id: None,
+            agent_acting: false,
         }
     }
 
@@ -281,6 +283,8 @@ impl App {
                 if !self.agent_buffer.is_empty() {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
+                self.agent_acting = false;
+                self.prompt = new_prompt_textarea(false);
                 if reason != StopReason::EndTurn {
                     self.chat_log
                         .push_session_notice(SessionNoticeKind::Stopped, stop_reason_text(reason));
@@ -293,6 +297,8 @@ impl App {
                 if !self.agent_buffer.is_empty() {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
+                self.agent_acting = false;
+                self.prompt = new_prompt_textarea(false);
                 self.chat_log.push_session_notice(
                     SessionNoticeKind::Error,
                     format!("Session failed: {error}"),
@@ -408,6 +414,16 @@ impl App {
             self.handle_cluster_focus_key(key, focused);
             return;
         }
+        if self.agent_acting {
+            match key.code {
+                KeyCode::Esc => session.cancel(),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    session.cancel();
+                }
+                _ => {}
+            }
+            return;
+        }
 
         match key.code {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -432,10 +448,13 @@ impl App {
                 }
                 self.settle_thought();
                 self.workflow_name = session.workflow_name().map(str::to_owned);
-                self.prompt = new_prompt_textarea();
+                self.prompt = new_prompt_textarea(true);
+                self.agent_acting = true;
                 self.chat_log.push_user(prompt_text.clone());
                 if session.send_prompt(prompt_text).is_err() {
                     self.chat_log.push_agent("[session closed]");
+                    self.agent_acting = false;
+                    self.prompt = new_prompt_textarea(false);
                     self.should_quit = true;
                 }
             }
@@ -454,7 +473,7 @@ impl App {
             KeyCode::Esc => {
                 session.cancel();
                 self.workflow_name = session.workflow_name().map(str::to_owned);
-                self.prompt = new_prompt_textarea();
+                self.prompt = new_prompt_textarea(false);
             }
             _ => {
                 self.prompt.input(key);
@@ -665,8 +684,7 @@ fn prompt_height(textarea: &TextArea<'_>, width: u16) -> u16 {
 
     u16::try_from(wrapped_lines.saturating_add(2).max(3)).unwrap_or(u16::MAX)
 }
-
-fn new_prompt_textarea() -> TextArea<'static> {
+fn new_prompt_textarea(acting: bool) -> TextArea<'static> {
     let mut textarea = TextArea::default();
     textarea.set_block(
         Block::default()
@@ -677,18 +695,26 @@ fn new_prompt_textarea() -> TextArea<'static> {
                 top_right: " ",
                 bottom_left: " ",
                 bottom_right: " ",
-                vertical_left: "┃",
+                vertical_left: if acting { "│" } else { "┃" },
                 vertical_right: " ",
                 horizontal_top: " ",
                 horizontal_bottom: " ",
             })
-            .border_style(Style::default().fg(USER_COLOR))
+            .border_style(Style::default().fg(if acting {
+                PLACEHOLDER_COLOR
+            } else {
+                USER_COLOR
+            }))
             .style(Style::default().bg(Color::Rgb(30, 30, 38))),
     );
     textarea.set_wrap_mode(WrapMode::WordOrGlyph);
     textarea.set_cursor_line_style(Style::default());
     textarea.set_cursor_style(Style::default());
-    textarea.set_placeholder_text("Type a message, or :q / :quit to exit");
+    textarea.set_placeholder_text(if acting {
+        "Agent is acting…"
+    } else {
+        "Type a message, or :q / :quit to exit"
+    });
     textarea.set_placeholder_style(Style::default().fg(PLACEHOLDER_COLOR));
     textarea
 }
@@ -771,6 +797,12 @@ async fn run_app(
                 None => future::pending().await,
             }
         };
+        if app.agent_acting {
+            terminal.hide_cursor()?;
+        } else {
+            terminal.show_cursor()?;
+        }
+
         tokio::select! {
             _ = spinner.tick() => {
                 app.spinner_phase = app.spinner_phase.wrapping_add(1);
@@ -810,7 +842,7 @@ async fn run_app(
             Some(session_event) = fix_recv => {
                 match session_event {
                     SessionEvent::CommitFixDone { commit_message } => {
-                        app.prompt = new_prompt_textarea();
+                        app.prompt = new_prompt_textarea(true);
                         fix_session = None;
                         app.chat_log.push_session_transition("Main Session");
                         app.workflow_name = None;
@@ -888,7 +920,7 @@ async fn open_commit_fix_session(
 
     app.chat_log.push_session_transition(COMMIT_FIX_WORKFLOW);
 
-    app.prompt = new_prompt_textarea();
+    app.prompt = new_prompt_textarea(true);
     app.workflow_name = Some(COMMIT_FIX_WORKFLOW.to_owned());
 
     let amend_decision = if amend { "yes" } else { "no" };
@@ -1849,6 +1881,32 @@ mod handle_key_tests {
         assert!(cancel_rx.try_recv().is_ok());
         assert!(!app.should_quit);
         assert!(app.prompt.lines().join(" ").trim().is_empty());
+    }
+
+    #[test]
+    fn acting_agent_ignores_prompt_input() {
+        let mut app = App::new();
+        let session = test_session();
+        app.agent_acting = true;
+
+        type_text(&mut app, &session, "hello");
+        app.handle_key(key(KeyCode::Enter), &session);
+
+        assert!(app.prompt.lines().join(" ").trim().is_empty());
+        assert!(app.agent_acting);
+    }
+
+    #[test]
+    fn end_turn_reenables_prompt_input() {
+        let mut app = App::new();
+        let session = test_session();
+        app.agent_acting = true;
+
+        app.handle_session_event(SessionEvent::Stopped(StopReason::EndTurn));
+        type_text(&mut app, &session, "hello");
+
+        assert_eq!(app.prompt.lines().join(" ").trim(), "hello");
+        assert!(!app.agent_acting);
     }
 
     #[test]
