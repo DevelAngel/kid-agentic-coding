@@ -20,7 +20,7 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span, Text};
@@ -48,18 +48,10 @@ const USER_COLOR: Color = Color::Rgb(120, 170, 255);
 const USER_PANEL_BG: Color = Color::Rgb(30, 30, 38);
 const PLACEHOLDER_COLOR: Color = Color::Rgb(118, 118, 118);
 
-/// Nerd Font glyph and accent color for the agent (dungeon cook).
-const AGENT_ICON: &str = "\u{f0f5}";
-const AGENT_COLOR: Color = Color::Rgb(255, 170, 80);
-const AGENT_NAME: &str = "Senshi";
-
 /// Nerd Font glyph and accent color for client-provided prompts.
 const AUTO_ICON: &str = "\u{2699}";
 const AUTO_COLOR: Color = Color::Yellow;
 const AUTO_NAME: &str = "Auto Prompt";
-
-/// Nerd Font glyph framing the active-model label on an agent bubble.
-const MODEL_ICON: &str = "\u{f085}";
 
 /// Rows scrolled per PageUp/PageDown press.
 const SCROLL_STEP: u16 = 3;
@@ -992,8 +984,9 @@ impl DrawApp for Frame<'_> {
 
     fn draw_app(&mut self, app: &mut App) {
         let prompt_height = prompt_height(&app.prompt, self.area().width);
-        let [log_area, prompt_area, workflow_area] = Layout::vertical([
+        let [log_area, _blank_area, prompt_area, workflow_area] = Layout::vertical([
             Constraint::Min(0),
+            Constraint::Length(1),
             Constraint::Length(prompt_height),
             Constraint::Length(1),
         ])
@@ -1116,11 +1109,29 @@ impl DrawApp for Frame<'_> {
 
             match message {
                 Message::User(m) => {
+                    let panel_rect = if visible_bubble.borders.contains(Borders::TOP) {
+                        // The blank separator row is a real, unstyled row,
+                        // not part of the panel, so it never inherits the
+                        // panel's filled background.
+                        Rect {
+                            y: render_rect.y + 1,
+                            height: render_rect.height.saturating_sub(1),
+                            ..render_rect
+                        }
+                    } else {
+                        render_rect
+                    };
                     self.render_widget(
-                        accent_paragraph(USER_COLOR, &m.text, &visible_bubble),
-                        render_rect,
+                        accent_paragraph(
+                            USER_COLOR,
+                            &m.text,
+                            visible_bubble.borders - Borders::TOP,
+                            visible_bubble.text_line_skip,
+                        ),
+                        panel_rect,
                     );
                 }
+
                 Message::Auto(m) => {
                     self.render_widget(
                         bubble_paragraph(
@@ -1129,7 +1140,6 @@ impl DrawApp for Frame<'_> {
                             AUTO_COLOR,
                             &m.text,
                             &visible_bubble,
-                            None,
                         ),
                         render_rect,
                     );
@@ -1137,14 +1147,7 @@ impl DrawApp for Frame<'_> {
 
                 Message::Agent(m) => {
                     self.render_widget(
-                        bubble_paragraph(
-                            AGENT_ICON,
-                            AGENT_NAME,
-                            AGENT_COLOR,
-                            &m.text,
-                            &visible_bubble,
-                            m.model.as_deref(),
-                        ),
+                        plain_agent_paragraph(&m.text, &visible_bubble),
                         render_rect,
                     );
                 }
@@ -1157,7 +1160,7 @@ impl DrawApp for Frame<'_> {
                         .focused_tool_call
                         .and_then(|id| app.chat_log.tool_call_step_index(index, id));
 
-                    let text = render_tool_cluster(
+                    let mut text = render_tool_cluster(
                         cluster,
                         is_focused,
                         keep_live,
@@ -1165,6 +1168,7 @@ impl DrawApp for Frame<'_> {
                         app.spinner_phase,
                         render_rect.width,
                     );
+                    text.lines.insert(0, Line::default());
                     let paragraph = Paragraph::new(text).scroll((visible_bubble.text_line_skip, 0));
                     self.render_widget(paragraph, render_rect);
                 }
@@ -1355,17 +1359,15 @@ fn humanize_field_name(name: &str) -> String {
         .join(" ")
 }
 
-/// Builds the framed paragraph for a User/Agent bubble. `footer`, when set,
-/// is shown as a label on the bubble's bottom border.
+/// Builds the framed paragraph for an Auto-provided message bubble.
 fn bubble_paragraph<'a>(
     icon: &str,
     name: &str,
     color: Color,
     text: &'a str,
     visible_bubble: &VisibleBubble,
-    footer: Option<&str>,
 ) -> Paragraph<'a> {
-    let mut block = Block::default()
+    let block = Block::default()
         .borders(visible_bubble.borders)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(color))
@@ -1373,15 +1375,6 @@ fn bubble_paragraph<'a>(
             format!(" {icon} {name} "),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
-    if let Some(footer) = footer {
-        block = block.title_bottom(
-            Line::from(Span::styled(
-                format!(" {MODEL_ICON} {footer} {MODEL_ICON} "),
-                Style::default().fg(color),
-            ))
-            .alignment(Alignment::Right),
-        );
-    }
 
     let text = render_markdown(text);
     Paragraph::new(text)
@@ -1389,18 +1382,33 @@ fn bubble_paragraph<'a>(
         .scroll((visible_bubble.text_line_skip, 0))
         .block(block)
 }
+/// Builds the plain, unframed paragraph for an agent message: no border
+/// or title, just a blank padding row above the message text. (Model
+/// attribution is intentionally omitted for now; it will return together
+/// with the workflow banner redesign.)
+fn plain_agent_paragraph<'a>(text: &'a str, visible_bubble: &VisibleBubble) -> Paragraph<'a> {
+    let mut lines = render_markdown(text);
+    lines.lines.insert(0, Line::default());
+
+    Paragraph::new(lines)
+        .wrap(Wrap { trim: true })
+        .scroll((visible_bubble.text_line_skip, 0))
+}
 
 /// Builds the full-width accent-bar paragraph for a user message: the same
 /// invisible-corner left border and filled panel as the prompt textarea
 /// (see `new_prompt_textarea`), with a blank padding row above and below
-/// the text and no title header.
+/// the text and no title header. `borders` never includes `TOP`: the blank
+/// separator row above the panel is drawn separately (see the render call
+/// site) so it stays unstyled instead of inheriting the panel background.
 fn accent_paragraph<'a>(
     color: Color,
     text: &'a str,
-    visible_bubble: &VisibleBubble,
+    borders: Borders,
+    text_line_skip: u16,
 ) -> Paragraph<'a> {
     let block = Block::default()
-        .borders(visible_bubble.borders)
+        .borders(borders)
         .padding(Padding::new(1, 1, 1, 1))
         .border_set(BorderSet {
             top_left: " ",
@@ -1418,7 +1426,7 @@ fn accent_paragraph<'a>(
     let text = render_markdown(text);
     Paragraph::new(text)
         .wrap(Wrap { trim: true })
-        .scroll((visible_bubble.text_line_skip, 0))
+        .scroll((text_line_skip, 0))
         .block(block)
 }
 

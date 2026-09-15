@@ -34,10 +34,13 @@ pub struct BubbleLayout {
 
 impl BubbleLayout {
     /// Computes the layout for `log` within a viewport of `width` x
-    /// `height` columns/rows. Bubbles take up to 70% of `width`.
+    /// `height` columns/rows. Unframed and accent-bar bubbles (user,
+    /// agent, tool-cluster, session-notice) span the full width; the
+    /// still-framed Auto-Prompt bubble is capped at 70% of `width`.
     pub fn new(log: &ChatLog, width: u16, height: u16) -> Self {
         let bubble_width = bubble_width(width);
         let text_width = bubble_width.saturating_sub(2).max(1);
+        let full_text_width = width.saturating_sub(1).max(1);
 
         let mut bubbles = Vec::with_capacity(log.len());
         let mut y: u16 = 0;
@@ -45,28 +48,24 @@ impl BubbleLayout {
         for (index, message) in log.messages().iter().enumerate() {
             let (rect, borders, alignment) = match message {
                 Message::User(m) => {
-                    let accent_text_width = width.saturating_sub(1).max(1);
-                    let text_lines = wrapped_line_count(&m.text, accent_text_width);
-                    accent_rect(width, 2 + text_lines)
+                    let text_lines = wrapped_line_count(&m.text, full_text_width);
+                    accent_rect(width, 3 + text_lines)
                 }
                 Message::Auto(m) => {
                     let text_lines = wrapped_line_count(&m.text, text_width);
                     framed_rect(bubble_width, width, 2 + text_lines, Alignment::Left)
                 }
                 Message::Agent(m) => {
-                    let text_lines = wrapped_line_count(&m.text, text_width);
-                    framed_rect(bubble_width, width, 2 + text_lines, Alignment::Left)
+                    let text_lines = wrapped_line_count(&m.text, full_text_width);
+                    unframed_rect(width, 1 + text_lines)
                 }
                 Message::ToolCluster(cluster) => {
                     let keep_live = log.in_current_turn(index);
-                    unframed_rect(
-                        bubble_width,
-                        tool_cluster_row_count(cluster, bubble_width, keep_live),
-                    )
+                    unframed_rect(width, 1 + tool_cluster_row_count(cluster, width, keep_live))
                 }
                 Message::SessionNotice(m) => {
-                    let text_lines = wrapped_line_count(&m.text, text_width);
-                    unframed_rect(bubble_width, 1 + text_lines)
+                    let text_lines = wrapped_line_count(&m.text, full_text_width);
+                    unframed_rect(width, 1 + text_lines)
                 }
                 Message::SessionTransition(_) => unframed_rect(width, 1),
             };
@@ -280,8 +279,10 @@ fn unframed_rect(bubble_width: u16, height: u16) -> (Rect, Borders, Alignment) {
 }
 
 /// Rect/borders/alignment for a full-width, left-accented user message row
-/// (a left accent bar and filled panel instead of a bordered box) of the
-/// given `height`. `y` is left at `0`; the caller overwrites it once the
+/// (a left accent bar and filled panel instead of a bordered box) with a
+/// blank separator row above it, rendered as an invisible top border (see
+/// `accent_paragraph`'s `border_set`), of the given `height`. `y` is left at
+/// `0`; the caller overwrites it once the
 /// running offset is known.
 fn accent_rect(viewport_width: u16, height: u16) -> (Rect, Borders, Alignment) {
     (
@@ -291,7 +292,7 @@ fn accent_rect(viewport_width: u16, height: u16) -> (Rect, Borders, Alignment) {
             width: viewport_width,
             height,
         },
-        Borders::LEFT,
+        Borders::LEFT | Borders::TOP,
         Alignment::Left,
     )
 }
@@ -393,9 +394,8 @@ mod tests {
         let layout = BubbleLayout::new(&log, 40, 20);
         let bubbles = layout.bubbles();
 
-        // summary + one fixed-size thinking indicator row, regardless of
-        // the thought's length
-        assert_eq!(bubbles[0].rect.height, 2);
+        // blank padding row + summary + fixed-size thinking indicator row
+        assert_eq!(bubbles[0].rect.height, 3);
         assert_eq!(bubbles[1].rect.y, bubbles[0].rect.height);
     }
 }
