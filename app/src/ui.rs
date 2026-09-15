@@ -389,6 +389,16 @@ impl App {
         }
     }
 
+    /// Locks the prompt for a new agent turn: sets `agent_acting` and swaps
+    /// in the acting-styled prompt textarea. Used both for user-initiated
+    /// turns and for auto-prompted turns (e.g. the commit-fix workflow), so
+    /// the two never drift out of sync (see issue where the acting style
+    /// was set without the flag, leaving input unlocked).
+    fn begin_acting_turn(&mut self) {
+        self.agent_acting = true;
+        self.prompt = new_prompt_textarea(true);
+    }
+
     fn handle_key(&mut self, key: KeyEvent, session: &SessionHandle) {
         if self.pending_permission.is_some() {
             handle_permission_key(
@@ -447,8 +457,7 @@ impl App {
                 }
                 self.settle_thought();
                 self.workflow_name = session.workflow_name().map(str::to_owned);
-                self.prompt = new_prompt_textarea(true);
-                self.agent_acting = true;
+                self.begin_acting_turn();
                 self.chat_log.push_user(prompt_text.clone());
                 if session.send_prompt(prompt_text).is_err() {
                     self.chat_log.push_agent("[session closed]");
@@ -841,7 +850,7 @@ async fn run_app(
             Some(session_event) = fix_recv => {
                 match session_event {
                     SessionEvent::CommitFixDone { commit_message } => {
-                        app.prompt = new_prompt_textarea(true);
+                        app.begin_acting_turn();
                         fix_session = None;
                         app.chat_log.push_session_transition("Main Session");
                         app.workflow_name = None;
@@ -918,8 +927,8 @@ async fn open_commit_fix_session(
     tracing::info!("commit-fix session started");
 
     app.chat_log.push_session_transition(COMMIT_FIX_WORKFLOW);
+    app.begin_acting_turn();
 
-    app.prompt = new_prompt_textarea(true);
     app.workflow_name = Some(COMMIT_FIX_WORKFLOW.to_owned());
 
     let amend_decision = if amend { "yes" } else { "no" };
@@ -1904,6 +1913,18 @@ mod handle_key_tests {
 
         assert!(cancel_rx.try_recv().is_ok());
         assert!(!app.should_quit);
+        assert!(app.prompt.lines().join(" ").trim().is_empty());
+    }
+
+    #[test]
+    fn begin_acting_turn_locks_prompt_input() {
+        let mut app = App::new();
+        let session = test_session();
+
+        app.begin_acting_turn();
+
+        assert!(app.agent_acting);
+        type_text(&mut app, &session, "hello");
         assert!(app.prompt.lines().join(" ").trim().is_empty());
     }
 
