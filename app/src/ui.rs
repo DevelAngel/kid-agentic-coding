@@ -25,8 +25,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph, Scrollbar,
-    ScrollbarOrientation, ScrollbarState, Wrap,
+    Block, BorderType, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
 };
 use ratatui_textarea::{TextArea, WrapMode};
 use serde_json::Value;
@@ -43,10 +43,9 @@ use std::mem;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Nerd Font glyph and accent color for the user (mage).
-const USER_ICON: &str = "\u{f0d0}";
+/// Accent color for the user (mage) and the filled panel behind it.
 const USER_COLOR: Color = Color::Rgb(120, 170, 255);
-const USER_NAME: &str = "DevelAngel";
+const USER_PANEL_BG: Color = Color::Rgb(24, 30, 42);
 const PLACEHOLDER_COLOR: Color = Color::Rgb(118, 118, 118);
 
 /// Nerd Font glyph and accent color for the agent (dungeon cook).
@@ -1109,14 +1108,7 @@ impl DrawApp for Frame<'_> {
             match message {
                 Message::User(m) => {
                     self.render_widget(
-                        bubble_paragraph(
-                            USER_ICON,
-                            USER_NAME,
-                            USER_COLOR,
-                            &m.text,
-                            &visible_bubble,
-                            None,
-                        ),
+                        accent_paragraph(USER_COLOR, &m.text, &visible_bubble),
                         render_rect,
                     );
                 }
@@ -1381,6 +1373,26 @@ fn bubble_paragraph<'a>(
             .alignment(Alignment::Right),
         );
     }
+
+    let text = render_markdown(text);
+    Paragraph::new(text)
+        .wrap(Wrap { trim: true })
+        .scroll((visible_bubble.text_line_skip, 0))
+        .block(block)
+}
+
+/// Builds the full-width accent-bar paragraph for a user message: a thick
+/// left border in `color` and a filled background panel, no title header.
+fn accent_paragraph<'a>(
+    color: Color,
+    text: &'a str,
+    visible_bubble: &VisibleBubble,
+) -> Paragraph<'a> {
+    let block = Block::default()
+        .borders(visible_bubble.borders)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(color))
+        .style(Style::default().bg(USER_PANEL_BG));
 
     let text = render_markdown(text);
     Paragraph::new(text)

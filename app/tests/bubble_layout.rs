@@ -4,15 +4,27 @@ use kid_agentic_coding::{Alignment, BubbleLayout, ChatLog, Status};
 use ratatui::widgets::Borders;
 
 #[test]
-fn short_message_yields_single_row_of_text_plus_border() {
+fn short_agent_message_yields_single_row_of_text_plus_border() {
     let mut log = ChatLog::new();
-    log.push_user("hi");
+    log.push_agent("hi");
 
     let layout = BubbleLayout::new(&log, 80, 24);
 
     assert_eq!(layout.bubbles().len(), 1);
     // top border + one text line + bottom border
     assert_eq!(layout.bubbles()[0].rect.height, 3);
+}
+
+#[test]
+fn short_user_message_yields_a_single_row_with_no_border_padding() {
+    let mut log = ChatLog::new();
+    log.push_user("hi");
+
+    let layout = BubbleLayout::new(&log, 80, 24);
+
+    assert_eq!(layout.bubbles().len(), 1);
+    // accent-bar style: just the text line, no top/bottom border rows
+    assert_eq!(layout.bubbles()[0].rect.height, 1);
 }
 
 #[test]
@@ -26,28 +38,44 @@ fn long_message_wraps_and_increases_height() {
 }
 
 #[test]
-fn user_messages_align_right_agent_messages_align_left() {
+fn user_messages_span_full_width_agent_messages_are_narrower_and_left_aligned() {
     let mut log = ChatLog::new();
     log.push_user("hi");
     log.push_agent("ho");
 
     let layout = BubbleLayout::new(&log, 80, 24);
 
-    assert_eq!(layout.bubbles()[0].alignment, Alignment::Right);
+    assert_eq!(layout.bubbles()[0].rect.x, 0);
+    assert_eq!(layout.bubbles()[0].rect.width, 80);
+    assert_eq!(layout.bubbles()[0].alignment, Alignment::Left);
+
     assert_eq!(layout.bubbles()[1].alignment, Alignment::Left);
+    assert!(layout.bubbles()[1].rect.width < 80);
 }
 
 #[test]
-fn every_bubble_has_full_borders() {
+fn agent_bubbles_have_full_borders() {
     let mut log = ChatLog::new();
-    log.push_user("one");
+    log.push_agent("one");
     log.push_agent("two");
-    log.push_user("three");
 
     let layout = BubbleLayout::new(&log, 80, 24);
 
     for bubble in layout.bubbles() {
         assert_eq!(bubble.borders, Borders::ALL);
+    }
+}
+
+#[test]
+fn user_bubbles_have_a_left_accent_border_only() {
+    let mut log = ChatLog::new();
+    log.push_user("one");
+    log.push_user("two");
+
+    let layout = BubbleLayout::new(&log, 80, 24);
+
+    for bubble in layout.bubbles() {
+        assert_eq!(bubble.borders, Borders::LEFT);
     }
 }
 
@@ -102,7 +130,7 @@ fn scroll_does_not_go_negative() {
 #[test]
 fn fully_visible_bubble_keeps_full_borders_and_no_text_skip() {
     let mut log = ChatLog::new();
-    log.push_user("hi");
+    log.push_agent("hi");
 
     let layout = BubbleLayout::new(&log, 80, 24);
     let visible = layout.visible_bubbles();
@@ -115,11 +143,24 @@ fn fully_visible_bubble_keeps_full_borders_and_no_text_skip() {
 }
 
 #[test]
+fn fully_visible_user_bubble_keeps_its_left_accent_border() {
+    let mut log = ChatLog::new();
+    log.push_user("hi");
+
+    let layout = BubbleLayout::new(&log, 80, 24);
+    let visible = layout.visible_bubbles();
+
+    let bubble = visible[0].expect("bubble is within the viewport");
+    assert_eq!(bubble.borders, Borders::LEFT);
+    assert_eq!(bubble.text_line_skip, 0);
+}
+
+#[test]
 fn bubble_scrolled_fully_out_of_view_is_hidden() {
     let mut log = ChatLog::new();
-    log.push_user("one");
+    log.push_agent("one");
     log.push_agent("two");
-    log.push_user("three");
+    log.push_agent("three");
 
     // Three single-line bubbles are 3 rows each (total 9). A 5-row
     // viewport scrolled to its max offset (4) only reaches rows [4,9),
@@ -136,9 +177,9 @@ fn bubble_scrolled_fully_out_of_view_is_hidden() {
 #[test]
 fn scrolling_into_a_bubble_from_the_top_drops_its_top_border_and_does_not_overlap_the_next() {
     let mut log = ChatLog::new();
-    log.push_user("one");
+    log.push_agent("one");
     log.push_agent("two");
-    log.push_user("three");
+    log.push_agent("three");
 
     // Each bubble is 3 rows. Scrolling 1 row in cuts through the first
     // bubble's top border row, leaving 2 visible rows of it, followed
@@ -352,10 +393,10 @@ fn anchor_keeps_a_later_bubble_pinned_when_an_earlier_cluster_shrinks() {
     log.update_tool_call_status(running, Status::Running);
     log.push_user("hi");
 
-    // Cluster is 4 rows while running, user bubble is 3 rows: total 7.
-    // A 3-row viewport scrolled to the bottom lands exactly on the user
-    // bubble.
-    let mut layout = BubbleLayout::new(&log, 80, 3);
+    // Cluster is 4 rows while running, user bubble is 1 row (accent
+    // style): total 5. A 1-row viewport scrolled to the bottom lands
+    // exactly on the user bubble.
+    let mut layout = BubbleLayout::new(&log, 80, 1);
     layout.scroll_to_bottom();
     let anchor = layout.anchor().expect("log is not empty");
     assert_eq!(anchor.message_index, 1);
@@ -363,7 +404,7 @@ fn anchor_keeps_a_later_bubble_pinned_when_an_earlier_cluster_shrinks() {
 
     // Cluster settles and collapses to a single summary row.
     log.update_tool_call_status(running, Status::Done);
-    let mut settled = BubbleLayout::new(&log, 80, 3);
+    let mut settled = BubbleLayout::new(&log, 80, 1);
     settled.scroll_to_anchor(anchor);
 
     let visible = settled.visible_bubbles();
@@ -419,7 +460,7 @@ fn extend_to_bottom_follows_the_message_that_pushes_a_settled_cluster_off_the_bo
     log.update_tool_call_status(b, Status::Done);
     log.update_tool_call_status(running, Status::Running);
 
-    // 3 padding bubbles (3 rows each = 9) + a running cluster (4 rows) = 13.
+    // 3 padding bubbles (1 row each, accent style) + a running cluster (4 rows) = 7.
     let mut layout = BubbleLayout::new(&log, 80, 2);
     layout.scroll_to_bottom();
     let anchor = layout.anchor().expect("log is not empty");
