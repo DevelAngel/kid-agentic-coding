@@ -45,8 +45,9 @@ impl BubbleLayout {
         for (index, message) in log.messages().iter().enumerate() {
             let (rect, borders, alignment) = match message {
                 Message::User(m) => {
-                    let text_lines = wrapped_line_count(&m.text, text_width);
-                    framed_rect(bubble_width, width, 2 + text_lines, Alignment::Right)
+                    let accent_text_width = width.saturating_sub(1).max(1);
+                    let text_lines = wrapped_line_count(&m.text, accent_text_width);
+                    accent_rect(width, text_lines)
                 }
                 Message::Auto(m) => {
                     let text_lines = wrapped_line_count(&m.text, text_width);
@@ -274,6 +275,23 @@ fn unframed_rect(bubble_width: u16, height: u16) -> (Rect, Borders, Alignment) {
             height,
         },
         Borders::NONE,
+        Alignment::Left,
+    )
+}
+
+/// Rect/borders/alignment for a full-width, left-accented user message row
+/// (a left accent bar and filled panel instead of a bordered box) of the
+/// given `height`. `y` is left at `0`; the caller overwrites it once the
+/// running offset is known.
+fn accent_rect(viewport_width: u16, height: u16) -> (Rect, Borders, Alignment) {
+    (
+        Rect {
+            x: 0,
+            y: 0,
+            width: viewport_width,
+            height,
+        },
+        Borders::LEFT,
         Alignment::Left,
     )
 }
