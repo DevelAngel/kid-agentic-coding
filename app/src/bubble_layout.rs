@@ -55,7 +55,8 @@ impl BubbleLayout {
                 }
                 Message::Agent(m) => {
                     let text_lines = wrapped_line_count(&m.text, text_width);
-                    framed_rect(bubble_width, width, 2 + text_lines, Alignment::Left)
+                    let model_line = u16::from(m.model.is_some());
+                    unframed_rect(bubble_width, text_lines + model_line)
                 }
                 Message::ToolCluster(cluster) => {
                     let keep_live = log.in_current_turn(index);

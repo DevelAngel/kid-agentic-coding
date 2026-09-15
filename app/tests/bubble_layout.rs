@@ -4,15 +4,14 @@ use kid_agentic_coding::{Alignment, BubbleLayout, ChatLog, Status};
 use ratatui::widgets::Borders;
 
 #[test]
-fn short_agent_message_yields_single_row_of_text_plus_border() {
+fn short_agent_message_yields_a_single_unframed_text_row() {
     let mut log = ChatLog::new();
     log.push_agent("hi");
 
     let layout = BubbleLayout::new(&log, 80, 24);
 
     assert_eq!(layout.bubbles().len(), 1);
-    // top border + one text line + bottom border
-    assert_eq!(layout.bubbles()[0].rect.height, 3);
+    assert_eq!(layout.bubbles()[0].rect.height, 1);
 }
 
 #[test]
@@ -55,7 +54,7 @@ fn user_messages_span_full_width_agent_messages_are_narrower_and_left_aligned() 
 }
 
 #[test]
-fn agent_bubbles_have_full_borders() {
+fn agent_bubbles_have_no_borders() {
     let mut log = ChatLog::new();
     log.push_agent("one");
     log.push_agent("two");
@@ -63,7 +62,7 @@ fn agent_bubbles_have_full_borders() {
     let layout = BubbleLayout::new(&log, 80, 24);
 
     for bubble in layout.bubbles() {
-        assert_eq!(bubble.borders, Borders::ALL);
+        assert_eq!(bubble.borders, Borders::NONE);
     }
 }
 
@@ -129,7 +128,7 @@ fn scroll_does_not_go_negative() {
 }
 
 #[test]
-fn fully_visible_bubble_keeps_full_borders_and_no_text_skip() {
+fn fully_visible_bubble_has_no_borders_and_no_text_skip() {
     let mut log = ChatLog::new();
     log.push_agent("hi");
 
@@ -139,7 +138,7 @@ fn fully_visible_bubble_keeps_full_borders_and_no_text_skip() {
     let bubble = visible[0].expect("bubble is within the viewport");
     assert_eq!(bubble.screen_rect.y, 0);
     assert_eq!(bubble.screen_rect.height, layout.bubbles()[0].rect.height);
-    assert_eq!(bubble.borders, Borders::ALL);
+    assert_eq!(bubble.borders, Borders::NONE);
     assert_eq!(bubble.text_line_skip, 0);
 }
 
@@ -163,10 +162,10 @@ fn bubble_scrolled_fully_out_of_view_is_hidden() {
     log.push_agent("two");
     log.push_agent("three");
 
-    // Three single-line bubbles are 3 rows each (total 9). A 5-row
-    // viewport scrolled to its max offset (4) only reaches rows [4,9),
-    // so the first bubble (rows [0,3)) is fully out of view.
-    let mut layout = BubbleLayout::new(&log, 80, 5);
+    // Three single-line, unframed bubbles are 1 row each (total 3). A
+    // 2-row viewport scrolled to its max offset (1) only reaches rows
+    // [1,3), so the first bubble (row [0,1)) is fully out of view.
+    let mut layout = BubbleLayout::new(&log, 80, 2);
     layout.scroll(1_000);
 
     let visible = layout.visible_bubbles();
@@ -178,9 +177,9 @@ fn bubble_scrolled_fully_out_of_view_is_hidden() {
 #[test]
 fn scrolling_into_a_bubble_from_the_top_drops_its_top_border_and_does_not_overlap_the_next() {
     let mut log = ChatLog::new();
-    log.push_agent("one");
-    log.push_agent("two");
-    log.push_agent("three");
+    log.push_auto("one");
+    log.push_auto("two");
+    log.push_auto("three");
 
     // Each bubble is 3 rows. Scrolling 1 row in cuts through the first
     // bubble's top border row, leaving 2 visible rows of it, followed

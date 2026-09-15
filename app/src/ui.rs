@@ -20,7 +20,7 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span, Text};
@@ -48,17 +48,12 @@ const USER_COLOR: Color = Color::Rgb(120, 170, 255);
 const USER_PANEL_BG: Color = Color::Rgb(30, 30, 38);
 const PLACEHOLDER_COLOR: Color = Color::Rgb(118, 118, 118);
 
-/// Nerd Font glyph and accent color for the agent (dungeon cook).
-const AGENT_ICON: &str = "\u{f0f5}";
-const AGENT_COLOR: Color = Color::Rgb(255, 170, 80);
-const AGENT_NAME: &str = "Senshi";
-
 /// Nerd Font glyph and accent color for client-provided prompts.
 const AUTO_ICON: &str = "\u{2699}";
 const AUTO_COLOR: Color = Color::Yellow;
 const AUTO_NAME: &str = "Auto Prompt";
 
-/// Nerd Font glyph framing the active-model label on an agent bubble.
+/// Nerd Font glyph shown next to the model name below an agent message.
 const MODEL_ICON: &str = "\u{f085}";
 
 /// Rows scrolled per PageUp/PageDown press.
@@ -1129,7 +1124,6 @@ impl DrawApp for Frame<'_> {
                             AUTO_COLOR,
                             &m.text,
                             &visible_bubble,
-                            None,
                         ),
                         render_rect,
                     );
@@ -1137,14 +1131,7 @@ impl DrawApp for Frame<'_> {
 
                 Message::Agent(m) => {
                     self.render_widget(
-                        bubble_paragraph(
-                            AGENT_ICON,
-                            AGENT_NAME,
-                            AGENT_COLOR,
-                            &m.text,
-                            &visible_bubble,
-                            m.model.as_deref(),
-                        ),
+                        plain_agent_paragraph(&m.text, &visible_bubble, m.model.as_deref()),
                         render_rect,
                     );
                 }
@@ -1355,17 +1342,15 @@ fn humanize_field_name(name: &str) -> String {
         .join(" ")
 }
 
-/// Builds the framed paragraph for a User/Agent bubble. `footer`, when set,
-/// is shown as a label on the bubble's bottom border.
+/// Builds the framed paragraph for an Auto-provided message bubble.
 fn bubble_paragraph<'a>(
     icon: &str,
     name: &str,
     color: Color,
     text: &'a str,
     visible_bubble: &VisibleBubble,
-    footer: Option<&str>,
 ) -> Paragraph<'a> {
-    let mut block = Block::default()
+    let block = Block::default()
         .borders(visible_bubble.borders)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(color))
@@ -1373,21 +1358,33 @@ fn bubble_paragraph<'a>(
             format!(" {icon} {name} "),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
-    if let Some(footer) = footer {
-        block = block.title_bottom(
-            Line::from(Span::styled(
-                format!(" {MODEL_ICON} {footer} {MODEL_ICON} "),
-                Style::default().fg(color),
-            ))
-            .alignment(Alignment::Right),
-        );
-    }
 
     let text = render_markdown(text);
     Paragraph::new(text)
         .wrap(Wrap { trim: true })
         .scroll((visible_bubble.text_line_skip, 0))
         .block(block)
+}
+
+/// Builds the plain, unframed paragraph for an agent message: no border or
+/// title, with the reporting model (if any) shown as a small muted line
+/// below the message text.
+fn plain_agent_paragraph<'a>(
+    text: &'a str,
+    visible_bubble: &VisibleBubble,
+    model: Option<&str>,
+) -> Paragraph<'a> {
+    let mut lines = render_markdown(text);
+    if let Some(model) = model {
+        lines.push_line(Line::from(Span::styled(
+            format!("{MODEL_ICON} {model}"),
+            Style::default().fg(PLACEHOLDER_COLOR),
+        )));
+    }
+
+    Paragraph::new(lines)
+        .wrap(Wrap { trim: true })
+        .scroll((visible_bubble.text_line_skip, 0))
 }
 
 /// Builds the full-width accent-bar paragraph for a user message: the same
