@@ -16,15 +16,16 @@ fn short_agent_message_yields_single_row_of_text_plus_border() {
 }
 
 #[test]
-fn short_user_message_yields_a_single_row_with_no_border_padding() {
+fn short_user_message_reserves_a_blank_padding_row_above_and_below() {
     let mut log = ChatLog::new();
     log.push_user("hi");
 
     let layout = BubbleLayout::new(&log, 80, 24);
 
     assert_eq!(layout.bubbles().len(), 1);
-    // accent-bar style: just the text line, no top/bottom border rows
-    assert_eq!(layout.bubbles()[0].rect.height, 1);
+    // accent-bar style: one blank padding row + text line + one blank
+    // padding row, no top/bottom border rows
+    assert_eq!(layout.bubbles()[0].rect.height, 3);
 }
 
 #[test]
@@ -393,10 +394,10 @@ fn anchor_keeps_a_later_bubble_pinned_when_an_earlier_cluster_shrinks() {
     log.update_tool_call_status(running, Status::Running);
     log.push_user("hi");
 
-    // Cluster is 4 rows while running, user bubble is 1 row (accent
-    // style): total 5. A 1-row viewport scrolled to the bottom lands
-    // exactly on the user bubble.
-    let mut layout = BubbleLayout::new(&log, 80, 1);
+    // Cluster is 4 rows while running, user bubble is 3 rows (1 blank
+    // padding row + text line + 1 blank padding row): total 7. A 3-row
+    // viewport scrolled to the bottom lands exactly on the user bubble.
+    let mut layout = BubbleLayout::new(&log, 80, 3);
     layout.scroll_to_bottom();
     let anchor = layout.anchor().expect("log is not empty");
     assert_eq!(anchor.message_index, 1);
@@ -404,7 +405,8 @@ fn anchor_keeps_a_later_bubble_pinned_when_an_earlier_cluster_shrinks() {
 
     // Cluster settles and collapses to a single summary row.
     log.update_tool_call_status(running, Status::Done);
-    let mut settled = BubbleLayout::new(&log, 80, 1);
+    let mut settled = BubbleLayout::new(&log, 80, 3);
+
     settled.scroll_to_anchor(anchor);
 
     let visible = settled.visible_bubbles();
@@ -460,7 +462,7 @@ fn extend_to_bottom_follows_the_message_that_pushes_a_settled_cluster_off_the_bo
     log.update_tool_call_status(b, Status::Done);
     log.update_tool_call_status(running, Status::Running);
 
-    // 3 padding bubbles (1 row each, accent style) + a running cluster (4 rows) = 7.
+    // 3 padding bubbles (3 rows each, accent style) + a running cluster (4 rows) = 13.
     let mut layout = BubbleLayout::new(&log, 80, 2);
     layout.scroll_to_bottom();
     let anchor = layout.anchor().expect("log is not empty");

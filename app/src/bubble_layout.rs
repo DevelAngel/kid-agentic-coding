@@ -47,7 +47,7 @@ impl BubbleLayout {
                 Message::User(m) => {
                     let accent_text_width = width.saturating_sub(1).max(1);
                     let text_lines = wrapped_line_count(&m.text, accent_text_width);
-                    accent_rect(width, text_lines)
+                    accent_rect(width, 2 + text_lines)
                 }
                 Message::Auto(m) => {
                     let text_lines = wrapped_line_count(&m.text, text_width);
