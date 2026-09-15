@@ -45,7 +45,7 @@ use std::time::Duration;
 
 /// Accent color for the user (mage) and the filled panel behind it.
 const USER_COLOR: Color = Color::Rgb(120, 170, 255);
-const USER_PANEL_BG: Color = Color::Rgb(24, 30, 42);
+const USER_PANEL_BG: Color = Color::Rgb(30, 30, 38);
 const PLACEHOLDER_COLOR: Color = Color::Rgb(118, 118, 118);
 
 /// Nerd Font glyph and accent color for the agent (dungeon cook).
@@ -1381,8 +1381,10 @@ fn bubble_paragraph<'a>(
         .block(block)
 }
 
-/// Builds the full-width accent-bar paragraph for a user message: a thick
-/// left border in `color` and a filled background panel, no title header.
+/// Builds the full-width accent-bar paragraph for a user message: the same
+/// invisible-corner left border and filled panel as the prompt textarea
+/// (see `new_prompt_textarea`), with a blank padding row above and below
+/// the text and no title header.
 fn accent_paragraph<'a>(
     color: Color,
     text: &'a str,
@@ -1390,7 +1392,17 @@ fn accent_paragraph<'a>(
 ) -> Paragraph<'a> {
     let block = Block::default()
         .borders(visible_bubble.borders)
-        .border_type(BorderType::Thick)
+        .padding(Padding::new(1, 1, 1, 1))
+        .border_set(BorderSet {
+            top_left: " ",
+            top_right: " ",
+            bottom_left: " ",
+            bottom_right: " ",
+            vertical_left: "\u{2503}",
+            vertical_right: " ",
+            horizontal_top: " ",
+            horizontal_bottom: " ",
+        })
         .border_style(Style::default().fg(color))
         .style(Style::default().bg(USER_PANEL_BG));
 
