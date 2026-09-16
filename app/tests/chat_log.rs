@@ -115,6 +115,19 @@ fn push_session_transition_appends_a_banner_message() {
 }
 
 #[test]
+fn session_transition_receives_the_active_model() {
+    let mut log = ChatLog::new();
+    log.push_session_transition("programming");
+    log.set_current_model("qwen3.8");
+
+    assert!(matches!(
+        &log.messages()[0],
+        Message::SessionTransition(transition)
+            if transition.model.as_deref() == Some("qwen3.8")
+    ));
+}
+
+#[test]
 fn session_transition_does_not_merge_into_an_open_tool_cluster() {
     let mut log = ChatLog::new();
     log.push_tool_call("git_status");

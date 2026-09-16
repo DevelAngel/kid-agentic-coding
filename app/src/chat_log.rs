@@ -45,6 +45,7 @@ pub struct SessionNotice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionTransition {
     pub workflow_name: String,
+    pub model: Option<String>,
 }
 
 /// Text automatically provided to the agent by the client.
@@ -295,13 +296,28 @@ impl ChatLog {
         self.messages
             .push(Message::SessionTransition(SessionTransition {
                 workflow_name: workflow_name.into(),
+                model: None,
             }));
     }
 
-    /// Sets the model reported as currently active. New agent messages are
+    /// Sets the model reported as currently active and completes the newest
+    /// transition that was waiting for its model. New agent messages are
     /// stamped with this value; existing messages are unaffected.
     pub fn set_current_model(&mut self, model: impl Into<String>) {
         self.current_model = Some(model.into());
+        if let Some(Message::SessionTransition(transition)) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|message| matches!(message, Message::SessionTransition(transition) if transition.model.is_none()))
+        {
+            transition.model = self.current_model.clone();
+        }
+    }
+
+    /// Returns the currently active model, if one has been reported.
+    pub fn current_model(&self) -> Option<&str> {
+        self.current_model.as_deref()
     }
 
     /// Appends an agent message. Ends whatever tool cluster is currently

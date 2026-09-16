@@ -1434,6 +1434,7 @@ dependencies = [
  "clap-verbosity-flag",
  "color-eyre",
  "derive_more 1.0.0",
+ "nerdicons_rs",
  "rand 0.10.2",
  "ratatui",
  "ratatui-textarea",
@@ -1702,6 +1703,16 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "nerdicons_rs"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "988d06af1a37aa0c5e3e9f571fb26b0f014c1ff3f4eb1ea95788a6099b74f4e2"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

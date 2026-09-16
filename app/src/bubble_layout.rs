@@ -34,12 +34,9 @@ pub struct BubbleLayout {
 
 impl BubbleLayout {
     /// Computes the layout for `log` within a viewport of `width` x
-    /// `height` columns/rows. Unframed and accent-bar bubbles (user,
-    /// agent, tool-cluster, session-notice) span the full width; the
-    /// still-framed Auto-Prompt bubble is capped at 70% of `width`.
+    /// `height` columns/rows. Unframed and accent-bar bubbles span the full
+    /// width. Auto messages use the same accent-bar layout as user messages.
     pub fn new(log: &ChatLog, width: u16, height: u16) -> Self {
-        let bubble_width = bubble_width(width);
-        let text_width = bubble_width.saturating_sub(2).max(1);
         let full_text_width = width.saturating_sub(1).max(1);
 
         let mut bubbles = Vec::with_capacity(log.len());
@@ -52,8 +49,8 @@ impl BubbleLayout {
                     accent_rect(width, 3 + text_lines)
                 }
                 Message::Auto(m) => {
-                    let text_lines = wrapped_line_count(&m.text, text_width);
-                    framed_rect(bubble_width, width, 2 + text_lines, Alignment::Left)
+                    let text_lines = wrapped_line_count(&m.text, full_text_width);
+                    accent_rect(width, 3 + text_lines)
                 }
                 Message::Agent(m) => {
                     let text_lines = wrapped_line_count(&m.text, full_text_width);
@@ -67,7 +64,7 @@ impl BubbleLayout {
                     let text_lines = wrapped_line_count(&m.text, full_text_width);
                     unframed_rect(width, 1 + text_lines)
                 }
-                Message::SessionTransition(_) => unframed_rect(width, 1),
+                Message::SessionTransition(_) => unframed_rect(width, 2),
             };
 
             bubbles.push(Bubble {
@@ -228,38 +225,6 @@ pub struct VisibleBubble {
     pub borders: Borders,
     pub text_line_skip: u16,
     pub alignment: Alignment,
-}
-
-/// Bubble width in columns: up to 70% of the viewport width, at least
-/// wide enough for a left and right border column.
-fn bubble_width(viewport_width: u16) -> u16 {
-    let seventy_percent = (u32::from(viewport_width) * 70) / 100;
-    (seventy_percent as u16).max(2).min(viewport_width.max(2))
-}
-
-/// Rect/borders/alignment for a bordered bubble of the given content
-/// `height` (already including the top/bottom border rows). `y` is left
-/// at `0`; the caller overwrites it once the running offset is known.
-fn framed_rect(
-    bubble_width: u16,
-    viewport_width: u16,
-    height: u16,
-    alignment: Alignment,
-) -> (Rect, Borders, Alignment) {
-    let x = match alignment {
-        Alignment::Right => viewport_width.saturating_sub(bubble_width),
-        Alignment::Left => 0,
-    };
-    (
-        Rect {
-            x,
-            y: 0,
-            width: bubble_width,
-            height,
-        },
-        Borders::ALL,
-        alignment,
-    )
 }
 
 /// Rect/borders/alignment for an unframed, left-aligned row (thoughts and
