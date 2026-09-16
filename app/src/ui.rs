@@ -24,10 +24,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Wrap,
-};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui_textarea::{TextArea, WrapMode};
 use serde_json::Value;
 use textwrap::{self, Options};
@@ -43,21 +40,32 @@ use std::mem;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Accent color for the user (mage) and the filled panel behind it.
-const USER_COLOR: Color = Color::Rgb(120, 170, 255);
 const USER_PANEL_BG: Color = Color::Rgb(30, 30, 38);
+const PROMPT_PANEL_BG: Color = USER_PANEL_BG;
+
 const PLACEHOLDER_COLOR: Color = Color::Rgb(118, 118, 118);
+const WORKFLOW_TEAL: Color = Color::Rgb(80, 230, 230);
+const WORKFLOW_YELLOW: Color = Color::Rgb(230, 230, 80);
+const AUTO_PANEL_BG: Color = Color::Rgb(38, 30, 42);
+const USER_ICON: &str = nerdicons_rs::fa::RSUSER;
+const AUTO_ICON: &str = nerdicons_rs::fa::RSWAND_SPARKLES;
+const PROMPT_ICON: &str = nerdicons_rs::fa::RSUSER_PEN;
 
-/// Nerd Font glyph and accent color for client-provided prompts.
-const AUTO_ICON: &str = "\u{2699}";
-const AUTO_COLOR: Color = Color::Yellow;
-const AUTO_NAME: &str = "Auto Prompt";
-
-/// Rows scrolled per PageUp/PageDown press.
-const SCROLL_STEP: u16 = 3;
+/// Workflow name for the main programming session.
+const PROGRAMMING_WORKFLOW: &str = "programming";
 
 /// Workflow name for the fix session opened by the commit workflow.
 const COMMIT_FIX_WORKFLOW: &str = "commit-fix-rust";
+
+fn workflow_color(workflow_name: &str) -> Color {
+    match workflow_name {
+        COMMIT_FIX_WORKFLOW => WORKFLOW_YELLOW,
+        _ => WORKFLOW_TEAL,
+    }
+}
+
+/// Rows scrolled per PageUp/PageDown press.
+const SCROLL_STEP: u16 = 3;
 
 /// A permission request awaiting the user's decision.
 struct PendingPermission {
@@ -156,7 +164,7 @@ impl App {
     fn new() -> Self {
         Self {
             chat_log: ChatLog::new(),
-            prompt: new_prompt_textarea(false),
+            prompt: new_prompt_textarea(false, workflow_color(PROGRAMMING_WORKFLOW)),
             workflow_name: None,
             agent_buffer: String::new(),
             scroll_anchor: None,
@@ -275,7 +283,14 @@ impl App {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
                 self.agent_acting = false;
-                self.prompt = new_prompt_textarea(false);
+                self.prompt = new_prompt_textarea(
+                    false,
+                    workflow_color(
+                        self.workflow_name
+                            .as_deref()
+                            .unwrap_or(PROGRAMMING_WORKFLOW),
+                    ),
+                );
                 if reason != StopReason::EndTurn {
                     self.chat_log
                         .push_session_notice(SessionNoticeKind::Stopped, stop_reason_text(reason));
@@ -289,7 +304,14 @@ impl App {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
                 self.agent_acting = false;
-                self.prompt = new_prompt_textarea(false);
+                self.prompt = new_prompt_textarea(
+                    false,
+                    workflow_color(
+                        self.workflow_name
+                            .as_deref()
+                            .unwrap_or(PROGRAMMING_WORKFLOW),
+                    ),
+                );
                 self.chat_log.push_session_notice(
                     SessionNoticeKind::Error,
                     format!("Session failed: {error}"),
@@ -388,7 +410,14 @@ impl App {
     /// was set without the flag, leaving input unlocked).
     fn begin_acting_turn(&mut self) {
         self.agent_acting = true;
-        self.prompt = new_prompt_textarea(true);
+        self.prompt = new_prompt_textarea(
+            true,
+            workflow_color(
+                self.workflow_name
+                    .as_deref()
+                    .unwrap_or(PROGRAMMING_WORKFLOW),
+            ),
+        );
     }
 
     fn handle_key(&mut self, key: KeyEvent, session: &SessionHandle) {
@@ -454,7 +483,14 @@ impl App {
                 if session.send_prompt(prompt_text).is_err() {
                     self.chat_log.push_agent("[session closed]");
                     self.agent_acting = false;
-                    self.prompt = new_prompt_textarea(false);
+                    self.prompt = new_prompt_textarea(
+                        false,
+                        workflow_color(
+                            self.workflow_name
+                                .as_deref()
+                                .unwrap_or(PROGRAMMING_WORKFLOW),
+                        ),
+                    );
                     self.should_quit = true;
                 }
             }
@@ -473,7 +509,14 @@ impl App {
             KeyCode::Esc => {
                 session.cancel();
                 self.workflow_name = session.workflow_name().map(str::to_owned);
-                self.prompt = new_prompt_textarea(false);
+                self.prompt = new_prompt_textarea(
+                    false,
+                    workflow_color(
+                        self.workflow_name
+                            .as_deref()
+                            .unwrap_or(PROGRAMMING_WORKFLOW),
+                    ),
+                );
             }
             _ => {
                 self.prompt.input(key);
@@ -684,38 +727,13 @@ fn prompt_height(textarea: &TextArea<'_>, width: u16) -> u16 {
 
     u16::try_from(wrapped_lines.saturating_add(2).max(3)).unwrap_or(u16::MAX)
 }
-fn new_prompt_textarea(acting: bool) -> TextArea<'static> {
+fn new_prompt_textarea(_acting: bool, _workflow_color: Color) -> TextArea<'static> {
     let mut textarea = TextArea::default();
-    textarea.set_block(
-        Block::default()
-            .borders(Borders::LEFT)
-            .padding(Padding::new(1, 1, 1, 0))
-            .border_set(BorderSet {
-                top_left: " ",
-                top_right: " ",
-                bottom_left: " ",
-                bottom_right: " ",
-                vertical_left: if acting { "│" } else { "┃" },
-                vertical_right: " ",
-                horizontal_top: " ",
-                horizontal_bottom: " ",
-            })
-            .border_style(Style::default().fg(if acting {
-                PLACEHOLDER_COLOR
-            } else {
-                USER_COLOR
-            }))
-            .style(Style::default().bg(Color::Rgb(30, 30, 38))),
-    );
+    textarea.set_block(Block::default().style(Style::default().bg(PROMPT_PANEL_BG)));
     textarea.set_wrap_mode(WrapMode::WordOrGlyph);
     textarea.set_cursor_line_style(Style::default());
     textarea.set_cursor_style(Style::default());
-    textarea.set_placeholder_text(if acting {
-        "Agent is acting…"
-    } else {
-        "Type a message, or :q / :quit to exit"
-    });
-    textarea.set_placeholder_style(Style::default().fg(PLACEHOLDER_COLOR));
+
     textarea
 }
 
@@ -842,10 +860,10 @@ async fn run_app(
             Some(session_event) = fix_recv => {
                 match session_event {
                     SessionEvent::CommitFixDone { commit_message } => {
-                        app.begin_acting_turn();
+                        app.workflow_name = Some(PROGRAMMING_WORKFLOW.to_owned());
                         fix_session = None;
-                        app.chat_log.push_session_transition("Main Session");
-                        app.workflow_name = None;
+                        app.chat_log.push_session_transition(PROGRAMMING_WORKFLOW);
+                        app.begin_acting_turn();
                         let resume_prompt = format!(
                             "[AUTO: Commit Fix Session Closed]\nThe commit-fix session committed and closed. Commit message used:\n{commit_message}"
                         );
@@ -918,10 +936,9 @@ async fn open_commit_fix_session(
     );
     tracing::info!("commit-fix session started");
 
+    app.workflow_name = Some(COMMIT_FIX_WORKFLOW.to_owned());
     app.chat_log.push_session_transition(COMMIT_FIX_WORKFLOW);
     app.begin_acting_turn();
-
-    app.workflow_name = Some(COMMIT_FIX_WORKFLOW.to_owned());
 
     let amend_decision = if amend { "yes" } else { "no" };
     let seed_prompt = format!(
@@ -996,22 +1013,54 @@ impl DrawApp for Frame<'_> {
         }
 
         self.draw_chat_log(app, log_area);
-        self.render_widget(&app.prompt, prompt_area);
+        let prompt_layout = accent_layout(prompt_area, false);
+        let workflow = workflow_color(app.workflow_name.as_deref().unwrap_or(PROGRAMMING_WORKFLOW));
+        self.render_widget(
+            accent_block(
+                workflow,
+                PROMPT_PANEL_BG,
+                if app.agent_acting { "│" } else { "┃" },
+            ),
+            prompt_layout.panel_rect,
+        );
+
+        self.render_widget(
+            Paragraph::new(PROMPT_ICON).style(Style::default().fg(workflow)),
+            prompt_layout.icon_rect,
+        );
+        self.render_widget(&app.prompt, prompt_layout.text_rect);
+
         if app.focused_cluster.is_none() {
             let cursor = app.prompt.screen_cursor();
             self.set_cursor_position((
-                prompt_area.x + 2 + cursor.col as u16,
-                prompt_area.y + 1 + cursor.row as u16,
+                prompt_layout.text_rect.x + cursor.col as u16,
+                prompt_layout.text_rect.y + cursor.row as u16,
             ));
         }
-        if let Some(workflow_name) = app.workflow_name.as_deref() {
+
+        if app.prompt.is_empty() {
+            let placeholder = if app.agent_acting {
+                "Agent is acting…"
+            } else {
+                " Type a message, or :q / :quit to exit"
+            };
             self.render_widget(
-                Paragraph::new(workflow_name)
-                    .style(Style::default().fg(USER_COLOR).add_modifier(Modifier::BOLD)),
-                workflow_area,
+                Paragraph::new(placeholder).style(Style::default().fg(PLACEHOLDER_COLOR)),
+                prompt_layout.text_rect,
             );
         }
-
+        if let Some(workflow_name) = app.workflow_name.as_deref() {
+            let color = workflow_color(workflow_name);
+            let mut spans = vec![Span::styled(
+                workflow_name,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )];
+            if let Some(model) = app.chat_log.current_model() {
+                spans.push(Span::raw(" · "));
+                spans.push(Span::styled(model, Style::default().fg(PLACEHOLDER_COLOR)));
+            }
+            self.render_widget(Paragraph::new(Line::from(spans)), workflow_area);
+        }
         if let Some(pending) = &app.pending_permission {
             self.draw_permission_popup(pending, app.permission_popup_scroll, self.area());
         }
@@ -1095,6 +1144,7 @@ impl DrawApp for Frame<'_> {
 
         let messages = render_log.messages().iter();
         let visible = layout.visible_bubbles().into_iter();
+        let mut message_workflow = PROGRAMMING_WORKFLOW;
         for (index, (message, visible_bubble)) in messages.zip(visible).enumerate() {
             let Some(visible_bubble) = visible_bubble else {
                 continue;
@@ -1109,39 +1159,32 @@ impl DrawApp for Frame<'_> {
 
             match message {
                 Message::User(m) => {
-                    let panel_rect = if visible_bubble.borders.contains(Borders::TOP) {
-                        // The blank separator row is a real, unstyled row,
-                        // not part of the panel, so it never inherits the
-                        // panel's filled background.
-                        Rect {
-                            y: render_rect.y + 1,
-                            height: render_rect.height.saturating_sub(1),
-                            ..render_rect
-                        }
-                    } else {
-                        render_rect
-                    };
+                    let layout =
+                        accent_layout(render_rect, visible_bubble.borders.contains(Borders::TOP));
+
+                    let color = workflow_color(message_workflow);
+                    self.render_widget(accent_block(color, USER_PANEL_BG, "┃"), layout.panel_rect);
                     self.render_widget(
-                        accent_paragraph(
-                            USER_COLOR,
-                            &m.text,
-                            visible_bubble.borders - Borders::TOP,
-                            visible_bubble.text_line_skip,
-                        ),
-                        panel_rect,
+                        Paragraph::new(USER_ICON).style(Style::default().fg(color)),
+                        layout.icon_rect,
+                    );
+                    self.render_widget(
+                        accent_text(&m.text, visible_bubble.text_line_skip),
+                        layout.text_rect,
                     );
                 }
 
                 Message::Auto(m) => {
+                    let layout = accent_layout(render_rect, false);
+                    let color = workflow_color(message_workflow);
+                    self.render_widget(accent_block(color, AUTO_PANEL_BG, "┃"), layout.panel_rect);
                     self.render_widget(
-                        bubble_paragraph(
-                            AUTO_ICON,
-                            AUTO_NAME,
-                            AUTO_COLOR,
-                            &m.text,
-                            &visible_bubble,
-                        ),
-                        render_rect,
+                        Paragraph::new(AUTO_ICON).style(Style::default().fg(color)),
+                        layout.icon_rect,
+                    );
+                    self.render_widget(
+                        accent_text(&m.text, visible_bubble.text_line_skip),
+                        layout.text_rect,
                     );
                 }
 
@@ -1180,31 +1223,25 @@ impl DrawApp for Frame<'_> {
                     self.render_widget(Paragraph::new(m.text.as_str()).style(style), render_rect);
                 }
                 Message::SessionTransition(t) => {
-                    let title = format!(" \u{2699} {} ", t.workflow_name);
-                    let width = render_rect.width as usize;
-                    let fill = width.saturating_sub(title.chars().count());
-                    let left = fill / 2;
-                    let right = fill - left;
-                    let line = Line::from(vec![
-                        Span::styled("\u{2500}".repeat(left), Style::default().fg(Color::Yellow)),
-                        Span::styled(
-                            title,
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled("\u{2500}".repeat(right), Style::default().fg(Color::Yellow)),
-                    ]);
-                    self.render_widget(Paragraph::new(line), render_rect);
+                    let color = workflow_color(&t.workflow_name);
+                    let bar = Span::styled(
+                        "━".repeat(render_rect.width as usize),
+                        Style::default().fg(color),
+                    );
+                    let mut details = vec![Span::styled(
+                        t.workflow_name.as_str(),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    )];
+                    if let Some(model) = t.model.as_deref() {
+                        details.push(Span::raw("  "));
+                        details.push(Span::styled(model, Style::default().fg(PLACEHOLDER_COLOR)));
+                    }
+                    let text = Text::from(vec![Line::from(bar), Line::from(details)]);
+                    self.render_widget(Paragraph::new(text), render_rect);
+                    message_workflow = t.workflow_name.as_str();
                 }
             }
         }
-
-        let mut scrollbar_state = ScrollbarState::new(layout.total_height() as usize)
-            .viewport_content_length(area.height as usize)
-            .position(layout.scroll_offset() as usize);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        self.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
 
     fn draw_permission_popup(&mut self, pending: &PendingPermission, scroll: u16, area: Rect) {
@@ -1359,29 +1396,6 @@ fn humanize_field_name(name: &str) -> String {
         .join(" ")
 }
 
-/// Builds the framed paragraph for an Auto-provided message bubble.
-fn bubble_paragraph<'a>(
-    icon: &str,
-    name: &str,
-    color: Color,
-    text: &'a str,
-    visible_bubble: &VisibleBubble,
-) -> Paragraph<'a> {
-    let block = Block::default()
-        .borders(visible_bubble.borders)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(color))
-        .title(Span::styled(
-            format!(" {icon} {name} "),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ));
-
-    let text = render_markdown(text);
-    Paragraph::new(text)
-        .wrap(Wrap { trim: true })
-        .scroll((visible_bubble.text_line_skip, 0))
-        .block(block)
-}
 /// Builds the plain, unframed paragraph for an agent message: no border
 /// or title, just a blank padding row above the message text. (Model
 /// attribution is intentionally omitted for now; it will return together
@@ -1395,39 +1409,57 @@ fn plain_agent_paragraph<'a>(text: &'a str, visible_bubble: &VisibleBubble) -> P
         .scroll((visible_bubble.text_line_skip, 0))
 }
 
-/// Builds the full-width accent-bar paragraph for a user message: the same
-/// invisible-corner left border and filled panel as the prompt textarea
-/// (see `new_prompt_textarea`), with a blank padding row above and below
-/// the text and no title header. `borders` never includes `TOP`: the blank
-/// separator row above the panel is drawn separately (see the render call
-/// site) so it stays unstyled instead of inheriting the panel background.
-fn accent_paragraph<'a>(
-    color: Color,
-    text: &'a str,
-    borders: Borders,
-    text_line_skip: u16,
-) -> Paragraph<'a> {
-    let block = Block::default()
-        .borders(borders)
-        .padding(Padding::new(1, 1, 1, 1))
+struct AccentLayout {
+    panel_rect: Rect,
+    icon_rect: Rect,
+    text_rect: Rect,
+}
+
+fn accent_layout(area: Rect, separator: bool) -> AccentLayout {
+    let panel_rect = if separator {
+        Rect {
+            y: area.y + 1,
+            height: area.height.saturating_sub(1),
+            ..area
+        }
+    } else {
+        area
+    };
+
+    let text_width = panel_rect.width.saturating_sub(3);
+    AccentLayout {
+        panel_rect,
+        icon_rect: Rect::new(panel_rect.x + 1, panel_rect.y, 1, 1),
+        text_rect: Rect::new(
+            panel_rect.x + 3,
+            panel_rect.y + 1,
+            text_width,
+            panel_rect.height.saturating_sub(2),
+        ),
+    }
+}
+
+fn accent_block(color: Color, panel_bg: Color, left_border: &'static str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::LEFT)
         .border_set(BorderSet {
             top_left: " ",
             top_right: " ",
             bottom_left: " ",
             bottom_right: " ",
-            vertical_left: "\u{2503}",
+            vertical_left: left_border,
             vertical_right: " ",
             horizontal_top: " ",
             horizontal_bottom: " ",
         })
         .border_style(Style::default().fg(color))
-        .style(Style::default().bg(USER_PANEL_BG));
+        .style(Style::default().bg(panel_bg))
+}
 
-    let text = render_markdown(text);
-    Paragraph::new(text)
+fn accent_text<'a>(text: &'a str, text_line_skip: u16) -> Paragraph<'a> {
+    Paragraph::new(render_markdown(text))
         .wrap(Wrap { trim: true })
         .scroll((text_line_skip, 0))
-        .block(block)
 }
 
 /// Strips a leading `name` from `comment`, along with an optional `:`
@@ -1620,7 +1652,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, SetCursorStyle::BlinkingBlock)?;
+    execute!(stdout, EnterAlternateScreen, SetCursorStyle::BlinkingBar)?;
     Terminal::new(CrosstermBackend::new(stdout))
 }
 
@@ -1648,7 +1680,8 @@ pub async fn run(
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
     let mut app = App::with_log_buffer(log_buffer);
-    app.workflow_name = session.workflow_name().map(str::to_owned);
+    app.workflow_name = Some(PROGRAMMING_WORKFLOW.to_owned());
+    app.chat_log.push_session_transition(PROGRAMMING_WORKFLOW);
 
     let result = run_app(
         &mut terminal,

@@ -15,15 +15,14 @@ fn short_agent_message_reserves_a_blank_padding_row_above() {
 }
 
 #[test]
-fn short_user_message_reserves_a_blank_padding_row_above_and_below() {
+fn short_user_message_reserves_separator_icon_text_and_bottom_rows() {
     let mut log = ChatLog::new();
     log.push_user("hi");
 
     let layout = BubbleLayout::new(&log, 80, 24);
 
     assert_eq!(layout.bubbles().len(), 1);
-    // blank separator row + accent-bar style: one blank padding row +
-    // text line + one blank padding row
+    // blank separator row + icon row + text line + blank bottom row
     assert_eq!(layout.bubbles()[0].rect.height, 4);
 }
 
@@ -38,7 +37,7 @@ fn long_message_wraps_and_increases_height() {
 }
 
 #[test]
-fn user_and_agent_messages_span_full_width_auto_prompts_are_narrower() {
+fn user_and_auto_messages_share_the_full_width_layout() {
     let mut log = ChatLog::new();
     log.push_user("hi");
     log.push_auto("ha");
@@ -51,10 +50,7 @@ fn user_and_agent_messages_span_full_width_auto_prompts_are_narrower() {
     assert_eq!(layout.bubbles()[0].alignment, Alignment::Left);
 
     assert_eq!(layout.bubbles()[1].alignment, Alignment::Left);
-    assert!(
-        layout.bubbles()[1].rect.width < 80,
-        "Auto-Prompt stays narrower"
-    );
+    assert_eq!(layout.bubbles()[1].rect.width, 80);
 
     assert_eq!(layout.bubbles()[2].rect.x, 0);
     assert_eq!(layout.bubbles()[2].rect.width, 80);
@@ -191,8 +187,8 @@ fn scrolling_into_a_bubble_from_the_top_drops_its_top_border_and_does_not_overla
     log.push_auto("two");
     log.push_auto("three");
 
-    // Each bubble is 3 rows. Scrolling 1 row in cuts through the first
-    // bubble's top border row, leaving 2 visible rows of it, followed
+    // Each bubble is 4 rows. Scrolling 1 row in cuts through the first
+    // bubble's top border row, leaving 3 visible rows of it, followed
     // immediately (no gap, no overlap) by the second bubble.
     let mut layout = BubbleLayout::new(&log, 80, 5);
     layout.scroll(1);
@@ -202,7 +198,7 @@ fn scrolling_into_a_bubble_from_the_top_drops_its_top_border_and_does_not_overla
     let second = visible[1].expect("second bubble is fully visible");
 
     assert_eq!(first.screen_rect.y, 0);
-    assert_eq!(first.screen_rect.height, 2);
+    assert_eq!(first.screen_rect.height, 3);
     assert!(!first.borders.contains(Borders::TOP));
 
     assert_eq!(
