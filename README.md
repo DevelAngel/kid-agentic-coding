@@ -28,4 +28,6 @@ Provide workflows that run in separate, temporary agent sessions — one focused
 
 Subagents don't solve this on their own. A subagent is still triggered by the main agent, and still returns to a single turn in that same accumulating context. What's missing isn't another layer of delegation — it's a hard boundary. A session that starts clean, does one thing, and ends. No leftover git logs from repo two bleeding into the fix for repo four.
 
+There's a second reason, independent of context size. Even a frontier model, with room to spare, forgets to apply a skill it was told to follow. Not once — repeatedly, across sessions, no matter how often you remind it. A workflow doesn't have this problem: the skill isn't a hint floating somewhere in a long context, it's a step the workflow walks through on every run.
+
 That's what this project builds: task-scoped agent sessions, wired together as workflows, so context stays exactly as full as the task requires — no more, no less.
