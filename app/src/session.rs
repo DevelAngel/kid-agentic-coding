@@ -13,7 +13,8 @@ use agent_client_protocol::schema::v1::{
     CancelNotification, InitializeRequest, NewSessionRequest, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
     SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionNotification,
-    SessionUpdate, ToolCall, ToolCallContent, ToolCallUpdate, ToolKind,
+    SessionUpdate, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus,
+    ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
@@ -23,6 +24,8 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
+use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::future;
 use std::path::{Path, PathBuf};
@@ -258,6 +261,11 @@ async fn run_session(
 
             let mut pending_commit_fix_done: Option<String> = None;
 
+            // Kinds of announced but not yet settled tool calls, so
+            // `tool_call_result` keeps scoping file-read output when an
+            // update doesn't repeat the kind.
+            let mut tool_call_kinds: HashMap<ToolCallId, ToolKind> = HashMap::new();
+
             loop {
                 tokio::select! {
                     _ = cancel_rx.recv(), if turn_active => {
@@ -358,7 +366,7 @@ async fn run_session(
                             turn_active = false;
                             while cancel_rx.try_recv().is_ok() {}
                         }
-                        handle_update(update, &session_event_tx).await?;
+                        handle_update(update, &session_event_tx, &mut tool_call_kinds).await?;
                         if turn_stopped && let Some(commit_message) = pending_commit_fix_done.take() {
                             let _ = session_event_tx.send(SessionEvent::CommitFixDone {
                                 commit_message,
@@ -389,6 +397,7 @@ async fn run_session(
 async fn handle_update(
     update: SessionMessage,
     event_tx: &UnboundedSender<SessionEvent>,
+    tool_call_kinds: &mut HashMap<ToolCallId, ToolKind>,
 ) -> Result<(), Error> {
     match update {
         SessionMessage::SessionMessage(message) => {
@@ -411,14 +420,22 @@ async fn handle_update(
                             raw_input,
                             content,
                             raw_output,
+                            locations,
                             ..
                         }) => {
+                            tool_call_kinds.insert(tool_call_id.clone(), kind);
+                            let target = tool_call_target(kind, &locations, raw_input.as_ref());
                             let _ = event_tx.send(SessionEvent::ToolCall {
                                 id: tool_call_id,
-                                title: tool_call_title(kind, title),
+                                title: tool_call_title(kind, title, target.as_deref()),
                                 status,
                                 parameters: raw_input.map(|value| value.to_string()),
-                                result: tool_call_result(&content, raw_output.as_ref()),
+                                result: tool_call_result(
+                                    Some(kind),
+                                    Some(status),
+                                    &content,
+                                    raw_output.as_ref(),
+                                ),
                             });
                         }
 
@@ -427,10 +444,21 @@ async fn handle_update(
                             fields,
                             ..
                         }) => {
+                            let kind = fields
+                                .kind
+                                .or_else(|| tool_call_kinds.get(&tool_call_id).copied());
                             let result = tool_call_result(
+                                kind,
+                                fields.status,
                                 fields.content.as_deref().unwrap_or(&[]),
                                 fields.raw_output.as_ref(),
                             );
+                            if matches!(
+                                fields.status,
+                                Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
+                            ) {
+                                tool_call_kinds.remove(&tool_call_id);
+                            }
                             let _ = event_tx.send(SessionEvent::ToolCallUpdate {
                                 id: tool_call_id,
                                 status: fields.status,
@@ -485,13 +513,47 @@ async fn handle_update(
     Ok(())
 }
 
-/// Labels command executions while preserving the command in the title.
-fn tool_call_title(kind: ToolKind, title: String) -> String {
-    if kind == ToolKind::Execute {
+/// Labels command executions while preserving the command in the title, and
+/// appends the target file when a file operation's title doesn't name the
+/// file it operates on.
+fn tool_call_title(kind: ToolKind, title: String, target: Option<&str>) -> String {
+    let title = if kind == ToolKind::Execute {
         format!("Shell command: {title}")
     } else {
         title
+    };
+    let Some(target) = target else {
+        return title;
+    };
+    let file_name = Path::new(target).file_name().and_then(OsStr::to_str);
+    if title.contains(target) || file_name.is_some_and(|name| title.contains(name)) {
+        return title;
     }
+    format!("{title} ({target})")
+}
+
+/// The file a file operation operates on: the first ACP location, else the
+/// `path`/`file_path` field of the raw input. `None` for other tool kinds.
+fn tool_call_target(
+    kind: ToolKind,
+    locations: &[ToolCallLocation],
+    raw_input: Option<&Value>,
+) -> Option<String> {
+    let is_file_operation = matches!(
+        kind,
+        ToolKind::Read | ToolKind::Edit | ToolKind::Delete | ToolKind::Move | ToolKind::Search
+    );
+    if !is_file_operation {
+        return None;
+    }
+    if let Some(location) = locations.first() {
+        return Some(location.path.display().to_string());
+    }
+    let raw_input = raw_input?;
+    ["path", "file_path"]
+        .iter()
+        .find_map(|key| raw_input.get(*key).and_then(Value::as_str))
+        .map(str::to_owned)
 }
 
 /// Extracts the display title and raw input parameters of the tool call a
@@ -522,8 +584,39 @@ fn model_from_config_options(config_options: &[SessionConfigOption]) -> Option<S
 /// Renders a tool call's result content into a display string, joining
 /// standard content blocks, summarizing diffs and terminal embeds, and
 /// falling back to pretty-printed `raw_output` when no content blocks were
-/// provided. Returns `None` when the tool call carries no result yet.
-fn tool_call_result(content: &[ToolCallContent], raw_output: Option<&Value>) -> Option<String> {
+/// provided. Returns `None` when the tool call carries no result yet. A
+/// successful file read is reduced to its line count so file contents
+/// don't dump into the chat; other results are shown verbatim.
+fn tool_call_result(
+    kind: Option<ToolKind>,
+    status: Option<ToolCallStatus>,
+    content: &[ToolCallContent],
+    raw_output: Option<&Value>,
+) -> Option<String> {
+    if kind == Some(ToolKind::Read)
+        && matches!(status, Some(ToolCallStatus::Completed))
+        && !content.is_empty()
+        && content
+            .iter()
+            .all(|item| matches!(item, ToolCallContent::Content(_)))
+    {
+        let text = content
+            .iter()
+            .filter_map(|item| match item {
+                ToolCallContent::Content(content) => {
+                    Some(PromptRunner::content_block_to_string(&content.content))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = text.lines().count();
+        return Some(match lines {
+            1 => "1 line".to_owned(),
+            _ => format!("{lines} lines"),
+        });
+    }
+
     let rendered: Vec<String> = content
         .iter()
         .map(|item| match item {
@@ -548,13 +641,20 @@ fn tool_call_result(content: &[ToolCallContent], raw_output: Option<&Value>) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{permission_request_details, tool_call_title};
-    use agent_client_protocol::schema::v1::{ToolCallUpdate, ToolCallUpdateFields, ToolKind};
+    use super::{permission_request_details, tool_call_result, tool_call_target, tool_call_title};
+    use agent_client_protocol::schema::v1::{
+        ContentBlock, TextContent, ToolCallContent, ToolCallLocation, ToolCallStatus,
+        ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    };
+
+    fn text_content(text: &str) -> ToolCallContent {
+        ToolCallContent::from(ContentBlock::Text(TextContent::new(text)))
+    }
 
     #[test]
     fn shell_commands_include_the_command_in_the_title() {
         assert_eq!(
-            tool_call_title(ToolKind::Execute, "git log --oneline".to_owned()),
+            tool_call_title(ToolKind::Execute, "git log --oneline".to_owned(), None),
             "Shell command: git log --oneline"
         );
     }
@@ -562,8 +662,139 @@ mod tests {
     #[test]
     fn non_shell_tool_titles_are_preserved() {
         assert_eq!(
-            tool_call_title(ToolKind::Read, "Read app/src/ui.rs".to_owned()),
+            tool_call_title(ToolKind::Read, "Read app/src/ui.rs".to_owned(), None),
             "Read app/src/ui.rs"
+        );
+    }
+
+    #[test]
+    fn file_operation_titles_get_the_target_file_appended() {
+        assert_eq!(
+            tool_call_title(
+                ToolKind::Edit,
+                "Edit file".to_owned(),
+                Some("app/src/ui.rs")
+            ),
+            "Edit file (app/src/ui.rs)"
+        );
+    }
+
+    #[test]
+    fn file_operation_titles_are_not_duplicated_when_the_file_is_named() {
+        assert_eq!(
+            tool_call_title(
+                ToolKind::Read,
+                "Read app/src/ui.rs".to_owned(),
+                Some("app/src/ui.rs"),
+            ),
+            "Read app/src/ui.rs"
+        );
+        assert_eq!(
+            tool_call_title(
+                ToolKind::Read,
+                "Edit ui.rs".to_owned(),
+                Some("app/src/ui.rs")
+            ),
+            "Edit ui.rs"
+        );
+    }
+
+    #[test]
+    fn tool_target_prefers_locations_over_raw_input() {
+        let locations = [ToolCallLocation::new("app/src/ui.rs")];
+        assert_eq!(
+            tool_call_target(
+                ToolKind::Read,
+                &locations,
+                Some(&serde_json::json!({"path": "other.rs"})),
+            ),
+            Some("app/src/ui.rs".to_owned())
+        );
+    }
+
+    #[test]
+    fn tool_target_falls_back_to_raw_input() {
+        assert_eq!(
+            tool_call_target(
+                ToolKind::Edit,
+                &[],
+                Some(&serde_json::json!({"file_path": "app/src/main.rs"})),
+            ),
+            Some("app/src/main.rs".to_owned())
+        );
+    }
+
+    #[test]
+    fn tool_target_is_none_outside_file_operations() {
+        assert_eq!(
+            tool_call_target(
+                ToolKind::Execute,
+                &[],
+                Some(&serde_json::json!({"path": "app/src/ui.rs"})),
+            ),
+            None
+        );
+        assert_eq!(tool_call_target(ToolKind::Read, &[], None), None);
+    }
+
+    #[test]
+    fn successful_read_results_are_reduced_to_line_counts() {
+        assert_eq!(
+            tool_call_result(
+                Some(ToolKind::Read),
+                Some(ToolCallStatus::Completed),
+                &[text_content("fn main() {}")],
+                None,
+            ),
+            Some("1 line".to_owned())
+        );
+        assert_eq!(
+            tool_call_result(
+                Some(ToolKind::Read),
+                Some(ToolCallStatus::Completed),
+                &[text_content("a\nb\nc")],
+                None,
+            ),
+            Some("3 lines".to_owned())
+        );
+    }
+
+    #[test]
+    fn failed_read_results_keep_the_full_output() {
+        assert_eq!(
+            tool_call_result(
+                Some(ToolKind::Read),
+                Some(ToolCallStatus::Failed),
+                &[text_content("error: no such file")],
+                None,
+            ),
+            Some("error: no such file".to_owned())
+        );
+    }
+
+    #[test]
+    fn non_read_results_are_shown_verbatim() {
+        assert_eq!(
+            tool_call_result(
+                Some(ToolKind::Execute),
+                Some(ToolCallStatus::Completed),
+                &[text_content("done")],
+                None,
+            ),
+            Some("done".to_owned())
+        );
+    }
+
+    #[test]
+    fn results_fall_back_to_pretty_printed_raw_output() {
+        assert_eq!(
+            tool_call_result(
+                Some(ToolKind::Execute),
+                Some(ToolCallStatus::Completed),
+                &[],
+                Some(&serde_json::json!({"ok": true})),
+            ),
+            Some("{\n  \"ok\": true\n}".to_owned())
         );
     }
 

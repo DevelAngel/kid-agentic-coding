@@ -1288,10 +1288,7 @@ impl DrawApp for Frame<'_> {
     ) {
         let popup_area = centered_rect(90, 85, area);
         let (status_icon, _, status) = status_style(entry.status);
-        let parameters = entry
-            .parameters
-            .as_deref()
-            .unwrap_or("No parameters supplied.");
+        let parameters = format_permission_parameters(entry.parameters.as_deref());
         let result_label = if entry.status == Status::Failed {
             "Result (failed)"
         } else {
@@ -1341,10 +1338,11 @@ impl DrawApp for Frame<'_> {
     }
 }
 
-/// Formats the raw input of a tool call for permission popup display as
-/// human-readable "Field Name" / value blocks instead of raw JSON. Falls back
-/// to pretty-printed JSON for nested objects/arrays, since those are rare in
-/// practice and don't warrant recursive humanization.
+/// Formats the raw input of a tool call for popup display (permission
+/// requests and the tool call audit) as human-readable "Field Name" / value
+/// blocks instead of raw JSON. Falls back to pretty-printed JSON for nested
+/// objects/arrays, since those are rare in practice and don't warrant
+/// recursive humanization.
 fn format_permission_parameters(parameters: Option<&str>) -> String {
     let Some(raw) = parameters else {
         return "No parameters supplied.".to_owned();
