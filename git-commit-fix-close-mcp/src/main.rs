@@ -102,6 +102,8 @@ enum CommitMessageError {
     LongBodyLine { line: usize, length: usize },
     #[error("commit body has {0} lines and is longer than 12 lines")]
     TooManyBodyLines(usize),
+    #[error("breaking change note has {0} lines and is longer than 4 lines")]
+    TooManyBreakingChangeLines(usize),
 }
 
 fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<CommitMessageError>> {
@@ -120,7 +122,15 @@ fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<Com
     if body_line_count > 12 {
         errors.push(CommitMessageError::TooManyBodyLines(body_line_count));
     }
-
+    let breaking_change_lines = params
+        .breaking_change_note
+        .as_deref()
+        .map(wrap_breaking_change_note_lines);
+    if let Some(lines) = &breaking_change_lines
+        && lines.len() > 4
+    {
+        errors.push(CommitMessageError::TooManyBreakingChangeLines(lines.len()));
+    }
     let description = lowercase_first_char(&params.description);
     let scope = params
         .scope
@@ -151,14 +161,14 @@ fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<Com
     }
 
     let mut message = format!("{summary}\n\n{}", params.body);
-    if let Some(note) = &params.breaking_change_note {
+    if let Some(lines) = &breaking_change_lines {
         message.push_str("\n\nBREAKING CHANGE: ");
-        message.push_str(&wrap_breaking_change_note(note));
+        message.push_str(&lines.join("\n    "));
     }
     Ok(message)
 }
 
-fn wrap_breaking_change_note(note: &str) -> String {
+fn wrap_breaking_change_note_lines(note: &str) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
 
@@ -178,7 +188,7 @@ fn wrap_breaking_change_note(note: &str) -> String {
         lines.push(line);
     }
 
-    lines.join("\n    ")
+    lines
 }
 
 fn lowercase_first_char(value: &str) -> String {
@@ -645,6 +655,28 @@ mod tests {
     }
 
     #[test]
+    fn build_commit_message_rejects_a_breaking_change_note_with_too_many_lines() {
+        let note = "word ".repeat(60).trim_end().to_owned();
+        let params = CommitParams {
+            commit_type: "feat".to_owned(),
+            scope: None,
+            description: "Break something".to_owned(),
+            body: "Explain the break.".to_owned(),
+            breaking_change_note: Some(note),
+            amend: false,
+            cwd: None,
+        };
+
+        let errors = build_commit_message(&params).unwrap_err();
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("longer than 4 lines"))
+        );
+    }
+
+    #[test]
     fn lowercase_first_char_handles_empty_and_unicode_text() {
         assert_eq!(lowercase_first_char(""), "");
         assert_eq!(lowercase_first_char("Review"), "review");
@@ -656,7 +688,7 @@ mod tests {
         let note = "This breaking change note is deliberately long enough to wrap across multiple lines while keeping continuation lines indented.";
 
         assert_eq!(
-            wrap_breaking_change_note(note),
+            wrap_breaking_change_note_lines(note).join("\n    "),
             "This breaking change note is deliberately long enough\n    to wrap across multiple lines while keeping continuation lines\n    indented."
         );
     }
