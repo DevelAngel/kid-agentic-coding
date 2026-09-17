@@ -48,8 +48,8 @@ struct CommitParams {
     scope: Option<String>,
     /// Commit description.
     description: String,
-    /// Non-empty commit body.
-    body: String,
+    /// Commit body paragraphs, each word-wrapped independently.
+    body: Vec<String>,
     /// Optional breaking-change note.
     #[serde(default)]
     breaking_change_note: Option<String>,
@@ -98,12 +98,20 @@ enum CommitMessageError {
     BreakingChangeInBody,
     #[error("commit summary is {0} characters long and longer than 50 characters")]
     LongSummary(usize),
-    #[error("commit body line {line} is {length} characters long and longer than 72 characters")]
-    LongBodyLine { line: usize, length: usize },
-    #[error("commit body has {0} lines and is longer than 12 lines")]
-    TooManyBodyLines(usize),
-    #[error("breaking change note has {0} lines and is longer than 4 lines")]
-    TooManyBreakingChangeLines(usize),
+    #[error(
+        "commit body wraps to {lines} lines ({words} words across {paragraphs} paragraph(s)) \
+         and is longer than 12 lines — shorten the paragraphs"
+    )]
+    TooManyBodyLines {
+        lines: usize,
+        words: usize,
+        paragraphs: usize,
+    },
+    #[error(
+        "breaking change note wraps to {lines} lines ({words} words) and is longer than \
+         4 lines — shorten the note"
+    )]
+    TooManyBreakingChangeLines { lines: usize, words: usize },
 }
 
 fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<CommitMessageError>> {
@@ -112,16 +120,30 @@ fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<Com
     if !VALID_COMMIT_TYPES.contains(&params.commit_type.as_str()) {
         errors.push(CommitMessageError::InvalidType(params.commit_type.clone()));
     }
-    if params.body.trim().is_empty() {
+    if params
+        .body
+        .iter()
+        .all(|paragraph| paragraph.trim().is_empty())
+    {
         errors.push(CommitMessageError::EmptyBody);
     }
-    if params.body.contains("BREAKING CHANGE") {
+    if params
+        .body
+        .iter()
+        .any(|paragraph| paragraph.contains("BREAKING CHANGE"))
+    {
         errors.push(CommitMessageError::BreakingChangeInBody);
     }
-    let body_line_count = params.body.lines().count();
-    if body_line_count > 12 {
-        errors.push(CommitMessageError::TooManyBodyLines(body_line_count));
+
+    let body_lines = wrap_body_lines(&params.body);
+    if body_lines.len() > 12 {
+        errors.push(CommitMessageError::TooManyBodyLines {
+            lines: body_lines.len(),
+            words: word_count(&params.body),
+            paragraphs: params.body.len(),
+        });
     }
+
     let breaking_change_lines = params
         .breaking_change_note
         .as_deref()
@@ -129,8 +151,16 @@ fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<Com
     if let Some(lines) = &breaking_change_lines
         && lines.len() > 4
     {
-        errors.push(CommitMessageError::TooManyBreakingChangeLines(lines.len()));
+        errors.push(CommitMessageError::TooManyBreakingChangeLines {
+            lines: lines.len(),
+            words: params
+                .breaking_change_note
+                .as_deref()
+                .map(|note| note.split_whitespace().count())
+                .unwrap_or_default(),
+        });
     }
+
     let description = lowercase_first_char(&params.description);
     let scope = params
         .scope
@@ -147,20 +177,12 @@ fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<Com
     if summary.chars().count() > 50 {
         errors.push(CommitMessageError::LongSummary(summary.chars().count()));
     }
-    for (index, line) in params.body.lines().enumerate() {
-        if line.chars().count() > 72 {
-            errors.push(CommitMessageError::LongBodyLine {
-                line: index + 1,
-                length: line.chars().count(),
-            });
-        }
-    }
 
     if !errors.is_empty() {
         return Err(errors);
     }
 
-    let mut message = format!("{summary}\n\n{}", params.body);
+    let mut message = format!("{summary}\n\n{}", body_lines.join("\n"));
     if let Some(lines) = &breaking_change_lines {
         message.push_str("\n\nBREAKING CHANGE: ");
         message.push_str(&lines.join("\n    "));
@@ -168,12 +190,49 @@ fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<Com
     Ok(message)
 }
 
+/// Total word count across all body paragraphs — reported alongside a
+/// line-count violation so the caller, which cannot predict how many
+/// lines its text will wrap to, has a metric it set directly.
+fn word_count(paragraphs: &[String]) -> usize {
+    paragraphs
+        .iter()
+        .map(|paragraph| paragraph.split_whitespace().count())
+        .sum()
+}
+
+/// Word-wraps each paragraph to `72` columns independently and rejoins
+/// them with a blank separator line, the same layout a hand-wrapped
+/// Conventional Commit body would have.
+fn wrap_body_lines(paragraphs: &[String]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (index, paragraph) in paragraphs.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.extend(wrap_paragraph_lines(paragraph, 72, 72));
+    }
+    lines
+}
+
 fn wrap_breaking_change_note_lines(note: &str) -> Vec<String> {
+    wrap_paragraph_lines(note, 54, 68)
+}
+
+/// Word-wraps `text` into lines no wider than `first_line_max` for the
+/// first line and `rest_max` for every line after it — the two differ
+/// for the breaking-change note, which starts mid-line after a prefix.
+/// Embedded newlines are treated as ordinary whitespace, same as any
+/// other run of spaces.
+fn wrap_paragraph_lines(text: &str, first_line_max: usize, rest_max: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
 
-    for word in note.split_whitespace() {
-        let max_width = if lines.is_empty() { 54 } else { 68 };
+    for word in text.split_whitespace() {
+        let max_width = if lines.is_empty() {
+            first_line_max
+        } else {
+            rest_max
+        };
         if line.is_empty() {
             line.push_str(word);
         } else if line.chars().count() + 1 + word.chars().count() <= max_width {
@@ -568,7 +627,7 @@ mod tests {
         let params: CommitParams = serde_json::from_value(json!({
             "type": "fix",
             "description": "Review feedback",
-            "body": "Address the review feedback.",
+            "body": ["Address the review feedback."],
         }))
         .unwrap();
 
@@ -582,7 +641,7 @@ mod tests {
             commit_type: "feat".to_owned(),
             scope: Some("session".to_owned()),
             description: "Improve commit handling".to_owned(),
-            body: "Handle commit messages centrally.".to_owned(),
+            body: vec!["Handle commit messages centrally.".to_owned()],
             cwd: None,
             breaking_change_note: Some("The commit input is now structured.".to_owned()),
             amend: false,
@@ -602,7 +661,7 @@ mod tests {
             commit_type: "unknown".to_owned(),
             scope: None,
             description: "A very long description that makes the summary too long".to_owned(),
-            body: format!("BREAKING CHANGE\n{}", "x".repeat(73)),
+            body: vec!["BREAKING CHANGE".to_owned()],
             breaking_change_note: None,
             amend: false,
             cwd: None,
@@ -610,7 +669,7 @@ mod tests {
 
         let errors = build_commit_message(&params).unwrap_err();
 
-        assert_eq!(errors.len(), 4);
+        assert_eq!(errors.len(), 3);
         assert!(
             errors
                 .iter()
@@ -626,11 +685,6 @@ mod tests {
                 .iter()
                 .any(|error| error.to_string().contains("BREAKING CHANGE"))
         );
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.to_string().contains("body line 2"))
-        );
     }
 
     #[test]
@@ -639,7 +693,7 @@ mod tests {
             commit_type: "fix".to_owned(),
             scope: None,
             description: "Trim the body".to_owned(),
-            body: "line\n".repeat(13).trim_end().to_owned(),
+            body: vec!["line".to_owned(); 13],
             breaking_change_note: None,
             amend: false,
             cwd: None,
@@ -650,7 +704,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|error| error.to_string().contains("13 lines"))
+                .any(|error| error.to_string().contains("shorten the paragraphs"))
         );
     }
 
@@ -661,7 +715,7 @@ mod tests {
             commit_type: "feat".to_owned(),
             scope: None,
             description: "Break something".to_owned(),
-            body: "Explain the break.".to_owned(),
+            body: vec!["Explain the break.".to_owned()],
             breaking_change_note: Some(note),
             amend: false,
             cwd: None,
@@ -673,6 +727,91 @@ mod tests {
             errors
                 .iter()
                 .any(|error| error.to_string().contains("longer than 4 lines"))
+        );
+    }
+
+    #[test]
+    fn too_many_body_lines_error_reports_word_and_paragraph_count() {
+        let params = CommitParams {
+            commit_type: "fix".to_owned(),
+            scope: None,
+            description: "Trim the body".to_owned(),
+            body: vec!["one two three four".to_owned(); 13],
+            breaking_change_note: None,
+            amend: false,
+            cwd: None,
+        };
+
+        let errors = build_commit_message(&params).unwrap_err();
+
+        assert!(errors.iter().any(|error| {
+            let message = error.to_string();
+            message.contains("52 words") && message.contains("13 paragraph")
+        }));
+    }
+
+    #[test]
+    fn too_many_breaking_change_lines_error_reports_word_count() {
+        let note = "word ".repeat(60).trim_end().to_owned();
+        let params = CommitParams {
+            commit_type: "feat".to_owned(),
+            scope: None,
+            description: "Break something".to_owned(),
+            body: vec!["Explain the break.".to_owned()],
+            breaking_change_note: Some(note),
+            amend: false,
+            cwd: None,
+        };
+
+        let errors = build_commit_message(&params).unwrap_err();
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("60 words"))
+        );
+    }
+
+    #[test]
+    fn build_commit_message_separates_body_paragraphs_with_a_blank_line() {
+        let params = CommitParams {
+            commit_type: "fix".to_owned(),
+            scope: None,
+            description: "Explain in two paragraphs".to_owned(),
+            body: vec![
+                "First paragraph.".to_owned(),
+                "Second paragraph.".to_owned(),
+            ],
+            breaking_change_note: None,
+            amend: false,
+            cwd: None,
+        };
+
+        let message = build_commit_message(&params).unwrap();
+
+        assert_eq!(
+            message,
+            "fix: explain in two paragraphs\n\nFirst paragraph.\n\nSecond paragraph."
+        );
+    }
+
+    #[test]
+    fn build_commit_message_collapses_embedded_newlines_in_a_paragraph() {
+        let params = CommitParams {
+            commit_type: "fix".to_owned(),
+            scope: None,
+            description: "Rewrap a pre-broken paragraph".to_owned(),
+            body: vec!["Line one\nline two\nline three".to_owned()],
+            breaking_change_note: None,
+            amend: false,
+            cwd: None,
+        };
+
+        let message = build_commit_message(&params).unwrap();
+
+        assert_eq!(
+            message,
+            "fix: rewrap a pre-broken paragraph\n\nLine one line two line three"
         );
     }
 

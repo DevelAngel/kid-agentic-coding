@@ -331,7 +331,7 @@ async fn run_git_commit_fix_close(server: &McpServerStdio) -> Result<()> {
                     "type": "feat",
                     "scope": "lorem-agent",
                     "description": "demonstrate commit fix workflow",
-                    "body": "The fix session committed and closed the commit-fix workflow",
+                    "body": ["The fix session committed and closed the commit-fix workflow"],
                 })
                 .as_object()
                 .cloned()
