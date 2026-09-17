@@ -100,6 +100,8 @@ enum CommitMessageError {
     LongSummary(usize),
     #[error("commit body line {line} is {length} characters long and longer than 72 characters")]
     LongBodyLine { line: usize, length: usize },
+    #[error("commit body has {0} lines and is longer than 12 lines")]
+    TooManyBodyLines(usize),
 }
 
 fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<CommitMessageError>> {
@@ -113,6 +115,10 @@ fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<Com
     }
     if params.body.contains("BREAKING CHANGE") {
         errors.push(CommitMessageError::BreakingChangeInBody);
+    }
+    let body_line_count = params.body.lines().count();
+    if body_line_count > 12 {
+        errors.push(CommitMessageError::TooManyBodyLines(body_line_count));
     }
 
     let description = lowercase_first_char(&params.description);
@@ -614,6 +620,27 @@ mod tests {
             errors
                 .iter()
                 .any(|error| error.to_string().contains("body line 2"))
+        );
+    }
+
+    #[test]
+    fn build_commit_message_rejects_a_body_with_too_many_lines() {
+        let params = CommitParams {
+            commit_type: "fix".to_owned(),
+            scope: None,
+            description: "Trim the body".to_owned(),
+            body: "line\n".repeat(13).trim_end().to_owned(),
+            breaking_change_note: None,
+            amend: false,
+            cwd: None,
+        };
+
+        let errors = build_commit_message(&params).unwrap_err();
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("13 lines"))
         );
     }
 
