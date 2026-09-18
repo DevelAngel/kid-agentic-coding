@@ -63,6 +63,17 @@ pub struct ToolCallEntry {
     pub result: Option<String>,
 }
 
+/// Strips a leading `name` from `comment`, along with an optional `:`
+/// and surrounding whitespace, so a self-labeled tool result like
+/// `"run_tests: ok"` doesn't repeat the name already shown next to it.
+pub fn strip_redundant_name<'a>(comment: &'a str, name: &str) -> &'a str {
+    let Some(rest) = comment.strip_prefix(name) else {
+        return comment;
+    };
+    let rest = rest.trim_start();
+    rest.strip_prefix(':').unwrap_or(rest).trim_start()
+}
+
 /// A single item within a [`ToolCluster`]: either a thought, or a tool
 /// call going through [`Status::Pending`] → [`Status::Running`] →
 /// [`Status::Done`]/[`Status::Failed`].

@@ -1,7 +1,7 @@
 //! Pure layout computation for chat bubbles: bounding rects, border sets,
 //! and scroll bounds. No terminal or I/O access.
 
-use crate::chat_log::{ChatLog, Message, Status, Step, ToolCluster};
+use crate::chat_log::{ChatLog, Message, Status, Step, ToolCluster, strip_redundant_name};
 use crate::markdown;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Borders, Paragraph, Wrap};
@@ -292,14 +292,15 @@ fn tool_cluster_row_count(cluster: &ToolCluster, width: u16, keep_live: bool) ->
                     }
                 }
                 Step::ToolCall(entry) => {
-                    let comment = entry
-                        .result
-                        .as_deref()
-                        .and_then(|result| result.lines().next());
-                    let comment = comment.map(|comment| {
-                        let rest = comment.strip_prefix(&entry.name).unwrap_or(comment);
-                        rest.trim_start_matches(':').trim_start()
-                    });
+                    let comment = if entry.status == Status::Failed {
+                        entry
+                            .result
+                            .as_deref()
+                            .and_then(|result| result.lines().next())
+                    } else {
+                        None
+                    };
+                    let comment = comment.map(|c| strip_redundant_name(c, &entry.name));
                     match comment {
                         Some(comment) if !comment.is_empty() => {
                             format!("🔧 {} • — {comment}", entry.name)
