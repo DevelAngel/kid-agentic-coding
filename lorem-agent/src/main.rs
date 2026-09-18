@@ -280,19 +280,19 @@ async fn run_confetti(connection: ConnectionTo<Client>, server_id: McpServerAcpI
     Ok(())
 }
 
-async fn run_commit_workflow(context: &str) -> Result<()> {
+async fn run_commit_workflow(tldr: &str) -> Result<()> {
     let server = COMMIT_WORKFLOW_SERVER
         .get()
         .ok_or_else(|| eyre!("commit-workflow MCP server unavailable"))?;
     let mut command = Command::new(&server.command);
-    tracing::debug!(%context, "invoking commit-workflow MCP tool");
+    tracing::debug!(%tldr, "invoking commit-workflow MCP tool");
     command.args(&server.args);
 
     let client = ().serve(TokioChildProcess::new(command)?).await?;
     client
         .call_tool(
             CallToolRequestParams::new("git_commit_with_fix").with_arguments(
-                serde_json::json!({"amend": false, "context": context})
+                serde_json::json!({"amend": false, "tldr": tldr, "why": "Demonstrate the commit-fix hand-off in the mock agent's lorem workflow.", "what": "Simulate delegating the current step to a fix session."})
                     .as_object()
                     .cloned()
                     .unwrap_or_default(),
@@ -381,13 +381,13 @@ fn invoke_rust_tool(
 
 fn invoke_commit_workflow(
     _context: McpToolContext,
-    context: Option<&'static str>,
+    tldr: Option<&'static str>,
 ) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
     Box::pin(async move {
-        let Some(context) = context else {
-            return Err(eyre!("commit context unavailable"));
+        let Some(tldr) = tldr else {
+            return Err(eyre!("commit tldr unavailable"));
         };
-        run_commit_workflow(context).await?;
+        run_commit_workflow(tldr).await?;
         Ok("git_commit_with_fix: ok".to_owned())
     })
 }
