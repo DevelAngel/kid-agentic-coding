@@ -4,6 +4,7 @@ use crate::log_buffer::LogBuffer;
 use kid_agentic_coding::{
     BubbleLayout, ChatLog, EntryId, Message, PromptRunner, ScrollAnchor, SessionEvent,
     SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
+    strip_redundant_name,
 };
 use kid_agentic_coding::{FsSocketDir, render_markdown, start_interactive_session};
 
@@ -1460,17 +1461,6 @@ fn accent_text<'a>(text: &'a str, text_line_skip: u16) -> Paragraph<'a> {
         .scroll((text_line_skip, 0))
 }
 
-/// Strips a leading `name` from `comment`, along with an optional `:`
-/// and surrounding whitespace, so a self-labeled tool result like
-/// `"run_tests: ok"` doesn't repeat the name already shown next to it.
-fn strip_redundant_name<'a>(comment: &'a str, name: &str) -> &'a str {
-    let Some(rest) = comment.strip_prefix(name) else {
-        return comment;
-    };
-    let rest = rest.trim_start();
-    rest.strip_prefix(':').unwrap_or(rest).trim_start()
-}
-
 /// Renders a tool cluster as a summary line followed by its visible steps.
 /// `keep_live` defers the collapse of a just-settled cluster while it is
 /// still part of the current turn (no user message sent since).
@@ -1539,7 +1529,11 @@ fn render_tool_cluster(
             Step::ToolCall(entry) => {
                 let (status_icon, _, _) = status_style(entry.status);
                 let status_icon = animated_status_icon(entry.status, spinner_phase, status_icon);
-                let comment = entry.result.as_deref().and_then(|r| r.lines().next());
+                let comment = if entry.status == Status::Failed {
+                    entry.result.as_deref().and_then(|r| r.lines().next())
+                } else {
+                    None
+                };
                 let comment = comment.map(|c| strip_redundant_name(c, &entry.name));
                 let text = match comment {
                     Some(comment) if !comment.is_empty() => {
@@ -2361,11 +2355,13 @@ mod handle_key_tests {
 
 #[cfg(test)]
 mod session_event_tests {
-    use super::{App, map_tool_call_status, render_tool_cluster, strip_redundant_name};
+    use super::{App, map_tool_call_status, render_tool_cluster};
     use agent_client_protocol::schema::v1::{
         ContentBlock, TextContent, ToolCallId, ToolCallStatus,
     };
-    use kid_agentic_coding::{Message, SessionEvent, Status, Step, ToolCluster};
+    use kid_agentic_coding::{
+        Message, SessionEvent, Status, Step, ToolCluster, strip_redundant_name,
+    };
 
     fn thought(text: &str) -> SessionEvent {
         SessionEvent::Thought(Box::new(ContentBlock::Text(TextContent::new(
@@ -2592,7 +2588,7 @@ mod session_event_tests {
     }
 
     #[test]
-    fn tool_cluster_renders_result_on_the_same_line_as_the_tool_call() {
+    fn successful_tool_call_hides_result_inline() {
         let mut app = App::new();
         app.handle_session_event(SessionEvent::ToolCall {
             id: ToolCallId::new("call-1".to_owned()),
@@ -2603,23 +2599,52 @@ mod session_event_tests {
         });
 
         let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0, 80);
-        assert!(rendered.lines.iter().any(|line| {
-            let text = line.to_string();
-            text.contains("Shell command") && text.contains("command output")
-        }));
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("Shell command"))
+        );
+        assert!(
+            !rendered
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("command output"))
+        );
 
         let entry = nth_tool_call(tool_cluster(&app, 0), 0);
         assert_eq!(entry.result.as_deref(), Some("command output"));
     }
 
     #[test]
-    fn tool_cluster_strips_redundant_name_prefix_from_result_comment() {
+    fn failed_tool_call_renders_result_on_the_same_line_as_the_tool_call() {
+        let mut app = App::new();
+        app.handle_session_event(SessionEvent::ToolCall {
+            id: ToolCallId::new("call-1".to_owned()),
+            title: "Shell command".to_owned(),
+            parameters: None,
+            status: ToolCallStatus::Failed,
+            result: Some("command output".to_owned()),
+        });
+
+        let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0, 80);
+        assert!(rendered.lines.iter().any(|line| {
+            let text = line.to_string();
+            text.contains("Shell command") && text.contains("command output")
+        }));
+
+        let entry = nth_tool_call(tool_cluster(&app, 0), 0);
+        assert_eq!(entry.status, Status::Failed);
+    }
+
+    #[test]
+    fn tool_cluster_strips_redundant_name_prefix_from_failure_comment() {
         let mut app = App::new();
         app.handle_session_event(SessionEvent::ToolCall {
             id: ToolCallId::new("call-1".to_owned()),
             title: "run_tests".to_owned(),
             parameters: None,
-            status: ToolCallStatus::Completed,
+            status: ToolCallStatus::Failed,
             result: Some(
                 "run_tests: ok (12 words) with a long result comment that must wrap".to_owned(),
             ),

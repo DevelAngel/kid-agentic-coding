@@ -17,7 +17,7 @@ pub use mcp::FsSocketDir;
 pub use bubble_layout::{Alignment, Bubble, BubbleLayout, ScrollAnchor, VisibleBubble};
 pub use chat_log::{
     AgentMessage, AutoMessage, ChatLog, EntryId, Message, SessionNotice, SessionNoticeKind, Status,
-    Step, ToolCallEntry, ToolCluster, UserMessage,
+    Step, ToolCallEntry, ToolCluster, UserMessage, strip_redundant_name,
 };
 pub use markdown::render as render_markdown;
 pub use prompt::{PromptError, PromptRunner};
