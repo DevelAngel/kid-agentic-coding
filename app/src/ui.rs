@@ -836,7 +836,9 @@ async fn run_app(
                     SessionEvent::CommitFix {
                         instructions,
                         amend,
-                        context,
+                        tldr,
+                        why,
+                        what,
                         cwd,
                     } if fix_session.is_none() => {
                         fix_session = Some(
@@ -848,7 +850,9 @@ async fn run_app(
                                 CommitFixRequest {
                                     instructions,
                                     amend,
-                                    context,
+                                    tldr,
+                                    why,
+                                    what,
                                     cwd,
                                 },
                             )
@@ -866,7 +870,7 @@ async fn run_app(
                         app.chat_log.push_session_transition(PROGRAMMING_WORKFLOW);
                         app.begin_acting_turn();
                         let resume_prompt = format!(
-                            "[AUTO: Commit Fix Session Closed]\nThe commit-fix session committed and closed. Commit message used:\n{commit_message}"
+                            "## Commit message used\n\n{commit_message}"
                         );
                         app.chat_log.push_auto(resume_prompt.clone());
                         let _ = main_session.send_prompt(resume_prompt);
@@ -891,12 +895,15 @@ async fn run_app(
 }
 
 /// The commit-fix request: the workflow instructions plus the main
-/// session's amend decision and story-telling context, grouped into one
-/// payload so the opener stays within the argument-count lint budget.
+/// session's amend decision and tldr/why/what story-telling context,
+/// grouped into one payload so the opener stays within the argument-count
+/// lint budget.
 struct CommitFixRequest {
     instructions: String,
     amend: bool,
-    context: String,
+    tldr: String,
+    why: String,
+    what: String,
     cwd: Option<PathBuf>,
 }
 
@@ -914,7 +921,9 @@ async fn open_commit_fix_session(
     let CommitFixRequest {
         instructions,
         amend,
-        context,
+        tldr,
+        why,
+        what,
         cwd,
     } = fix;
     main_session.cancel();
@@ -943,7 +952,7 @@ async fn open_commit_fix_session(
 
     let amend_decision = if amend { "yes" } else { "no" };
     let seed_prompt = format!(
-        "{instructions}\n\n[AUTO: Amend Decision from Main Session]\n{amend_decision}\n\n[AUTO: Story-telling Context from Main Session]\n{context}"
+        "{instructions}\n\nCommit Amend Decision: {amend_decision}\n\n## TL;DR\n\n{tldr}\n\n## Why is this change needed?\n\n{why}\n\n## What does this change do?\n\n{what}"
     );
     tracing::debug!("sending commit-fix seed prompt");
 
