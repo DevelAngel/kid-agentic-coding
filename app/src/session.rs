@@ -3,7 +3,7 @@
 //! Protocol-facing logic only; the channel plumbing consumers see lives in
 //! [`crate::bridge`].
 
-use crate::bridge::{SessionEvent, SessionHandle, next_session_id};
+use crate::bridge::{CommitFixVerdict, SessionEvent, SessionHandle, next_session_id};
 use crate::mcp;
 use crate::mcp::{BridgeSockets, FsSocketDir, SocketFileGuard};
 use crate::prompt::PromptRunner;
@@ -19,7 +19,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
@@ -29,10 +29,16 @@ use std::ffi::OsStr;
 use std::fs;
 use std::future;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Working directory the agent session operates in. `.` ties the session to
 /// the current process's working directory.
 const SESSION_ROOT: &str = ".";
+
+/// How long the commit-fix bridge connection waits for the UI to decide
+/// whether the request opened a fix session. The verdict is decided
+/// synchronously by the UI loop, so this only bounds a stuck consumer.
+const COMMIT_FIX_VERDICT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Starts an interactive ACP session that stays open across multiple prompts.
 ///
@@ -310,60 +316,96 @@ async fn run_session(
                         if let Some(Ok((mut stream, _))) = workflow {
                             tracing::debug!("commit-fix workflow event received");
                             let mut message = Vec::new();
-                            if stream.read_to_end(&mut message).await.is_ok()
-                                && let Ok(value) = serde_json::from_slice::<Value>(&message)
-                            {
-                                let event_name = value.get("event").and_then(Value::as_str);
-                                if event_name == Some(mcp::COMMIT_FIX_EVENT) {
-                                    let instructions = value
-                                        .get("instructions")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or_default()
-                                        .to_owned();
-                                    let amend = value
-                                        .get("amend")
-                                        .and_then(Value::as_bool)
-                                        .unwrap_or(false);
-                                    let tldr = value
-                                        .get("tldr")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or_default()
-                                        .to_owned();
-                                    let why = value
-                                        .get("why")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or_default()
-                                        .to_owned();
-                                    let what = value
-                                        .get("what")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or_default()
-                                        .to_owned();
-                                    tracing::info!(%amend, %tldr, %why, %what, "commit-fix session event received");
-                                    let _ = session_event_tx.send(SessionEvent::CommitFix {
-                                        instructions,
-                                        amend,
-                                        tldr,
-                                        why,
-                                        what,
-                                        cwd: value
-                                            .get("cwd")
-                                            .and_then(Value::as_str)
-                                            .map(PathBuf::from),
-                                    });
-                                } else if event_name == Some(mcp::COMMIT_FIX_DONE_EVENT) {
-                                    let commit_message = value
-                                        .get("commit_message")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or_default()
-                                        .to_owned();
-                                    tracing::info!(%commit_message, "commit-fix-done session event received");
-                                    if turn_active {
-                                        pending_commit_fix_done = Some(commit_message);
-                                    } else {
-                                        let _ = session_event_tx.send(SessionEvent::CommitFixDone {
-                                            commit_message,
-                                        });
+                            if stream.read_to_end(&mut message).await.is_ok() {
+                                match serde_json::from_slice::<Value>(&message) {
+                                    Ok(value) => {
+                                        let event_name =
+                                            value.get("event").and_then(Value::as_str);
+                                        if event_name == Some(mcp::COMMIT_FIX_EVENT) {
+                                            let (verdict_tx, verdict_rx) = oneshot::channel();
+                                            match parse_commit_fix_event(&value) {
+                                                Ok(fields) => {
+                                                    tracing::info!(
+                                                        amend = fields.amend,
+                                                        tldr = %fields.tldr,
+                                                        why = %fields.why,
+                                                        what = %fields.what,
+                                                        "commit-fix session event received"
+                                                    );
+                                                    if session_event_tx
+                                                        .send(SessionEvent::CommitFix {
+                                                            instructions: fields.instructions,
+                                                            amend: fields.amend,
+                                                            tldr: fields.tldr,
+                                                            why: fields.why,
+                                                            what: fields.what,
+                                                            cwd: fields.cwd,
+                                                            verdict: verdict_tx,
+                                                        })
+                                                        .is_err()
+                                                    {
+                                                        let _ = send_workflow_ack(
+                                                            &mut stream,
+                                                            &CommitFixVerdict::Rejected(
+                                                                "session is shutting down"
+                                                                    .to_owned(),
+                                                            ),
+                                                        )
+                                                        .await;
+                                                    } else {
+                                                        tokio::spawn(dispatch_commit_fix(
+                                                            stream,
+                                                            verdict_rx,
+                                                        ));
+                                                    }
+                                                }
+                                                Err(reason) => {
+                                                    tracing::warn!(
+                                                        %reason,
+                                                        "rejecting commit-fix session event"
+                                                    );
+                                                    let _ = send_workflow_ack(
+                                                        &mut stream,
+                                                        &CommitFixVerdict::Rejected(reason),
+                                                    )
+                                                    .await;
+                                                }
+                                            }
+                                        } else if event_name == Some(mcp::COMMIT_FIX_DONE_EVENT) {
+                                            let commit_message = value
+                                                .get("commit_message")
+                                                .and_then(Value::as_str)
+                                                .unwrap_or_default()
+                                                .to_owned();
+                                            tracing::info!(%commit_message, "commit-fix-done session event received");
+                                            if turn_active {
+                                                pending_commit_fix_done = Some(commit_message);
+                                            } else {
+                                                let _ = session_event_tx
+                                                    .send(SessionEvent::CommitFixDone {
+                                                        commit_message,
+                                                    });
+                                            }
+                                        } else {
+                                            let _ = send_workflow_ack(
+                                                &mut stream,
+                                                &CommitFixVerdict::Rejected(format!(
+                                                    "unhandled workflow event '{}'",
+                                                    event_name.unwrap_or("<missing>")
+                                                )),
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(%err, "rejecting malformed workflow event");
+                                        let _ = send_workflow_ack(
+                                            &mut stream,
+                                            &CommitFixVerdict::Rejected(format!(
+                                                "workflow event is not valid JSON: {err}"
+                                            )),
+                                        )
+                                        .await;
                                     }
                                 }
                             }
@@ -401,6 +443,104 @@ async fn run_session(
         let _ = event_tx.send(SessionEvent::Error(err.to_string()));
         tracing::error!(?err, "interactive session task ended with error");
     }
+}
+
+/// The validated fields of a `commit-fix` workflow event.
+#[derive(Debug)]
+struct CommitFixFields {
+    instructions: String,
+    amend: bool,
+    tldr: String,
+    why: String,
+    what: String,
+    cwd: Option<PathBuf>,
+}
+
+/// Validates a `commit-fix` workflow event: every field the fix session
+/// needs must be present and of the right type, so a partial request is
+/// rejected instead of silently starting a session with empty values.
+fn parse_commit_fix_event(value: &Value) -> Result<CommitFixFields, String> {
+    let instructions = commit_fix_string_field(value, "instructions")?;
+    let amend = value
+        .get("amend")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "missing or non-boolean field 'amend'".to_owned())?;
+    let tldr = commit_fix_string_field(value, "tldr")?;
+    let why = commit_fix_string_field(value, "why")?;
+    let what = commit_fix_string_field(value, "what")?;
+    let cwd = match value.get("cwd") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .map(PathBuf::from)
+                .ok_or_else(|| "field 'cwd' must be a string or null".to_owned())?,
+        ),
+    };
+    Ok(CommitFixFields {
+        instructions,
+        amend,
+        tldr,
+        why,
+        what,
+        cwd,
+    })
+}
+
+fn commit_fix_string_field(value: &Value, field: &str) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("missing or non-string field '{field}'"))
+}
+
+/// The single-line JSON ack for a commit-fix verdict, in the shape the
+/// requesting bridge connection parses.
+fn commit_fix_ack_line(verdict: &CommitFixVerdict) -> String {
+    let ack = match verdict {
+        CommitFixVerdict::Accepted => serde_json::json!({ "outcome": "accepted" }),
+        CommitFixVerdict::Ignored(reason) => {
+            serde_json::json!({ "outcome": "ignored", "reason": reason })
+        }
+        CommitFixVerdict::Rejected(reason) => {
+            serde_json::json!({ "outcome": "rejected", "reason": reason })
+        }
+    };
+    ack.to_string()
+}
+
+/// Writes the verdict back to the requesting bridge connection as one JSON
+/// line, which the connection reads until EOF.
+async fn send_workflow_ack(
+    stream: &mut tokio::net::UnixStream,
+    verdict: &CommitFixVerdict,
+) -> std::io::Result<()> {
+    stream
+        .write_all(format!("{}\n", commit_fix_ack_line(verdict)).as_bytes())
+        .await
+}
+
+/// Waits for the UI's verdict on a commit-fix request and writes it back to
+/// the requesting bridge connection, which half-closed its write side and
+/// stays readable until it gets the ack or times out. Runs in its own task
+/// because the verdict is decided by the UI loop, which would be blocked
+/// while the session loop's select waits here.
+async fn dispatch_commit_fix(
+    mut stream: tokio::net::UnixStream,
+    verdict_rx: oneshot::Receiver<CommitFixVerdict>,
+) {
+    let verdict = match tokio::time::timeout(COMMIT_FIX_VERDICT_TIMEOUT, verdict_rx).await {
+        Ok(Ok(verdict)) => verdict,
+        Ok(Err(_)) => CommitFixVerdict::Rejected("session is shutting down".to_owned()),
+        Err(_) => CommitFixVerdict::Rejected(
+            "the session did not answer the commit-fix request in time".to_owned(),
+        ),
+    };
+    let _ = send_workflow_ack(&mut stream, &verdict).await;
+    // The requesting bridge connection reads until EOF; dropping the stream
+    // sends it.
+    drop(stream);
 }
 
 /// Dispatches one session update: forwards message chunks and permission
@@ -653,11 +793,28 @@ fn tool_call_result(
 
 #[cfg(test)]
 mod tests {
-    use super::{permission_request_details, tool_call_result, tool_call_target, tool_call_title};
+    use super::{
+        commit_fix_ack_line, parse_commit_fix_event, permission_request_details, tool_call_result,
+        tool_call_target, tool_call_title,
+    };
+    use crate::bridge::CommitFixVerdict;
     use agent_client_protocol::schema::v1::{
         ContentBlock, TextContent, ToolCallContent, ToolCallLocation, ToolCallStatus,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     };
+    use std::path::PathBuf;
+
+    fn commit_fix_payload(cwd: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "event": "commit-fix",
+            "instructions": "Commit the current changes.",
+            "amend": false,
+            "tldr": "Fix the off-by-one in the parser.",
+            "why": "Trailing newlines were doubled.",
+            "what": "Trim one trailing newline before the split.",
+            "cwd": cwd,
+        })
+    }
 
     fn text_content(text: &str) -> ToolCallContent {
         ToolCallContent::from(ContentBlock::Text(TextContent::new(text)))
@@ -835,6 +992,94 @@ mod tests {
         assert_eq!(
             permission_request_details(&tool_call),
             ("Tool call".to_owned(), None)
+        );
+    }
+
+    #[test]
+    fn commit_fix_event_parses_a_full_payload() {
+        let fields =
+            parse_commit_fix_event(&commit_fix_payload(Some("app"))).expect("payload parses");
+
+        assert_eq!(fields.instructions, "Commit the current changes.");
+        assert!(!fields.amend);
+        assert_eq!(fields.tldr, "Fix the off-by-one in the parser.");
+        assert_eq!(fields.why, "Trailing newlines were doubled.");
+        assert_eq!(fields.what, "Trim one trailing newline before the split.");
+        assert_eq!(fields.cwd, Some(PathBuf::from("app")));
+    }
+
+    #[test]
+    fn commit_fix_event_allows_missing_or_null_cwd() {
+        let without_cwd = serde_json::json!({
+            "event": "commit-fix",
+            "instructions": "Commit the current changes.",
+            "amend": true,
+            "tldr": "TL;DR",
+            "why": "Why",
+            "what": "What",
+        });
+        let fields = parse_commit_fix_event(&without_cwd).expect("payload parses");
+        assert!(fields.amend);
+        assert_eq!(fields.cwd, None);
+
+        let fields = parse_commit_fix_event(&commit_fix_payload(None)).expect("payload parses");
+        assert_eq!(fields.cwd, None);
+    }
+
+    #[test]
+    fn commit_fix_event_rejects_missing_or_mistyped_fields() {
+        let missing_instructions = serde_json::json!({
+            "event": "commit-fix",
+            "amend": false,
+            "tldr": "TL;DR",
+            "why": "Why",
+            "what": "What",
+        });
+        assert!(
+            parse_commit_fix_event(&missing_instructions)
+                .unwrap_err()
+                .contains("instructions")
+        );
+
+        let mut value = commit_fix_payload(None);
+        value["amend"] = serde_json::json!("yes");
+        assert!(
+            parse_commit_fix_event(&value)
+                .unwrap_err()
+                .contains("amend")
+        );
+
+        for field in ["tldr", "why", "what"] {
+            let mut value = commit_fix_payload(None);
+            value[field] = serde_json::json!(42);
+            assert!(
+                parse_commit_fix_event(&value).unwrap_err().contains(field),
+                "field {field} must be rejected"
+            );
+        }
+
+        let mut value = commit_fix_payload(None);
+        value["cwd"] = serde_json::json!(7);
+        assert!(parse_commit_fix_event(&value).unwrap_err().contains("cwd"));
+    }
+
+    #[test]
+    fn commit_fix_ack_lines_are_single_line_json() {
+        assert_eq!(
+            commit_fix_ack_line(&CommitFixVerdict::Accepted),
+            r#"{"outcome":"accepted"}"#
+        );
+        assert_eq!(
+            commit_fix_ack_line(&CommitFixVerdict::Ignored(
+                "a fix session is already active".to_owned()
+            )),
+            r#"{"outcome":"ignored","reason":"a fix session is already active"}"#
+        );
+        assert_eq!(
+            commit_fix_ack_line(&CommitFixVerdict::Rejected(
+                "missing or non-string field 'why'".to_owned()
+            )),
+            r#"{"outcome":"rejected","reason":"missing or non-string field 'why'"}"#
         );
     }
 }

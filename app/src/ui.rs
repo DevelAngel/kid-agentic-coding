@@ -2,8 +2,8 @@
 
 use crate::log_buffer::LogBuffer;
 use kid_agentic_coding::{
-    BubbleLayout, ChatLog, EntryId, Message, PromptRunner, ScrollAnchor, SessionEvent,
-    SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
+    BubbleLayout, ChatLog, CommitFixVerdict, EntryId, Message, PromptRunner, ScrollAnchor,
+    SessionEvent, SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
     strip_redundant_name,
 };
 use kid_agentic_coding::{FsSocketDir, render_markdown, start_interactive_session};
@@ -207,8 +207,16 @@ impl App {
                 self.last_agent_message_entry_id = None;
                 self.confetti = Some(Confetti::new());
             }
-            SessionEvent::CommitFix { .. } => {
-                tracing::debug!("event: commit-fix");
+            SessionEvent::CommitFix { tldr, verdict, .. } => {
+                tracing::info!(%tldr, "ignoring commit-fix request; a fix session is already active or starting");
+                let _ = verdict.send(CommitFixVerdict::Ignored(format!(
+                    "a fix session is already active or starting, so the commit-fix request \
+                     '{tldr}' was not executed"
+                )));
+                self.chat_log.push_session_notice(
+                    SessionNoticeKind::Error,
+                    format!("commit-fix request ignored (fix session already active): {tldr}"),
+                );
             }
             SessionEvent::CommitFixDone { .. } => {
                 tracing::debug!("event: commit-fix-done");
@@ -840,7 +848,12 @@ async fn run_app(
                         why,
                         what,
                         cwd,
+                        verdict,
                     } if fix_session.is_none() => {
+                        // The request opens a fix session; report that before
+                        // the (potentially long) open below, so the requesting
+                        // bridge connection doesn't wait on the whole open.
+                        let _ = verdict.send(CommitFixVerdict::Accepted);
                         fix_session = Some(
                             open_commit_fix_session(
                                 app,
@@ -1707,7 +1720,7 @@ mod handle_key_tests {
         ToolCallStatus,
     };
     use kid_agentic_coding::{
-        Message, SessionEvent, SessionHandle, SessionNoticeKind, Status, Step,
+        CommitFixVerdict, Message, SessionEvent, SessionHandle, SessionNoticeKind, Status, Step,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::oneshot;
@@ -1751,6 +1764,36 @@ mod handle_key_tests {
             Message::SessionNotice(notice)
                 if notice.kind == SessionNoticeKind::Error
                     && notice.text == "Session failed: connection lost"
+        ));
+    }
+
+    #[test]
+    fn commit_fix_request_is_reported_ignored_with_a_notice() {
+        let mut app = App::new();
+        let (verdict_tx, mut verdict_rx) = oneshot::channel();
+
+        app.handle_session_event(SessionEvent::CommitFix {
+            instructions: "Commit the current changes.".to_owned(),
+            amend: false,
+            tldr: "Second commit-fix request".to_owned(),
+            why: "A fix session is already active.".to_owned(),
+            what: "Request a second fix session.".to_owned(),
+            cwd: None,
+            verdict: verdict_tx,
+        });
+
+        let verdict = verdict_rx.try_recv().expect("a verdict was reported");
+        assert!(matches!(
+            verdict,
+            CommitFixVerdict::Ignored(reason) if reason.contains("already active")
+        ));
+        assert!(matches!(
+            &app.chat_log.messages()[0],
+            Message::SessionNotice(notice)
+                if notice.kind == SessionNoticeKind::Error
+                    && notice.text
+                        == "commit-fix request ignored (fix session already active): Second \
+                            commit-fix request"
         ));
     }
 
