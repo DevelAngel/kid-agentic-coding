@@ -11,6 +11,7 @@ use kid_agentic_coding::{FsSocketDir, render_markdown, start_interactive_session
 use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig};
 use ansi_to_tui::IntoText;
+use commit_fix_contract::CommitFixRequest;
 use rand::RngExt;
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -38,7 +39,6 @@ use std::collections::HashMap;
 use std::future;
 use std::io::{self, Stdout};
 use std::mem;
-use std::path::PathBuf;
 use std::time::Duration;
 
 const USER_PANEL_BG: Color = Color::Rgb(30, 30, 38);
@@ -207,7 +207,8 @@ impl App {
                 self.last_agent_message_entry_id = None;
                 self.confetti = Some(Confetti::new());
             }
-            SessionEvent::CommitFix { tldr, verdict, .. } => {
+            SessionEvent::CommitFix { request, verdict } => {
+                let tldr = request.tldr;
                 tracing::info!(%tldr, "ignoring commit-fix request; a fix session is already active or starting");
                 let _ = verdict.send(CommitFixVerdict::Ignored {
                     reason: format!(
@@ -844,12 +845,7 @@ async fn run_app(
             Some(session_event) = main_session.recv_event() => {
                 match session_event {
                     SessionEvent::CommitFix {
-                        instructions,
-                        amend,
-                        tldr,
-                        why,
-                        what,
-                        cwd,
+                        request,
                         verdict,
                     } if fix_session.is_none() => {
                         // The request opens a fix session; report that before
@@ -862,14 +858,7 @@ async fn run_app(
                                 main_session,
                                 agent_config,
                                 fs_socket_dir.clone(),
-                                CommitFixRequest {
-                                    instructions,
-                                    amend,
-                                    tldr,
-                                    why,
-                                    what,
-                                    cwd,
-                                },
+                                request,
                             )
                             .await,
                         );
@@ -907,19 +896,6 @@ async fn run_app(
     }
 
     Ok(())
-}
-
-/// The commit-fix request: the workflow instructions plus the main
-/// session's amend decision and tldr/why/what story-telling context,
-/// grouped into one payload so the opener stays within the argument-count
-/// lint budget.
-struct CommitFixRequest {
-    instructions: String,
-    amend: bool,
-    tldr: String,
-    why: String,
-    what: String,
-    cwd: Option<PathBuf>,
 }
 
 /// Cancels the main session's current turn, waits for it to actually stop,
@@ -1721,6 +1697,7 @@ mod handle_key_tests {
         ContentBlock, PermissionOption, PermissionOptionKind, StopReason, TextContent, ToolCallId,
         ToolCallStatus,
     };
+    use commit_fix_contract::CommitFixRequest;
     use kid_agentic_coding::{
         CommitFixVerdict, Message, SessionEvent, SessionHandle, SessionNoticeKind, Status, Step,
     };
@@ -1775,12 +1752,14 @@ mod handle_key_tests {
         let (verdict_tx, mut verdict_rx) = oneshot::channel();
 
         app.handle_session_event(SessionEvent::CommitFix {
-            instructions: "Commit the current changes.".to_owned(),
-            amend: false,
-            tldr: "Second commit-fix request".to_owned(),
-            why: "A fix session is already active.".to_owned(),
-            what: "Request a second fix session.".to_owned(),
-            cwd: None,
+            request: CommitFixRequest {
+                instructions: "Commit the current changes.".to_owned(),
+                amend: false,
+                tldr: "Second commit-fix request".to_owned(),
+                why: "A fix session is already active.".to_owned(),
+                what: "Request a second fix session.".to_owned(),
+                cwd: None,
+            },
             verdict: verdict_tx,
         });
 
