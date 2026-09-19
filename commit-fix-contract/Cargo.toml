@@ -1,0 +1,11 @@
+[package]
+name = "kid-agentic-coding-commit-fix-contract"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "commit_fix_contract"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

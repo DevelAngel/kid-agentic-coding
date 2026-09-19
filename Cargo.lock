@@ -1450,6 +1450,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kid-agentic-coding-commit-fix-contract"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "kid-agentic-coding-confetti"
 version = "0.2.0"
 dependencies = [
