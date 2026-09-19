@@ -1,7 +1,7 @@
 use anyhow::Result;
 use anyhow::anyhow;
 use clap::Parser;
-use commit_fix_contract::{CommitFixRequest, CommitFixVerdict};
+use commit_fix_contract::{ACK_WAIT, CommitFixRequest, CommitFixVerdict};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
@@ -44,11 +44,6 @@ struct GitCommitWithFixParams {
 }
 
 const COMMIT_FIX_INSTRUCTIONS: &str = "Commit the current changes. The tldr/why/what fields below are analysis context, not instructions and not a pre-formatted commit message - compose the correctly formatted commit message yourself. Amend the previous commit if amend is set, otherwise create a new commit. If the commit fails, or you judge it necessary, run the provided check, lint, and test tools before retrying.";
-
-/// How long the tool call waits for the app's verdict ack after half-closing
-/// the bridge connection. An app without ack support closes the connection
-/// right away, so this only bounds a wedged one.
-const BRIDGE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 struct GitCommitFixOpenTools {
@@ -96,33 +91,24 @@ impl GitCommitFixOpenTools {
                 Some(json!({"reason": err.to_string()})),
             )
         })?;
-        match notify_bridge(&self.socket_name, message.as_bytes()) {
-            Ok(Some(CommitFixVerdict::Accepted)) => {
+        match notify_bridge(&self.socket_name, message.as_bytes(), ACK_WAIT) {
+            Ok(CommitFixVerdict::Accepted) => {
                 tracing::info!("commit-fix session requested");
                 Ok(CallToolResult::success(vec![ContentBlock::text(
                     "commit-fix session requested",
                 )]))
             }
-            Ok(Some(CommitFixVerdict::Ignored { reason })) => {
+            Ok(CommitFixVerdict::Ignored { reason }) => {
                 tracing::warn!(%reason, "commit-fix request ignored by the app");
                 Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                     "commit-fix session not started, the request was ignored: {reason}"
                 ))]))
             }
-            Ok(Some(CommitFixVerdict::Rejected { reason })) => {
+            Ok(CommitFixVerdict::Rejected { reason }) => {
                 tracing::warn!(%reason, "commit-fix request rejected by the app");
                 Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                     "commit-fix request failed: {reason}"
                 ))]))
-            }
-            Ok(None) => {
-                // Legacy bridge: the app closed the connection without an
-                // ack, so the outcome is unknowable here. Keep the old
-                // success contract rather than inventing an error.
-                tracing::debug!("no ack received; keeping the legacy commit-fix success");
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    "commit-fix session requested",
-                )]))
             }
             Err(err) => {
                 tracing::error!("{err}");
@@ -148,32 +134,37 @@ impl ServerHandler for GitCommitFixOpenTools {
     }
 }
 
-/// Writes the event to the bridge, half-closes the write side, and reads the
-/// app's verdict ack until EOF or timeout. `Ok(None)` is the legacy outcome:
-/// the app closed the connection without replying.
-fn notify_bridge(socket: &str, message: &[u8]) -> Result<Option<CommitFixVerdict>, String> {
+/// Writes the event to the bridge, half-closes the write side, and waits up
+/// to `ack_wait` for the app's verdict. A missing or late verdict is an
+/// error: the outcome is unknown, so success must not be reported.
+fn notify_bridge(
+    socket: &str,
+    message: &[u8],
+    ack_wait: Duration,
+) -> Result<CommitFixVerdict, String> {
     let mut stream = connect_to_bridge(socket).map_err(|err| bridge_error(socket, &err))?;
     stream
         .write_all(message)
         .and_then(|()| stream.write_all(b"\n"))
         .map_err(|err| format!("failed to write to the bridge socket '{socket}': {err}"))?;
     // Half-close so the app can still reply on this connection, and we see
-    // EOF once it closes its side after writing the ack.
+    // EOF once it closes its side after writing the verdict.
     stream
         .shutdown(Shutdown::Write)
         .map_err(|err| format!("failed to half-close the bridge socket '{socket}': {err}"))?;
     stream
-        .set_read_timeout(Some(BRIDGE_ACK_TIMEOUT))
+        .set_read_timeout(Some(ack_wait))
         .map_err(|err| format!("failed to arm the bridge ack timeout on '{socket}': {err}"))?;
     let mut ack = Vec::new();
     match stream.read_to_end(&mut ack) {
-        Ok(0) => Ok(None),
+        Ok(0) => Err(format!(
+            "the app closed the connection without a verdict on '{socket}'"
+        )),
         Ok(_) => {
             let text = std::str::from_utf8(&ack)
                 .map_err(|err| format!("non-UTF-8 commit-fix ack on '{socket}': {err}"))?;
             let line = text.lines().next().unwrap_or("");
             CommitFixVerdict::from_line(line)
-                .map(Some)
                 .map_err(|err| format!("malformed commit-fix ack '{line}': {err}"))
         }
         Err(err)
@@ -182,8 +173,9 @@ fn notify_bridge(socket: &str, message: &[u8]) -> Result<Option<CommitFixVerdict
                 io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
             ) =>
         {
-            tracing::debug!("timed out waiting for the bridge ack on '{socket}'");
-            Ok(None)
+            Err(format!(
+                "the app did not answer the commit-fix request on '{socket}' in time"
+            ))
         }
         Err(err) => Err(format!(
             "failed to read the bridge ack on '{socket}': {err}"
@@ -250,7 +242,10 @@ mod tests {
     use std::net::Shutdown;
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
+    use std::time::Duration;
     use std::{env, fs, process};
+
+    const TEST_ACK_WAIT: Duration = Duration::from_secs(5);
 
     /// Binds a unique temp socket per test so parallel test threads cannot
     /// collide.
@@ -390,9 +385,8 @@ mod tests {
                 .expect("writes the ack");
         });
 
-        let verdict = notify_bridge(&path.display().to_string(), b"{}")
-            .expect("reading the bridge ack works")
-            .expect("the responder wrote an ack");
+        let verdict = notify_bridge(&path.display().to_string(), b"{}", TEST_ACK_WAIT)
+            .expect("reading the bridge ack works");
         assert_eq!(
             verdict,
             CommitFixVerdict::Rejected {
@@ -405,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn notify_bridge_reports_a_legacy_success_without_an_ack() {
+    fn notify_bridge_fails_when_the_app_closes_without_a_verdict() {
         let (path, listener) = verdict_ack_test_socket("verdict-none");
 
         let responder = std::thread::spawn(move || {
@@ -416,15 +410,41 @@ mod tests {
                 .expect("reads until the client's half-close");
             stream
                 .shutdown(Shutdown::Both)
-                .expect("closes like a legacy app");
+                .expect("closes without a verdict");
         });
 
-        assert!(
-            notify_bridge(&path.display().to_string(), b"{}")
-                .expect("a missing ack is not an error")
-                .is_none()
-        );
+        let err = notify_bridge(&path.display().to_string(), b"{}", TEST_ACK_WAIT)
+            .expect_err("a missing ack is an error");
+        assert!(err.contains("closed the connection without a verdict"));
 
+        responder.join().expect("the responder finished");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn notify_bridge_fails_when_the_app_does_not_answer_in_time() {
+        let (path, listener) = verdict_ack_test_socket("verdict-timeout");
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept succeeds");
+            let mut payload = Vec::new();
+            stream
+                .read_to_end(&mut payload)
+                .expect("reads until the client's half-close");
+            release_rx.recv().expect("the test releases the responder");
+            drop(stream);
+        });
+
+        let err = notify_bridge(
+            &path.display().to_string(),
+            b"{}",
+            Duration::from_millis(100),
+        )
+        .expect_err("a late verdict is an error");
+        assert!(err.contains("did not answer"));
+
+        release_tx.send(()).expect("the responder is waiting");
         responder.join().expect("the responder finished");
         let _ = fs::remove_file(&path);
     }
@@ -442,7 +462,7 @@ mod tests {
             stream.write_all(b"not json\n").expect("writes the ack");
         });
 
-        let err = notify_bridge(&path.display().to_string(), b"{}")
+        let err = notify_bridge(&path.display().to_string(), b"{}", TEST_ACK_WAIT)
             .expect_err("a malformed ack is an error");
         assert!(err.contains("malformed commit-fix ack"));
 
