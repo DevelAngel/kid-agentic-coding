@@ -18,6 +18,7 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
+use commit_fix_contract::VERDICT_TIMEOUT;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
@@ -29,16 +30,10 @@ use std::ffi::OsStr;
 use std::fs;
 use std::future;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// Working directory the agent session operates in. `.` ties the session to
 /// the current process's working directory.
 const SESSION_ROOT: &str = ".";
-
-/// How long the commit-fix bridge connection waits for the UI to decide
-/// whether the request opened a fix session. The verdict is decided
-/// synchronously by the UI loop, so this only bounds a stuck consumer.
-const COMMIT_FIX_VERDICT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Starts an interactive ACP session that stays open across multiple prompts.
 ///
@@ -346,10 +341,10 @@ async fn run_session(
                                                     {
                                                         let _ = send_workflow_ack(
                                                             &mut stream,
-                                                            &CommitFixVerdict::Rejected(
-                                                                "session is shutting down"
+                                                            &CommitFixVerdict::Rejected {
+                                                                reason: "session is shutting down"
                                                                     .to_owned(),
-                                                            ),
+                                                            },
                                                         )
                                                         .await;
                                                     } else {
@@ -366,7 +361,7 @@ async fn run_session(
                                                     );
                                                     let _ = send_workflow_ack(
                                                         &mut stream,
-                                                        &CommitFixVerdict::Rejected(reason),
+                                                        &CommitFixVerdict::Rejected { reason },
                                                     )
                                                     .await;
                                                 }
@@ -389,10 +384,12 @@ async fn run_session(
                                         } else {
                                             let _ = send_workflow_ack(
                                                 &mut stream,
-                                                &CommitFixVerdict::Rejected(format!(
-                                                    "unhandled workflow event '{}'",
-                                                    event_name.unwrap_or("<missing>")
-                                                )),
+                                                &CommitFixVerdict::Rejected {
+                                                    reason: format!(
+                                                        "unhandled workflow event '{}'",
+                                                        event_name.unwrap_or("<missing>")
+                                                    ),
+                                                },
                                             )
                                             .await;
                                         }
@@ -401,9 +398,11 @@ async fn run_session(
                                         tracing::warn!(%err, "rejecting malformed workflow event");
                                         let _ = send_workflow_ack(
                                             &mut stream,
-                                            &CommitFixVerdict::Rejected(format!(
-                                                "workflow event is not valid JSON: {err}"
-                                            )),
+                                            &CommitFixVerdict::Rejected {
+                                                reason: format!(
+                                                    "workflow event is not valid JSON: {err}"
+                                                ),
+                                            },
                                         )
                                         .await;
                                     }
@@ -495,30 +494,14 @@ fn commit_fix_string_field(value: &Value, field: &str) -> Result<String, String>
         .ok_or_else(|| format!("missing or non-string field '{field}'"))
 }
 
-/// The single-line JSON ack for a commit-fix verdict, in the shape the
-/// requesting bridge connection parses.
-fn commit_fix_ack_line(verdict: &CommitFixVerdict) -> String {
-    let ack = match verdict {
-        CommitFixVerdict::Accepted => serde_json::json!({ "outcome": "accepted" }),
-        CommitFixVerdict::Ignored(reason) => {
-            serde_json::json!({ "outcome": "ignored", "reason": reason })
-        }
-        CommitFixVerdict::Rejected(reason) => {
-            serde_json::json!({ "outcome": "rejected", "reason": reason })
-        }
-    };
-    ack.to_string()
-}
-
 /// Writes the verdict back to the requesting bridge connection as one JSON
 /// line, which the connection reads until EOF.
 async fn send_workflow_ack(
     stream: &mut tokio::net::UnixStream,
     verdict: &CommitFixVerdict,
 ) -> std::io::Result<()> {
-    stream
-        .write_all(format!("{}\n", commit_fix_ack_line(verdict)).as_bytes())
-        .await
+    let line = verdict.to_line().map_err(std::io::Error::other)?;
+    stream.write_all(format!("{line}\n").as_bytes()).await
 }
 
 /// Waits for the UI's verdict on a commit-fix request and writes it back to
@@ -530,12 +513,14 @@ async fn dispatch_commit_fix(
     mut stream: tokio::net::UnixStream,
     verdict_rx: oneshot::Receiver<CommitFixVerdict>,
 ) {
-    let verdict = match tokio::time::timeout(COMMIT_FIX_VERDICT_TIMEOUT, verdict_rx).await {
+    let verdict = match tokio::time::timeout(VERDICT_TIMEOUT, verdict_rx).await {
         Ok(Ok(verdict)) => verdict,
-        Ok(Err(_)) => CommitFixVerdict::Rejected("session is shutting down".to_owned()),
-        Err(_) => CommitFixVerdict::Rejected(
-            "the session did not answer the commit-fix request in time".to_owned(),
-        ),
+        Ok(Err(_)) => CommitFixVerdict::Rejected {
+            reason: "session is shutting down".to_owned(),
+        },
+        Err(_) => CommitFixVerdict::Rejected {
+            reason: "the session did not answer the commit-fix request in time".to_owned(),
+        },
     };
     let _ = send_workflow_ack(&mut stream, &verdict).await;
     // The requesting bridge connection reads until EOF; dropping the stream
@@ -794,10 +779,9 @@ fn tool_call_result(
 #[cfg(test)]
 mod tests {
     use super::{
-        commit_fix_ack_line, parse_commit_fix_event, permission_request_details, tool_call_result,
-        tool_call_target, tool_call_title,
+        parse_commit_fix_event, permission_request_details, tool_call_result, tool_call_target,
+        tool_call_title,
     };
-    use crate::bridge::CommitFixVerdict;
     use agent_client_protocol::schema::v1::{
         ContentBlock, TextContent, ToolCallContent, ToolCallLocation, ToolCallStatus,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind,
@@ -1061,25 +1045,5 @@ mod tests {
         let mut value = commit_fix_payload(None);
         value["cwd"] = serde_json::json!(7);
         assert!(parse_commit_fix_event(&value).unwrap_err().contains("cwd"));
-    }
-
-    #[test]
-    fn commit_fix_ack_lines_are_single_line_json() {
-        assert_eq!(
-            commit_fix_ack_line(&CommitFixVerdict::Accepted),
-            r#"{"outcome":"accepted"}"#
-        );
-        assert_eq!(
-            commit_fix_ack_line(&CommitFixVerdict::Ignored(
-                "a fix session is already active".to_owned()
-            )),
-            r#"{"outcome":"ignored","reason":"a fix session is already active"}"#
-        );
-        assert_eq!(
-            commit_fix_ack_line(&CommitFixVerdict::Rejected(
-                "missing or non-string field 'why'".to_owned()
-            )),
-            r#"{"outcome":"rejected","reason":"missing or non-string field 'why'"}"#
-        );
     }
 }
