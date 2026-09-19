@@ -6,8 +6,8 @@
 use agent_client_protocol::schema::v1::{
     ContentBlock, PermissionOption, StopReason, ToolCallId, ToolCallStatus,
 };
+use commit_fix_contract::CommitFixRequest;
 pub use commit_fix_contract::CommitFixVerdict;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -66,12 +66,7 @@ pub enum SessionEvent {
 
     /// The commit workflow requested a dedicated fix session.
     CommitFix {
-        instructions: String,
-        amend: bool,
-        tldr: String,
-        why: String,
-        what: String,
-        cwd: Option<PathBuf>,
+        request: CommitFixRequest,
         /// The requesting bridge connection awaits this outcome so the
         /// agent's tool call reports whether a fix session actually
         /// started.

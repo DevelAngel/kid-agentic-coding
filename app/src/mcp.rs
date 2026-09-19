@@ -26,9 +26,6 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Stable name of the semantic event emitted by git-commit-fix-open.
-pub const COMMIT_FIX_EVENT: &str = "commit-fix";
-
 /// Stable name of the semantic event emitted when a commit-fix session closes.
 pub const COMMIT_FIX_DONE_EVENT: &str = "commit-fix-done";
 
