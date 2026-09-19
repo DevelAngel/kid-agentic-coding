@@ -324,16 +324,28 @@ async fn run_session(
                                         .get("amend")
                                         .and_then(Value::as_bool)
                                         .unwrap_or(false);
-                                    let context = value
-                                        .get("context")
+                                    let tldr = value
+                                        .get("tldr")
                                         .and_then(Value::as_str)
                                         .unwrap_or_default()
                                         .to_owned();
-                                    tracing::info!(%amend, %context, "commit-fix session event received");
+                                    let why = value
+                                        .get("why")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_owned();
+                                    let what = value
+                                        .get("what")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_owned();
+                                    tracing::info!(%amend, %tldr, %why, %what, "commit-fix session event received");
                                     let _ = session_event_tx.send(SessionEvent::CommitFix {
                                         instructions,
                                         amend,
-                                        context,
+                                        tldr,
+                                        why,
+                                        what,
                                         cwd: value
                                             .get("cwd")
                                             .and_then(Value::as_str)

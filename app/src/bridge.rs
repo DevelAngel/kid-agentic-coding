@@ -67,7 +67,9 @@ pub enum SessionEvent {
     CommitFix {
         instructions: String,
         amend: bool,
-        context: String,
+        tldr: String,
+        why: String,
+        what: String,
         cwd: Option<PathBuf>,
     },
 
