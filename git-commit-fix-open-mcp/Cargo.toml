@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+commit-fix-contract.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
