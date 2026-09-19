@@ -1434,6 +1434,7 @@ dependencies = [
  "clap-verbosity-flag",
  "color-eyre",
  "derive_more 1.0.0",
+ "kid-agentic-coding-commit-fix-contract",
  "nerdicons_rs",
  "rand 0.10.2",
  "ratatui",

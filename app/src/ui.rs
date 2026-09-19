@@ -209,10 +209,12 @@ impl App {
             }
             SessionEvent::CommitFix { tldr, verdict, .. } => {
                 tracing::info!(%tldr, "ignoring commit-fix request; a fix session is already active or starting");
-                let _ = verdict.send(CommitFixVerdict::Ignored(format!(
-                    "a fix session is already active or starting, so the commit-fix request \
-                     '{tldr}' was not executed"
-                )));
+                let _ = verdict.send(CommitFixVerdict::Ignored {
+                    reason: format!(
+                        "a fix session is already active or starting, so the commit-fix request \
+                         '{tldr}' was not executed"
+                    ),
+                });
                 self.chat_log.push_session_notice(
                     SessionNoticeKind::Error,
                     format!("commit-fix request ignored (fix session already active): {tldr}"),
@@ -1785,7 +1787,7 @@ mod handle_key_tests {
         let verdict = verdict_rx.try_recv().expect("a verdict was reported");
         assert!(matches!(
             verdict,
-            CommitFixVerdict::Ignored(reason) if reason.contains("already active")
+            CommitFixVerdict::Ignored { reason } if reason.contains("already active")
         ));
         assert!(matches!(
             &app.chat_log.messages()[0],
