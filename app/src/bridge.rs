@@ -71,6 +71,10 @@ pub enum SessionEvent {
         why: String,
         what: String,
         cwd: Option<PathBuf>,
+        /// The requesting bridge connection awaits this outcome so the
+        /// agent's tool call reports whether a fix session actually
+        /// started.
+        verdict: Sender<CommitFixVerdict>,
     },
 
     /// The fix session committed its changes, closing the commit-fix workflow.
@@ -84,6 +88,20 @@ pub enum SessionEvent {
 
     /// The session task ended because of an error.
     Error(String),
+}
+
+/// Outcome of a commit-fix request, reported back to the requesting bridge
+/// connection so the agent's tool call can surface it honestly.
+#[derive(Debug)]
+pub enum CommitFixVerdict {
+    /// No fix session was active; the request started one.
+    Accepted,
+    /// A fix session was already active or starting; the request was not
+    /// executed. The reason names the state that rejected it.
+    Ignored(String),
+    /// The request could not be honored at the session layer (malformed
+    /// payload, unknown event, or the session is shutting down).
+    Rejected(String),
 }
 
 /// Returned by [`SessionHandle::send_prompt`] when the session task has already ended.
