@@ -67,9 +67,8 @@ pub enum SessionEvent {
     /// The commit workflow requested a dedicated fix session.
     CommitFix {
         request: CommitFixRequest,
-        /// The requesting bridge connection awaits this outcome so the
-        /// agent's tool call reports whether a fix session actually
-        /// started.
+        /// The requesting bridge connection awaits this verdict, so every
+        /// request must be answered exactly once.
         verdict: Sender<CommitFixVerdict>,
     },
 

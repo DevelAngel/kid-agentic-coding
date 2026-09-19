@@ -439,8 +439,6 @@ async fn run_session(
     }
 }
 
-/// Writes the verdict back to the requesting bridge connection as one JSON
-/// line, which the connection reads until EOF.
 async fn send_workflow_ack(
     stream: &mut tokio::net::UnixStream,
     verdict: &CommitFixVerdict,
@@ -450,10 +448,9 @@ async fn send_workflow_ack(
 }
 
 /// Waits for the UI's verdict on a commit-fix request and writes it back to
-/// the requesting bridge connection, which half-closed its write side and
-/// stays readable until it gets the ack or times out. Runs in its own task
-/// because the verdict is decided by the UI loop, which would be blocked
-/// while the session loop's select waits here.
+/// the requesting bridge connection. Runs in its own task because the
+/// verdict is decided by the UI loop, which would be blocked while the
+/// session loop's select waits here.
 async fn dispatch_commit_fix(
     mut stream: tokio::net::UnixStream,
     verdict_rx: oneshot::Receiver<CommitFixVerdict>,
