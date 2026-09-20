@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["app", "commit-fix-contract", "confetti-mcp", "gh-mcp", "git-commit-fix-close-mcp", "git-commit-fix-open-mcp", "lorem-agent", "python-mcp", "rust-mcp"]
+members = ["app", "commit-fix-contract", "confetti-mcp", "gh-mcp", "git-commit-fix-close-mcp", "git-commit-fix-open-mcp", "log-buffer", "lorem-agent", "python-mcp", "rust-mcp"]
 
 [workspace.package]
 version = "0.2.0"
@@ -16,6 +16,7 @@ clap-verbosity-flag = { version = "3.0.4", features = ["tracing"] }
 color-eyre = "0.6.5"
 commit-fix-contract = { package = "kid-agentic-coding-commit-fix-contract", path = "commit-fix-contract" }
 derive_more = { version = "1", features = ["deref", "display"] }
+log-buffer = { package = "kid-agentic-coding-log-buffer", path = "log-buffer" }
 nerdicons_rs = "0.1"
 schemars = "1"
 serde = "1"

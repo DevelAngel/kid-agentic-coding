@@ -1435,6 +1435,7 @@ dependencies = [
  "color-eyre",
  "derive_more 1.0.0",
  "kid-agentic-coding-commit-fix-contract",
+ "kid-agentic-coding-log-buffer",
  "nerdicons_rs",
  "rand 0.10.2",
  "ratatui",
@@ -1516,6 +1517,13 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kid-agentic-coding-log-buffer"
+version = "0.2.0"
+dependencies = [
  "tracing-subscriber",
 ]
 
