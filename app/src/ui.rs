@@ -851,7 +851,7 @@ async fn run_app(
                         // The request opens a fix session; report that before
                         // the (potentially long) open below, so the requesting
                         // bridge connection doesn't wait on the whole open.
-                        let _ = verdict.send(CommitFixVerdict::Accepted);
+                        let _ = verdict.send(CommitFixVerdict::Opening);
                         fix_session = Some(
                             open_commit_fix_session(
                                 app,

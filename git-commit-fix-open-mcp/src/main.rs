@@ -92,7 +92,7 @@ impl GitCommitFixOpenTools {
             )
         })?;
         match notify_bridge(&self.socket_name, message.as_bytes(), ACK_WAIT) {
-            Ok(CommitFixVerdict::Accepted) => {
+            Ok(CommitFixVerdict::Opening) => {
                 tracing::info!("commit-fix session requested");
                 Ok(CallToolResult::success(vec![ContentBlock::text(
                     "commit-fix session requested",
@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn git_commit_with_fix_sends_the_request_and_reports_acceptance() {
+    async fn git_commit_with_fix_sends_the_request_and_reports_success() {
         let (path, listener) = verdict_ack_test_socket("tool-accept");
 
         let responder = std::thread::spawn(move || {
@@ -269,7 +269,7 @@ mod tests {
             stream
                 .read_to_string(&mut payload)
                 .expect("reads until the client's half-close");
-            let line = CommitFixVerdict::Accepted
+            let line = CommitFixVerdict::Opening
                 .to_line()
                 .expect("verdict encodes");
             stream

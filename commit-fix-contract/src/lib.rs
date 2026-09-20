@@ -37,9 +37,9 @@ impl CommitFixRequest {
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "lowercase")]
 pub enum CommitFixVerdict {
-    /// The app committed to opening a fix session. Sent before the open
-    /// completes, so the open itself can still fail.
-    Accepted,
+    /// The app is opening a fix session. Sent before the open completes,
+    /// so the open itself can still fail.
+    Opening,
     /// A fix session is already active or starting; the request was not
     /// executed.
     Ignored { reason: String },
