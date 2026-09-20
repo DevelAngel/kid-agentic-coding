@@ -1147,6 +1147,10 @@ impl DrawApp for Frame<'_> {
         let visible = layout.visible_bubbles().into_iter();
         let mut message_workflow = PROGRAMMING_WORKFLOW;
         for (index, (message, visible_bubble)) in messages.zip(visible).enumerate() {
+            if let Message::SessionTransition(t) = message {
+                message_workflow = t.workflow_name.as_str();
+            }
+
             let Some(visible_bubble) = visible_bubble else {
                 continue;
             };
@@ -1239,7 +1243,6 @@ impl DrawApp for Frame<'_> {
                     }
                     let text = Text::from(vec![Line::from(bar), Line::from(details)]);
                     self.render_widget(Paragraph::new(text), render_rect);
-                    message_workflow = t.workflow_name.as_str();
                 }
             }
         }
@@ -2935,5 +2938,107 @@ mod confetti_tests {
             app.confetti.as_ref().map(|confetti| confetti.frame),
             Some(0)
         );
+    }
+}
+
+#[cfg(test)]
+mod bubble_color_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+
+    const WIDTH: u16 = 40;
+    const HEIGHT: u16 = 16;
+    const BANNER_BAR: &str = "━";
+
+    /// Enough agent replies that the banner at the top of the log is
+    /// pushed fully out of the viewport, while both prompts stay visible.
+    const REPLIES_PAST_BANNER: usize = 2;
+
+    fn session_app(workflow: Option<&str>, agent_replies: usize) -> App {
+        let mut app = App::new();
+        if let Some(workflow) = workflow {
+            app.workflow_name = Some(workflow.to_owned());
+            app.chat_log.push_session_transition(workflow);
+        }
+        app.chat_log.push_auto("auto prompt");
+        app.chat_log.push_user("user prompt");
+        for reply in 0..agent_replies {
+            app.chat_log.push_agent(format!("agent reply {reply}"));
+        }
+        app
+    }
+
+    fn render(app: &mut App) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+        terminal.draw(|frame| frame.draw_app(app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn screen(buffer: &Buffer) -> String {
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn is_drawn(buffer: &Buffer, symbol: &str) -> bool {
+        buffer.content().iter().any(|cell| cell.symbol() == symbol)
+    }
+
+    fn color_of(buffer: &Buffer, symbol: &str) -> Option<Color> {
+        buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == symbol)
+            .map(|cell| cell.fg)
+    }
+
+    fn assert_prompt_colors(buffer: &Buffer, expected: Color) {
+        let screen = screen(buffer);
+        assert_eq!(color_of(buffer, USER_ICON), Some(expected), "\n{screen}");
+        assert_eq!(color_of(buffer, AUTO_ICON), Some(expected), "\n{screen}");
+    }
+
+    #[test]
+    fn prompts_keep_commit_fix_color_when_banner_is_scrolled_out() {
+        let mut app = session_app(Some(COMMIT_FIX_WORKFLOW), REPLIES_PAST_BANNER);
+
+        let buffer = render(&mut app);
+
+        assert!(
+            !is_drawn(&buffer, BANNER_BAR),
+            "banner must be out of view\n{}",
+            screen(&buffer)
+        );
+        assert_prompt_colors(&buffer, WORKFLOW_YELLOW);
+    }
+
+    #[test]
+    fn prompts_keep_commit_fix_color_when_banner_is_in_view() {
+        let mut app = session_app(Some(COMMIT_FIX_WORKFLOW), 0);
+
+        let buffer = render(&mut app);
+
+        assert!(
+            is_drawn(&buffer, BANNER_BAR),
+            "banner must be in view\n{}",
+            screen(&buffer)
+        );
+        assert_prompt_colors(&buffer, WORKFLOW_YELLOW);
+    }
+
+    #[test]
+    fn prompts_keep_main_color_without_banner() {
+        let mut app = session_app(None, REPLIES_PAST_BANNER);
+
+        let buffer = render(&mut app);
+
+        assert!(!is_drawn(&buffer, BANNER_BAR), "\n{}", screen(&buffer));
+        assert_prompt_colors(&buffer, WORKFLOW_TEAL);
     }
 }
