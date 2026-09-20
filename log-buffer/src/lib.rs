@@ -7,6 +7,9 @@ use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tracing_subscriber::fmt::MakeWriter;
 
+/// Tracing target of the lines an agent process writes to stderr.
+pub const AGENT_STDERR_TARGET: &str = "agent_stderr";
+
 /// Number of log lines kept; older lines are dropped once exceeded.
 const CAPACITY: usize = 500;
 

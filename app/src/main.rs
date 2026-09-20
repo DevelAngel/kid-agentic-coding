@@ -4,7 +4,7 @@ use clap::{Parser, ValueHint};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::Result;
 use kid_agentic_coding::{FsSocketDir, PromptRunner};
-use log_buffer::LogBuffer;
+use log_buffer::{AGENT_STDERR_TARGET, LogBuffer};
 use std::env;
 use std::path::PathBuf;
 use tracing::level_filters::LevelFilter;
@@ -82,7 +82,7 @@ fn env_filter(verbosity: &Verbosity<InfoLevel>, log_baseline: LevelFilter) -> En
     let directive = format!("kid_agentic_coding={verbosity}")
         .parse()
         .expect("crate name and level filter always form a valid directive");
-    let agent_stderr = "agent_stderr=debug"
+    let agent_stderr = format!("{AGENT_STDERR_TARGET}=debug")
         .parse()
         .expect("static log target is valid");
     EnvFilter::default()

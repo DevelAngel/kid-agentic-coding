@@ -13,6 +13,7 @@ use agent_client_protocol::{
     SessionMessage, UntypedMessage,
 };
 use ansi_to_tui::IntoText;
+use log_buffer::AGENT_STDERR_TARGET;
 
 use std::iter;
 use std::path::PathBuf;
@@ -288,7 +289,7 @@ impl PromptRunner {
                         .join("\n"),
                     Err(_) => line.to_string(),
                 };
-                tracing::debug!(target: "agent_stderr", "{clean_line}");
+                tracing::debug!(target: AGENT_STDERR_TARGET, "{clean_line}");
             }
         });
         Ok(agent)
