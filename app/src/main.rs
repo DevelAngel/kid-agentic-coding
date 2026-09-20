@@ -1,4 +1,3 @@
-mod log_buffer;
 mod ui;
 
 use clap::{Parser, ValueHint};

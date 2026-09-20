@@ -1,0 +1,10 @@
+[package]
+name = "kid-agentic-coding-log-buffer"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "log_buffer"
+
+[dependencies]
+tracing-subscriber.workspace = true

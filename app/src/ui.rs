@@ -1,12 +1,12 @@
 //! Interactive terminal UI for an ACP session.
 
-use crate::log_buffer::LogBuffer;
 use kid_agentic_coding::{
     BubbleLayout, ChatLog, CommitFixVerdict, EntryId, Message, PromptRunner, ScrollAnchor,
     SessionEvent, SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
     strip_redundant_name,
 };
 use kid_agentic_coding::{FsSocketDir, render_markdown, start_interactive_session};
+use log_buffer::LogBuffer;
 
 use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig};
