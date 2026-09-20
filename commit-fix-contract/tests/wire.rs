@@ -96,7 +96,7 @@ fn request_rejects_missing_or_mistyped_fields() {
 #[test]
 fn verdicts_have_a_pinned_single_line_wire_format() {
     let cases = [
-        (CommitFixVerdict::Accepted, r#"{"outcome":"accepted"}"#),
+        (CommitFixVerdict::Opening, r#"{"outcome":"opening"}"#),
         (
             CommitFixVerdict::Ignored {
                 reason: "busy".to_owned(),
