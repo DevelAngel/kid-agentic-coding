@@ -312,99 +312,52 @@ async fn run_session(
                             tracing::debug!("commit-fix workflow event received");
                             let mut message = Vec::new();
                             if stream.read_to_end(&mut message).await.is_ok() {
-                                match serde_json::from_slice::<Value>(&message) {
-                                    Ok(value) => {
-                                        let event_name =
-                                            value.get("event").and_then(Value::as_str);
-                                        if event_name == Some(COMMIT_FIX_EVENT) {
-                                            let (verdict_tx, verdict_rx) = oneshot::channel();
-                                            match serde_json::from_value::<CommitFixRequest>(value) {
-                                                Ok(request) => {
-                                                    tracing::info!(
-                                                        amend = request.amend,
-                                                        tldr = %request.tldr,
-                                                        why = %request.why,
-                                                        what = %request.what,
-                                                        "commit-fix session event received"
-                                                    );
-                                                    if session_event_tx
-                                                        .send(SessionEvent::CommitFix {
-                                                            request,
-                                                            verdict: verdict_tx,
-                                                        })
-                                                        .is_err()
-                                                    {
-                                                        let _ = send_workflow_ack(
-                                                            &mut stream,
-                                                            &CommitFixVerdict::Rejected {
-                                                                reason: "session is shutting down"
-                                                                    .to_owned(),
-                                                            },
-                                                        )
-                                                        .await;
-                                                    } else {
-                                                        tokio::spawn(dispatch_commit_fix(
-                                                            stream,
-                                                            verdict_rx,
-                                                        ));
-                                                    }
-                                                }
-                                                Err(err) => {
-                                                    tracing::warn!(
-                                                        %err,
-                                                        "rejecting commit-fix session event"
-                                                    );
-                                                    let _ = send_workflow_ack(
-                                                        &mut stream,
-                                                        &CommitFixVerdict::Rejected { reason: err.to_string() },
-                                                    )
-                                                    .await;
-                                                }
-                                            }
-                                        } else if event_name == Some(mcp::COMMIT_FIX_DONE_EVENT) {
-                                            let commit_message = value
-                                                .get("commit_message")
-                                                .and_then(Value::as_str)
-                                                .unwrap_or_default()
-                                                .to_owned();
-                                            tracing::info!(%commit_message, "commit-fix-done session event received");
-                                            if turn_active {
-                                                pending_commit_fix_done = Some(commit_message);
-                                            } else {
-                                                let _ = session_event_tx
-                                                    .send(SessionEvent::CommitFixDone {
-                                                        commit_message,
-                                                    });
-                                            }
+                                match WorkflowEvent::parse(&message) {
+                                    Ok(WorkflowEvent::CommitFix(request)) => {
+                                        tracing::info!(
+                                            amend = request.amend,
+                                            tldr = %request.tldr,
+                                            why = %request.why,
+                                            what = %request.what,
+                                            "commit-fix session event received"
+                                        );
+                                        let (verdict_tx, verdict_rx) = oneshot::channel();
+                                        let event = SessionEvent::CommitFix {
+                                            request,
+                                            verdict: verdict_tx,
+                                        };
+                                        if session_event_tx.send(event).is_ok() {
+                                            tokio::spawn(dispatch_commit_fix(stream, verdict_rx));
                                         } else {
                                             let _ = send_workflow_ack(
                                                 &mut stream,
                                                 &CommitFixVerdict::Rejected {
-                                                    reason: format!(
-                                                        "unhandled workflow event '{}'",
-                                                        event_name.unwrap_or("<missing>")
-                                                    ),
+                                                    reason: "session is shutting down".to_owned(),
                                                 },
                                             )
                                             .await;
                                         }
                                     }
-                                    Err(err) => {
-                                        tracing::warn!(%err, "rejecting malformed workflow event");
+                                    Ok(WorkflowEvent::CommitFixDone { commit_message }) => {
+                                        tracing::info!(%commit_message, "commit-fix-done session event received");
+                                        if turn_active {
+                                            pending_commit_fix_done = Some(commit_message);
+                                        } else {
+                                            let _ = session_event_tx
+                                                .send(SessionEvent::CommitFixDone { commit_message });
+                                        }
+                                    }
+                                    Err(reason) => {
+                                        tracing::warn!(%reason, "rejecting workflow event");
                                         let _ = send_workflow_ack(
                                             &mut stream,
-                                            &CommitFixVerdict::Rejected {
-                                                reason: format!(
-                                                    "workflow event is not valid JSON: {err}"
-                                                ),
-                                            },
+                                            &CommitFixVerdict::Rejected { reason },
                                         )
                                         .await;
                                     }
                                 }
                             }
                         }
-
                     }
 
                     update = session.read_update() => {
@@ -436,6 +389,37 @@ async fn run_session(
     if let Err(err) = result {
         let _ = event_tx.send(SessionEvent::Error(err.to_string()));
         tracing::error!(?err, "interactive session task ended with error");
+    }
+}
+
+/// A workflow event sent by one of the workflow MCP tools.
+enum WorkflowEvent {
+    CommitFix(CommitFixRequest),
+    CommitFixDone { commit_message: String },
+}
+
+impl WorkflowEvent {
+    /// Parses one bridge message; the error is the reason to reject it with.
+    fn parse(message: &[u8]) -> Result<Self, String> {
+        let value = serde_json::from_slice::<Value>(message)
+            .map_err(|err| format!("workflow event is not valid JSON: {err}"))?;
+        match value.get("event").and_then(Value::as_str) {
+            Some(COMMIT_FIX_EVENT) => serde_json::from_value(value)
+                .map(Self::CommitFix)
+                .map_err(|err| err.to_string()),
+            Some(mcp::COMMIT_FIX_DONE_EVENT) => {
+                let commit_message = value
+                    .get("commit_message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                Ok(Self::CommitFixDone { commit_message })
+            }
+            other => Err(format!(
+                "unhandled workflow event '{}'",
+                other.unwrap_or("<missing>")
+            )),
+        }
     }
 }
 
