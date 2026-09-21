@@ -1,6 +1,9 @@
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use wire::{COMMIT_FIX_EVENT, CommitFixRequest, CommitFixVerdict};
+use wire::{
+    COMMIT_FIX_DONE_EVENT, COMMIT_FIX_EVENT, CommitFixDone, CommitFixRequest, CommitFixVerdict,
+    Confetti, WorkflowEvent,
+};
 
 fn request() -> CommitFixRequest {
     CommitFixRequest {
@@ -139,4 +142,115 @@ fn malformed_verdicts_fail_to_parse() {
             "accepted invalid verdict: {line}"
         );
     }
+}
+
+fn done() -> CommitFixDone {
+    CommitFixDone {
+        commit_message: "fix: trim\n\nBody.".to_owned(),
+    }
+}
+
+#[test]
+fn done_event_has_a_pinned_single_line_wire_format() {
+    assert_eq!(
+        done().to_line().unwrap(),
+        r#"{"event":"commit-fix-done","commit_message":"fix: trim\n\nBody."}"#
+    );
+}
+
+#[test]
+fn done_event_tag_matches_the_event_constant() {
+    let line = done().to_line().unwrap();
+    let value = serde_json::from_str::<Value>(&line).unwrap();
+
+    assert_eq!(value["event"], COMMIT_FIX_DONE_EVENT);
+}
+
+#[test]
+fn confetti_has_a_pinned_wire_format() {
+    assert_eq!(Confetti.to_line(), "confetti");
+}
+
+#[test]
+fn confetti_parses_only_its_exact_message() {
+    assert!(Confetti::parse(b"confetti\n").is_some());
+
+    for message in [
+        &b""[..],
+        b"confetti",
+        b"Confetti\n",
+        b"confetti\nconfetti\n",
+        b"{\"event\":\"confetti\"}\n",
+    ] {
+        assert!(
+            Confetti::parse(message).is_none(),
+            "accepted invalid confetti message: {message:?}"
+        );
+    }
+}
+
+#[test]
+fn workflow_event_parses_a_commit_fix_request() {
+    let line = request().to_line().unwrap();
+
+    assert_eq!(
+        WorkflowEvent::parse(line.as_bytes()),
+        Ok(WorkflowEvent::CommitFix(request()))
+    );
+}
+
+#[test]
+fn workflow_event_parses_a_commit_fix_done_event() {
+    let line = done().to_line().unwrap();
+
+    assert_eq!(
+        WorkflowEvent::parse(format!("{line}\n").as_bytes()),
+        Ok(WorkflowEvent::CommitFixDone(done()))
+    );
+}
+
+#[test]
+fn workflow_event_accepts_a_done_event_without_a_message() {
+    assert_eq!(
+        WorkflowEvent::parse(br#"{"event":"commit-fix-done"}"#),
+        Ok(WorkflowEvent::CommitFixDone(CommitFixDone {
+            commit_message: String::new()
+        }))
+    );
+}
+
+#[test]
+fn workflow_event_rejects_invalid_json() {
+    for message in [&b""[..], b"not json", b"confetti\n"] {
+        let reason = WorkflowEvent::parse(message).unwrap_err();
+
+        assert!(
+            reason.starts_with("workflow event is not valid JSON: "),
+            "unexpected reason: {reason}"
+        );
+    }
+}
+
+#[test]
+fn workflow_event_rejects_unknown_or_untagged_events() {
+    let cases = [
+        (
+            r#"{"event":"unknown"}"#,
+            "unhandled workflow event 'unknown'",
+        ),
+        (r#"{}"#, "unhandled workflow event '<missing>'"),
+        (r#"{"event":1}"#, "unhandled workflow event '<missing>'"),
+    ];
+
+    for (message, reason) in cases {
+        assert_eq!(
+            WorkflowEvent::parse(message.as_bytes()),
+            Err(reason.to_owned())
+        );
+    }
+}
+
+#[test]
+fn workflow_event_rejects_a_malformed_commit_fix_request() {
+    assert!(WorkflowEvent::parse(br#"{"event":"commit-fix"}"#).is_err());
 }
