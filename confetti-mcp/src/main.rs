@@ -15,15 +15,9 @@ use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabiliti
 use rmcp::{ErrorData as McpError, ServerHandler};
 use rmcp::{service, tool, tool_handler, tool_router, transport};
 use serde_json::json;
+use wire::{Confetti, bridge_error, connect_to_bridge, send_line};
 
-use std::io::{self, Write};
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::net::{SocketAddr, UnixStream};
-use std::path::Path;
-
-/// The message written to the bridge socket on every `confetti` invocation.
-/// Fixed content: the socket carries exactly one kind of event.
-const NOTIFY_MESSAGE: &[u8] = b"confetti\n";
+use std::io;
 
 #[derive(Parser, Debug)]
 #[command(about = "Standalone MCP server exposing the confetti tool")]
@@ -93,32 +87,7 @@ impl ServerHandler for ConfettiTools {
 /// write per invocation, no response expected.
 fn notify_bridge(socket: &str) -> io::Result<()> {
     let mut stream = connect_to_bridge(socket)?;
-    Write::write_all(&mut stream, NOTIFY_MESSAGE)
-}
-
-/// Identifiers containing a path separator address a filesystem socket
-/// (the sandboxed-agent fallback); bare identifiers are
-/// abstract-namespace names.
-fn connect_to_bridge(socket: &str) -> io::Result<UnixStream> {
-    if socket.contains('/') {
-        UnixStream::connect(Path::new(socket))
-    } else {
-        UnixStream::connect_addr(&SocketAddr::from_abstract_name(socket.as_bytes())?)
-    }
-}
-
-/// Full description of a failed bridge connection: which socket was
-/// attempted, the underlying OS error, and the fix for the common
-/// sandboxed-agent case. Used both for the startup probe log and for tool
-/// errors so the agent can relay actionable guidance to the user.
-fn bridge_error(socket: &str, err: &io::Error) -> String {
-    format!(
-        "bridge socket '{socket}' is unreachable: {err}. If the agent runs sandboxed, \
-         start kid-agentic-coding with --fs-socket-dir pointing at a writable \
-         directory that is mounted into the sandbox (e.g. \
-         $XDG_RUNTIME_DIR/kid-agentic-coding), because Linux abstract-namespace \
-         sockets cannot cross a sandbox boundary."
-    )
+    send_line(&mut stream, Confetti.to_line())
 }
 
 #[tokio::main]
@@ -142,37 +111,4 @@ async fn main() -> Result<()> {
     let running = service::serve_server(server, transport).await?;
     let _ = running.waiting().await;
     Ok(())
-}
-
-#[cfg(test)]
-mod bridge_tests {
-    use super::{bridge_error, connect_to_bridge};
-    use std::io::{self, ErrorKind};
-    use std::os::unix::net::UnixListener;
-    use std::{env, fs, process};
-
-    #[test]
-    fn startup_probe_reaches_a_listening_session() {
-        let path = env::temp_dir().join(format!(
-            "kid-agentic-coding-bridge-ping-{}.sock",
-            process::id()
-        ));
-        let _ = fs::remove_file(&path);
-        let _listener = UnixListener::bind(&path).expect("bind succeeds");
-
-        connect_to_bridge(&path.display().to_string()).expect("listening socket is reachable");
-
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn bridge_error_names_the_socket_and_the_fs_socket_dir_flag() {
-        let socket = format!("kid-agentic-coding-bridge-test-{}", process::id());
-        let err = io::Error::new(ErrorKind::NotFound, "no such file or directory");
-        let message = bridge_error(&socket, &err);
-
-        assert!(message.contains(&socket));
-        assert!(message.contains("--fs-socket-dir"));
-        assert!(message.contains("sandbox"));
-    }
 }
