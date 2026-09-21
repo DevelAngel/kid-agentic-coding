@@ -14,3 +14,4 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
+wire.workspace = true
