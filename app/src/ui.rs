@@ -11,7 +11,6 @@ use log_buffer::LogBuffer;
 use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig};
 use ansi_to_tui::IntoText;
-use commit_fix_contract::CommitFixRequest;
 use rand::RngExt;
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -34,6 +33,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task;
 use tokio::time::{self, MissedTickBehavior};
+use wire::CommitFixRequest;
 
 use std::collections::HashMap;
 use std::future;
@@ -1700,12 +1700,12 @@ mod handle_key_tests {
         ContentBlock, PermissionOption, PermissionOptionKind, StopReason, TextContent, ToolCallId,
         ToolCallStatus,
     };
-    use commit_fix_contract::CommitFixRequest;
     use kid_agentic_coding::{
         CommitFixVerdict, Message, SessionEvent, SessionHandle, SessionNoticeKind, Status, Step,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::oneshot;
+    use wire::CommitFixRequest;
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
