@@ -1,6 +1,6 @@
-use commit_fix_contract::{COMMIT_FIX_EVENT, CommitFixRequest, CommitFixVerdict};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use wire::{COMMIT_FIX_EVENT, CommitFixRequest, CommitFixVerdict};
 
 fn request() -> CommitFixRequest {
     CommitFixRequest {

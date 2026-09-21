@@ -6,12 +6,12 @@
 use agent_client_protocol::schema::v1::{
     ContentBlock, PermissionOption, StopReason, ToolCallId, ToolCallStatus,
 };
-use commit_fix_contract::CommitFixRequest;
-pub use commit_fix_contract::CommitFixVerdict;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::Sender;
+use wire::CommitFixRequest;
+pub use wire::CommitFixVerdict;
 
 /// Generates a process-unique id for [`SessionHandle`] lifecycle logging.
 /// Unrelated to the agent's own protocol-level session id.

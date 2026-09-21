@@ -18,12 +18,12 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
-use commit_fix_contract::{COMMIT_FIX_EVENT, CommitFixRequest, VERDICT_TIMEOUT};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
+use wire::{COMMIT_FIX_EVENT, CommitFixRequest, VERDICT_TIMEOUT};
 
 use std::collections::HashMap;
 use std::ffi::OsStr;

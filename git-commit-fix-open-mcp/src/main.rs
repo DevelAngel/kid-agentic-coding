@@ -1,7 +1,6 @@
 use anyhow::Result;
 use anyhow::anyhow;
 use clap::Parser;
-use commit_fix_contract::{ACK_WAIT, CommitFixRequest, CommitFixVerdict};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
@@ -11,6 +10,7 @@ use rmcp::{
     ErrorData as McpError, ServerHandler, service, tool, tool_handler, tool_router, transport,
 };
 use serde_json::json;
+use wire::{ACK_WAIT, CommitFixRequest, CommitFixVerdict};
 
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
@@ -237,13 +237,13 @@ mod tests {
         COMMIT_FIX_INSTRUCTIONS, GitCommitFixOpenTools, GitCommitWithFixParams, Parameters,
         bridge_error, connect_to_bridge, notify_bridge,
     };
-    use commit_fix_contract::{CommitFixRequest, CommitFixVerdict};
     use std::io::{self, ErrorKind, Read, Write};
     use std::net::Shutdown;
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
     use std::time::Duration;
     use std::{env, fs, process};
+    use wire::{CommitFixRequest, CommitFixVerdict};
 
     const TEST_ACK_WAIT: Duration = Duration::from_secs(5);
 

@@ -1434,8 +1434,8 @@ dependencies = [
  "clap-verbosity-flag",
  "color-eyre",
  "derive_more 1.0.0",
- "kid-agentic-coding-commit-fix-contract",
  "kid-agentic-coding-log-buffer",
+ "kid-agentic-coding-wire",
  "nerdicons_rs",
  "rand 0.10.2",
  "ratatui",
@@ -1449,14 +1449,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tui-markdown",
-]
-
-[[package]]
-name = "kid-agentic-coding-commit-fix-contract"
-version = "0.2.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -1510,7 +1502,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
- "kid-agentic-coding-commit-fix-contract",
+ "kid-agentic-coding-wire",
  "rmcp 3.1.4",
  "schemars 1.2.2",
  "serde",
@@ -1555,6 +1547,14 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "kid-agentic-coding-wire"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
