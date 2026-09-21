@@ -10,13 +10,13 @@ use rmcp::{
     ErrorData as McpError, ServerHandler, service, tool, tool_handler, tool_router, transport,
 };
 use serde_json::json;
-use wire::{ACK_WAIT, CommitFixRequest, CommitFixVerdict};
+use wire::{
+    ACK_WAIT, CommitFixRequest, CommitFixVerdict, bridge_error, connect_to_bridge, send_line,
+};
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::net::Shutdown;
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::net::{SocketAddr, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Parser)]
@@ -91,7 +91,7 @@ impl GitCommitFixOpenTools {
                 Some(json!({"reason": err.to_string()})),
             )
         })?;
-        match notify_bridge(&self.socket_name, message.as_bytes(), ACK_WAIT) {
+        match notify_bridge(&self.socket_name, &message, ACK_WAIT) {
             Ok(CommitFixVerdict::Opening) => {
                 tracing::info!("commit-fix session requested");
                 Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -137,15 +137,9 @@ impl ServerHandler for GitCommitFixOpenTools {
 /// Writes the event to the bridge, half-closes the write side, and waits up
 /// to `ack_wait` for the app's verdict. A missing or late verdict is an
 /// error: the outcome is unknown, so success must not be reported.
-fn notify_bridge(
-    socket: &str,
-    message: &[u8],
-    ack_wait: Duration,
-) -> Result<CommitFixVerdict, String> {
+fn notify_bridge(socket: &str, line: &str, ack_wait: Duration) -> Result<CommitFixVerdict, String> {
     let mut stream = connect_to_bridge(socket).map_err(|err| bridge_error(socket, &err))?;
-    stream
-        .write_all(message)
-        .and_then(|()| stream.write_all(b"\n"))
+    send_line(&mut stream, line)
         .map_err(|err| format!("failed to write to the bridge socket '{socket}': {err}"))?;
     // Half-close so the app can still reply on this connection, and we see
     // EOF once it closes its side after writing the verdict.
@@ -183,31 +177,6 @@ fn notify_bridge(
     }
 }
 
-/// Identifiers containing a path separator address a filesystem socket
-/// (the sandboxed-agent fallback); bare identifiers are
-/// abstract-namespace names.
-fn connect_to_bridge(socket: &str) -> io::Result<UnixStream> {
-    if socket.contains('/') {
-        UnixStream::connect(Path::new(socket))
-    } else {
-        UnixStream::connect_addr(&SocketAddr::from_abstract_name(socket.as_bytes())?)
-    }
-}
-
-/// Full description of a failed bridge connection: which socket was
-/// attempted, the underlying OS error, and the fix for the common
-/// sandboxed-agent case. Used both for the startup probe log and for tool
-/// errors so the agent can relay actionable guidance to the user.
-fn bridge_error(socket: &str, err: &io::Error) -> String {
-    format!(
-        "bridge socket '{socket}' is unreachable: {err}. If the agent runs sandboxed, \
-         start kid-agentic-coding with --fs-socket-dir pointing at a writable \
-         directory that is mounted into the sandbox (e.g. \
-         $XDG_RUNTIME_DIR/kid-agentic-coding), because Linux abstract-namespace \
-         sockets cannot cross a sandbox boundary."
-    )
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -235,9 +204,9 @@ async fn main() -> Result<()> {
 mod tests {
     use super::{
         COMMIT_FIX_INSTRUCTIONS, GitCommitFixOpenTools, GitCommitWithFixParams, Parameters,
-        bridge_error, connect_to_bridge, notify_bridge,
+        notify_bridge,
     };
-    use std::io::{self, ErrorKind, Read, Write};
+    use std::io::{Read, Write};
     use std::net::Shutdown;
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
@@ -340,31 +309,6 @@ mod tests {
     }
 
     #[test]
-    fn startup_probe_reaches_a_listening_session() {
-        let path = env::temp_dir().join(format!(
-            "kid-agentic-coding-bridge-ping-{}.sock",
-            process::id()
-        ));
-        let _ = fs::remove_file(&path);
-        let _listener = UnixListener::bind(&path).expect("bind succeeds");
-
-        connect_to_bridge(&path.display().to_string()).expect("listening socket is reachable");
-
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn bridge_error_names_the_socket_and_the_fs_socket_dir_flag() {
-        let socket = format!("kid-agentic-coding-bridge-test-{}", process::id());
-        let err = io::Error::new(ErrorKind::NotFound, "no such file or directory");
-        let message = bridge_error(&socket, &err);
-
-        assert!(message.contains(&socket));
-        assert!(message.contains("--fs-socket-dir"));
-        assert!(message.contains("sandbox"));
-    }
-
-    #[test]
     fn notify_bridge_reads_the_rejected_verdict_ack() {
         let (path, listener) = verdict_ack_test_socket("verdict-reject");
 
@@ -385,7 +329,7 @@ mod tests {
                 .expect("writes the ack");
         });
 
-        let verdict = notify_bridge(&path.display().to_string(), b"{}", TEST_ACK_WAIT)
+        let verdict = notify_bridge(&path.display().to_string(), "{}", TEST_ACK_WAIT)
             .expect("reading the bridge ack works");
         assert_eq!(
             verdict,
@@ -413,7 +357,7 @@ mod tests {
                 .expect("closes without a verdict");
         });
 
-        let err = notify_bridge(&path.display().to_string(), b"{}", TEST_ACK_WAIT)
+        let err = notify_bridge(&path.display().to_string(), "{}", TEST_ACK_WAIT)
             .expect_err("a missing ack is an error");
         assert!(err.contains("closed the connection without a verdict"));
 
@@ -438,7 +382,7 @@ mod tests {
 
         let err = notify_bridge(
             &path.display().to_string(),
-            b"{}",
+            "{}",
             Duration::from_millis(100),
         )
         .expect_err("a late verdict is an error");
@@ -462,7 +406,7 @@ mod tests {
             stream.write_all(b"not json\n").expect("writes the ack");
         });
 
-        let err = notify_bridge(&path.display().to_string(), b"{}", TEST_ACK_WAIT)
+        let err = notify_bridge(&path.display().to_string(), "{}", TEST_ACK_WAIT)
             .expect_err("a malformed ack is an error");
         assert!(err.contains("malformed commit-fix ack"));
 
