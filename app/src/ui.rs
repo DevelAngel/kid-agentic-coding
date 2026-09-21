@@ -1,8 +1,8 @@
 //! Interactive terminal UI for an ACP session.
 
 use kid_agentic_coding::{
-    BubbleLayout, ChatLog, CommitFixVerdict, EntryId, Message, PromptRunner, ScrollAnchor,
-    SessionEvent, SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
+    BubbleLayout, ChatLog, CommitFixVerdict, EntryId, Message, ScrollAnchor, SessionEvent,
+    SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
     strip_redundant_name,
 };
 use kid_agentic_coding::{FsSocketDir, render_markdown, start_interactive_session};
@@ -225,9 +225,7 @@ impl App {
                 tracing::debug!("event: commit-fix-done");
             }
 
-            SessionEvent::Chunk(block) => {
-                let mut text = PromptRunner::content_block_to_string(&block);
-
+            SessionEvent::Chunk(mut text) => {
                 // Trim leading newlines only on first chunk of a message
                 if self.last_agent_message_entry_id.is_none() {
                     text = text.trim_start().to_string();
@@ -329,8 +327,7 @@ impl App {
                     format!("Session failed: {error}"),
                 );
             }
-            SessionEvent::Thought(block) => {
-                let text = PromptRunner::content_block_to_string(&block);
+            SessionEvent::Thought(text) => {
                 tracing::debug!(
                     len = text.len(),
                     has_entry = self.last_thought_entry_id.is_some(),
@@ -1697,8 +1694,7 @@ pub async fn run(
 mod handle_key_tests {
     use super::{App, SCROLL_STEP, format_permission_parameters};
     use agent_client_protocol::schema::v1::{
-        ContentBlock, PermissionOption, PermissionOptionKind, StopReason, TextContent, ToolCallId,
-        ToolCallStatus,
+        PermissionOption, PermissionOptionKind, StopReason, ToolCallId, ToolCallStatus,
     };
     use kid_agentic_coding::{
         CommitFixVerdict, Message, SessionEvent, SessionHandle, SessionNoticeKind, Status, Step,
@@ -2073,9 +2069,7 @@ mod handle_key_tests {
         let mut app = App::new();
         let (session, _prompt_rx) = SessionHandle::new_connected_for_test();
 
-        app.handle_session_event(SessionEvent::Thought(Box::new(ContentBlock::Text(
-            TextContent::new("thinking about this".to_owned()),
-        ))));
+        app.handle_session_event(SessionEvent::Thought("thinking about this".to_owned()));
         let Message::ToolCluster(cluster) = &app.chat_log.messages()[0] else {
             panic!("expected a tool cluster");
         };
@@ -2392,23 +2386,17 @@ mod handle_key_tests {
 #[cfg(test)]
 mod session_event_tests {
     use super::{App, map_tool_call_status, render_tool_cluster};
-    use agent_client_protocol::schema::v1::{
-        ContentBlock, TextContent, ToolCallId, ToolCallStatus,
-    };
+    use agent_client_protocol::schema::v1::{ToolCallId, ToolCallStatus};
     use kid_agentic_coding::{
         Message, SessionEvent, Status, Step, ToolCluster, strip_redundant_name,
     };
 
     fn thought(text: &str) -> SessionEvent {
-        SessionEvent::Thought(Box::new(ContentBlock::Text(TextContent::new(
-            text.to_owned(),
-        ))))
+        SessionEvent::Thought(text.to_owned())
     }
 
     fn chunk(text: &str) -> SessionEvent {
-        SessionEvent::Chunk(Box::new(ContentBlock::Text(TextContent::new(
-            text.to_owned(),
-        ))))
+        SessionEvent::Chunk(text.to_owned())
     }
 
     fn tool_cluster(app: &App, message_index: usize) -> &ToolCluster {

@@ -437,12 +437,14 @@ async fn handle_update(
                 .if_notification(async |notification: SessionNotification| {
                     match notification.update {
                         SessionUpdate::AgentMessageChunk(content_chunk) => {
-                            let _ =
-                                event_tx.send(SessionEvent::Chunk(Box::new(content_chunk.content)));
+                            let text =
+                                PromptRunner::content_block_to_string(&content_chunk.content);
+                            let _ = event_tx.send(SessionEvent::Chunk(text));
                         }
                         SessionUpdate::AgentThoughtChunk(content_chunk) => {
-                            let _ = event_tx
-                                .send(SessionEvent::Thought(Box::new(content_chunk.content)));
+                            let text =
+                                PromptRunner::content_block_to_string(&content_chunk.content);
+                            let _ = event_tx.send(SessionEvent::Thought(text));
                         }
                         SessionUpdate::ToolCall(ToolCall {
                             tool_call_id,

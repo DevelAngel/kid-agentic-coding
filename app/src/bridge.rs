@@ -3,9 +3,7 @@
 //! This module has no ACP-specific knowledge beyond the event payloads it carries;
 //! the protocol handling lives in [`crate::session`].
 
-use agent_client_protocol::schema::v1::{
-    ContentBlock, PermissionOption, StopReason, ToolCallId, ToolCallStatus,
-};
+use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -24,10 +22,10 @@ pub(crate) fn next_session_id() -> String {
 #[derive(Debug)]
 pub enum SessionEvent {
     /// A chunk of agent message content.
-    Chunk(Box<ContentBlock>),
+    Chunk(String),
 
     /// A chunk of the agent's internal reasoning.
-    Thought(Box<ContentBlock>),
+    Thought(String),
 
     /// A new tool call has been initiated.
     ToolCall {
