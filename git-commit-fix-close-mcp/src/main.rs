@@ -4,19 +4,18 @@ use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::schemars::JsonSchema;
-use rmcp::serde::{Deserialize, Serialize};
+use rmcp::serde::Deserialize;
 use rmcp::{
     ErrorData as McpError, ServerHandler, service, tool, tool_handler, tool_router, transport,
 };
 use serde_json::json;
 use thiserror::Error;
 use tokio::task;
+use wire::{CommitFixDone, bridge_error, connect_to_bridge, send_line};
 
 use std::env;
-use std::io::{self, Write};
+use std::io;
 use std::mem;
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::net::{SocketAddr, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::result;
@@ -27,15 +26,6 @@ struct Args {
     /// Name or path of the Unix socket used for workflow events.
     #[arg(long)]
     socket: String,
-}
-
-/// Stable name of the semantic event emitted when a commit-fix session closes.
-const COMMIT_FIX_DONE_EVENT: &str = "commit-fix-done";
-
-#[derive(Debug, Serialize)]
-struct CommitFixDoneEvent<'a> {
-    event: &'static str,
-    commit_message: &'a str,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -398,17 +388,13 @@ impl GitCommitFixCloseTools {
             .await?
         };
 
-        let event = CommitFixDoneEvent {
-            event: COMMIT_FIX_DONE_EVENT,
-            commit_message: &commit_message,
-        };
-        let message = serde_json::to_vec(&event).map_err(|err| {
+        let line = CommitFixDone { commit_message }.to_line().map_err(|err| {
             McpError::internal_error(
                 "failed to encode commit-fix-done event",
                 Some(json!({"reason": err.to_string()})),
             )
         })?;
-        notify_bridge(&self.socket_name, &message).map_err(|err| {
+        notify_bridge(&self.socket_name, &line).map_err(|err| {
             let message = bridge_error(&self.socket_name, &err);
             tracing::error!("{message}");
             McpError::internal_error(
@@ -435,35 +421,9 @@ impl ServerHandler for GitCommitFixCloseTools {
     }
 }
 
-fn notify_bridge(socket: &str, message: &[u8]) -> io::Result<()> {
+fn notify_bridge(socket: &str, line: &str) -> io::Result<()> {
     let mut stream = connect_to_bridge(socket)?;
-    stream.write_all(message)?;
-    stream.write_all(b"\n")
-}
-
-/// Identifiers containing a path separator address a filesystem socket
-/// (the sandboxed-agent fallback); bare identifiers are
-/// abstract-namespace names.
-fn connect_to_bridge(socket: &str) -> io::Result<UnixStream> {
-    if socket.contains('/') {
-        UnixStream::connect(Path::new(socket))
-    } else {
-        UnixStream::connect_addr(&SocketAddr::from_abstract_name(socket.as_bytes())?)
-    }
-}
-
-/// Full description of a failed bridge connection: which socket was
-/// attempted, the underlying OS error, and the fix for the common
-/// sandboxed-agent case. Used both for the startup probe log and for tool
-/// errors so the agent can relay actionable guidance to the user.
-fn bridge_error(socket: &str, err: &io::Error) -> String {
-    format!(
-        "bridge socket '{socket}' is unreachable: {err}. If the agent runs sandboxed, \
-         start kid-agentic-coding with --fs-socket-dir pointing at a writable \
-         directory that is mounted into the sandbox (e.g. \
-         $XDG_RUNTIME_DIR/kid-agentic-coding), because Linux abstract-namespace \
-         sockets cannot cross a sandbox boundary."
-    )
+    send_line(&mut stream, line)
 }
 
 async fn command_result(
@@ -561,8 +521,6 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{self, ErrorKind};
-    use std::os::unix::net::UnixListener;
     use std::{env, fs, process};
 
     #[tokio::test]
@@ -836,30 +794,5 @@ mod tests {
     fn lowercase_first_char_preserves_acronyms() {
         assert_eq!(lowercase_first_char("Add"), "add");
         assert_eq!(lowercase_first_char("XML parser"), "XML parser");
-    }
-
-    #[test]
-    fn startup_probe_reaches_a_listening_session() {
-        let path = env::temp_dir().join(format!(
-            "kid-agentic-coding-bridge-ping-{}.sock",
-            process::id()
-        ));
-        let _ = fs::remove_file(&path);
-        let _listener = UnixListener::bind(&path).expect("bind succeeds");
-
-        connect_to_bridge(&path.display().to_string()).expect("listening socket is reachable");
-
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn bridge_error_names_the_socket_and_the_fs_socket_dir_flag() {
-        let socket = format!("kid-agentic-coding-bridge-test-{}", process::id());
-        let err = io::Error::new(ErrorKind::NotFound, "no such file or directory");
-        let message = bridge_error(&socket, &err);
-
-        assert!(message.contains(&socket));
-        assert!(message.contains("--fs-socket-dir"));
-        assert!(message.contains("sandbox"));
     }
 }
