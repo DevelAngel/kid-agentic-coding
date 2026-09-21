@@ -23,7 +23,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
-use wire::{COMMIT_FIX_EVENT, CommitFixRequest, VERDICT_TIMEOUT};
+use wire::{CommitFixDone, Confetti, VERDICT_TIMEOUT, WorkflowEvent};
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -296,7 +296,7 @@ async fn run_session(
                         if let Some(Ok((mut stream, _))) = bridge {
                             let mut message = Vec::new();
                             if stream.read_to_end(&mut message).await.is_ok()
-                                && message == b"confetti\n"
+                                && Confetti::parse(&message).is_some()
                             {
                                 let _ = session_event_tx.send(SessionEvent::Confetti);
                             }
@@ -338,7 +338,7 @@ async fn run_session(
                                             .await;
                                         }
                                     }
-                                    Ok(WorkflowEvent::CommitFixDone { commit_message }) => {
+                                    Ok(WorkflowEvent::CommitFixDone(CommitFixDone { commit_message })) => {
                                         tracing::info!(%commit_message, "commit-fix-done session event received");
                                         if turn_active {
                                             pending_commit_fix_done = Some(commit_message);
@@ -389,37 +389,6 @@ async fn run_session(
     if let Err(err) = result {
         let _ = event_tx.send(SessionEvent::Error(err.to_string()));
         tracing::error!(?err, "interactive session task ended with error");
-    }
-}
-
-/// A workflow event sent by one of the workflow MCP tools.
-enum WorkflowEvent {
-    CommitFix(CommitFixRequest),
-    CommitFixDone { commit_message: String },
-}
-
-impl WorkflowEvent {
-    /// Parses one bridge message; the error is the reason to reject it with.
-    fn parse(message: &[u8]) -> Result<Self, String> {
-        let value = serde_json::from_slice::<Value>(message)
-            .map_err(|err| format!("workflow event is not valid JSON: {err}"))?;
-        match value.get("event").and_then(Value::as_str) {
-            Some(COMMIT_FIX_EVENT) => serde_json::from_value(value)
-                .map(Self::CommitFix)
-                .map_err(|err| err.to_string()),
-            Some(mcp::COMMIT_FIX_DONE_EVENT) => {
-                let commit_message = value
-                    .get("commit_message")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                Ok(Self::CommitFixDone { commit_message })
-            }
-            other => Err(format!(
-                "unhandled workflow event '{}'",
-                other.unwrap_or("<missing>")
-            )),
-        }
     }
 }
 
