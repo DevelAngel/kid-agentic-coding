@@ -37,6 +37,14 @@ fn request_is_encoded_as_one_json_line_with_the_event_tag() {
 }
 
 #[test]
+fn request_has_a_pinned_single_line_wire_format() {
+    assert_eq!(
+        request().to_line().unwrap(),
+        r#"{"event":"commit-fix","instructions":"commit it","amend":true,"tldr":"summary","why":"motivation","what":"change","cwd":"/work/dir"}"#
+    );
+}
+
+#[test]
 fn request_tag_matches_the_event_constant() {
     let line = request().to_line().unwrap();
     let value = serde_json::from_str::<Value>(&line).unwrap();
