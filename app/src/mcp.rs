@@ -15,19 +15,16 @@ use derive_more::Deref;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedSender;
+use wire::socket_address;
 
 use std::env;
 use std::fs;
 use std::io;
 use std::marker::PhantomData;
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::net::{SocketAddr, UnixListener};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Stable name of the semantic event emitted when a commit-fix session closes.
-pub const COMMIT_FIX_DONE_EVENT: &str = "commit-fix-done";
 
 pub const CONFETTI_TOOL_NAME: &str = "confetti";
 
@@ -351,17 +348,6 @@ pub fn fs_socket_path(directory: &Path, socket_name: &str) -> PathBuf {
     directory.join(format!("{socket_name}.sock"))
 }
 
-/// Resolves a bridge socket identifier to a socket address. Identifiers
-/// containing a path separator are filesystem paths; bare identifiers are
-/// Linux abstract-namespace names.
-pub fn socket_address(socket: &str) -> io::Result<SocketAddr> {
-    if socket.contains('/') {
-        Ok(SocketAddr::from_pathname(Path::new(socket))?)
-    } else {
-        Ok(SocketAddr::from_abstract_name(socket.as_bytes())?)
-    }
-}
-
 pub struct Unbound;
 pub struct WorkflowBound;
 pub struct AllBound;
@@ -529,7 +515,7 @@ impl Drop for SocketFileGuard {
 
 #[cfg(test)]
 mod bridge_socket_tests {
-    use super::{BridgeSockets, SocketFileGuard, Unbound, fs_socket_path, socket_address};
+    use super::{BridgeSockets, SocketFileGuard, Unbound, fs_socket_path};
     use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::{env, fs, process};
@@ -542,22 +528,6 @@ mod bridge_socket_tests {
                 "kid-agentic-coding-workflow-1-2"
             ),
             Path::new("/run/user/1000/kid-agentic-coding/kid-agentic-coding-workflow-1-2.sock")
-        );
-    }
-
-    #[test]
-    fn socket_address_distinguishes_paths_from_abstract_names() {
-        assert!(
-            socket_address("/run/user/1000/kid-agentic-coding/bridge.sock")
-                .expect("socket address is valid")
-                .as_pathname()
-                .is_some()
-        );
-        assert!(
-            socket_address("kid-agentic-coding-workflow-1-2")
-                .expect("socket address is valid")
-                .as_pathname()
-                .is_none()
         );
     }
 
