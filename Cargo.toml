@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["app", "chat", "confetti-mcp", "gh-mcp", "git-commit-fix-close-mcp", "git-commit-fix-open-mcp", "log-buffer", "lorem-agent", "python-mcp", "rust-mcp", "session", "wire"]
+members = ["app", "chat", "confetti-mcp", "gh-mcp", "git-commit-fix-close-mcp", "git-commit-fix-open-mcp", "log-buffer", "lorem-agent", "python-mcp", "rust-mcp", "session", "wire", "workflow"]
 
 [workspace.package]
 version = "0.2.0"
@@ -32,6 +32,7 @@ textwrap = "0.16"
 tui-markdown = "0.3.9"
 wire = { package = "kid-agentic-coding-wire", path = "wire" }
 kid-agentic-coding-session = { path = "session" }
+kid-agentic-coding-workflow = { path = "workflow" }
 
 # color-eyre: improving perf on debug builds
 [profile.dev.package.backtrace]

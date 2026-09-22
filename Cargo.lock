@@ -1435,6 +1435,7 @@ dependencies = [
  "kid-agentic-coding-log-buffer",
  "kid-agentic-coding-session",
  "kid-agentic-coding-wire",
+ "kid-agentic-coding-workflow",
  "nerdicons_rs",
  "rand 0.10.2",
  "ratatui",
@@ -1577,6 +1578,15 @@ version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "kid-agentic-coding-workflow"
+version = "0.2.0"
+dependencies = [
+ "kid-agentic-coding-session",
+ "kid-agentic-coding-wire",
+ "tokio",
 ]
 
 [[package]]

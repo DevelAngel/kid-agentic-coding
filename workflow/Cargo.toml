@@ -1,0 +1,9 @@
+[package]
+name = "kid-agentic-coding-workflow"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kid-agentic-coding-session.workspace = true
+tokio.workspace = true
+wire.workspace = true

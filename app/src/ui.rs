@@ -2,10 +2,11 @@
 
 use kid_agentic_coding::{AgentLauncher, FsSocketDir, render_markdown};
 use kid_agentic_coding::{
-    BubbleLayout, ChatLog, CommitFixVerdict, EntryId, Message, PermissionOption, ScrollAnchor,
-    SessionEvent, SessionHandle, SessionNoticeKind, Status, Step, StopReason, ToolCluster,
-    ToolStatus, VisibleBubble, strip_redundant_name,
+    BubbleLayout, ChatLog, EntryId, Message, PermissionOption, ScrollAnchor, SessionEvent,
+    SessionHandle, SessionNoticeKind, Status, Step, StopReason, ToolCluster, ToolStatus,
+    VisibleBubble, strip_redundant_name,
 };
+use kid_agentic_coding_workflow::{MAIN_WORKFLOW, Workflow, WorkflowManager, WorkflowView};
 use log_buffer::LogBuffer;
 
 use ansi_to_tui::IntoText;
@@ -26,16 +27,14 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui_textarea::{TextArea, WrapMode};
 use serde_json::Value;
+use std::io::{self, Stdout};
 use textwrap::{self, Options};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task;
 use tokio::time::{self, MissedTickBehavior};
-use wire::CommitFixRequest;
 
 use std::collections::HashMap;
-use std::future;
-use std::io::{self, Stdout};
 use std::mem;
 use std::time::Duration;
 
@@ -123,7 +122,7 @@ impl Confetti {
 struct App {
     chat_log: ChatLog,
     prompt: TextArea<'static>,
-    workflow_name: Option<String>,
+    workflow_view: WorkflowView,
     agent_buffer: String,
     /// Where the viewport was anchored at the last redraw, resolved
     /// against the current layout so it survives bubble height changes
@@ -164,7 +163,7 @@ impl App {
         Self {
             chat_log: ChatLog::new(),
             prompt: new_prompt_textarea(false, workflow_color(PROGRAMMING_WORKFLOW)),
-            workflow_name: None,
+            workflow_view: WorkflowView::new(Workflow::Main),
             agent_buffer: String::new(),
             scroll_anchor: None,
             pending_scroll_delta: 0,
@@ -196,6 +195,10 @@ impl App {
             ..Self::new()
         }
     }
+    fn with_workflow(mut self, workflow_view: kid_agentic_coding_workflow::WorkflowView) -> Self {
+        self.workflow_view = workflow_view;
+        self
+    }
 
     fn handle_session_event(&mut self, event: SessionEvent) {
         match event {
@@ -205,24 +208,10 @@ impl App {
                 self.last_agent_message_entry_id = None;
                 self.confetti = Some(Confetti::new());
             }
-            SessionEvent::CommitFix { request, verdict } => {
-                let tldr = request.tldr;
-                tracing::info!(%tldr, "ignoring commit-fix request; a fix session is already active or starting");
-                let _ = verdict.send(CommitFixVerdict::Ignored {
-                    reason: format!(
-                        "a fix session is already active or starting, so the commit-fix request \
-                         '{tldr}' was not executed"
-                    ),
-                });
-                self.chat_log.push_session_notice(
-                    SessionNoticeKind::Error,
-                    format!("commit-fix request ignored (fix session already active): {tldr}"),
-                );
-            }
             SessionEvent::CommitFixDone { .. } => {
                 tracing::debug!("event: commit-fix-done");
             }
-
+            SessionEvent::CommitFix { .. } => {}
             SessionEvent::Chunk(mut text) => {
                 // Trim leading newlines only on first chunk of a message
                 if self.last_agent_message_entry_id.is_none() {
@@ -291,14 +280,7 @@ impl App {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
                 self.agent_acting = false;
-                self.prompt = new_prompt_textarea(
-                    false,
-                    workflow_color(
-                        self.workflow_name
-                            .as_deref()
-                            .unwrap_or(PROGRAMMING_WORKFLOW),
-                    ),
-                );
+                self.prompt = new_prompt_textarea(false, workflow_color(self.workflow_view.name()));
                 if reason != StopReason::EndTurn {
                     self.chat_log
                         .push_session_notice(SessionNoticeKind::Stopped, stop_reason_text(reason));
@@ -312,14 +294,7 @@ impl App {
                     self.chat_log.push_agent(mem::take(&mut self.agent_buffer));
                 }
                 self.agent_acting = false;
-                self.prompt = new_prompt_textarea(
-                    false,
-                    workflow_color(
-                        self.workflow_name
-                            .as_deref()
-                            .unwrap_or(PROGRAMMING_WORKFLOW),
-                    ),
-                );
+                self.prompt = new_prompt_textarea(false, workflow_color(self.workflow_view.name()));
                 self.chat_log.push_session_notice(
                     SessionNoticeKind::Error,
                     format!("Session failed: {error}"),
@@ -417,14 +392,7 @@ impl App {
     /// was set without the flag, leaving input unlocked).
     fn begin_acting_turn(&mut self) {
         self.agent_acting = true;
-        self.prompt = new_prompt_textarea(
-            true,
-            workflow_color(
-                self.workflow_name
-                    .as_deref()
-                    .unwrap_or(PROGRAMMING_WORKFLOW),
-            ),
-        );
+        self.prompt = new_prompt_textarea(true, workflow_color(self.workflow_view.name()));
     }
 
     fn handle_key(&mut self, key: KeyEvent, session: &SessionHandle) {
@@ -484,25 +452,14 @@ impl App {
                     return;
                 }
                 self.settle_thought();
-                self.workflow_name = session.workflow_name().map(str::to_owned);
                 self.begin_acting_turn();
-                self.chat_log.push_user_with_workflow(
-                    prompt_text.clone(),
-                    self.workflow_name
-                        .as_deref()
-                        .unwrap_or(PROGRAMMING_WORKFLOW),
-                );
+                self.chat_log
+                    .push_user_with_workflow(prompt_text.clone(), self.workflow_view.name());
                 if session.send_prompt(prompt_text).is_err() {
                     self.chat_log.push_agent("[session closed]");
                     self.agent_acting = false;
-                    self.prompt = new_prompt_textarea(
-                        false,
-                        workflow_color(
-                            self.workflow_name
-                                .as_deref()
-                                .unwrap_or(PROGRAMMING_WORKFLOW),
-                        ),
-                    );
+                    self.prompt =
+                        new_prompt_textarea(false, workflow_color(self.workflow_view.name()));
                     self.should_quit = true;
                 }
             }
@@ -520,15 +477,7 @@ impl App {
             }
             KeyCode::Esc => {
                 session.cancel();
-                self.workflow_name = session.workflow_name().map(str::to_owned);
-                self.prompt = new_prompt_textarea(
-                    false,
-                    workflow_color(
-                        self.workflow_name
-                            .as_deref()
-                            .unwrap_or(PROGRAMMING_WORKFLOW),
-                    ),
-                );
+                self.prompt = new_prompt_textarea(false, workflow_color(self.workflow_view.name()));
             }
             _ => {
                 self.prompt.input(key);
@@ -806,7 +755,7 @@ fn spawn_terminal_events() -> UnboundedReceiver<Event> {
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
-    main_session: &mut SessionHandle,
+    workflow: &mut WorkflowManager,
     agent_launcher: &AgentLauncher,
     fs_socket_dir: FsSocketDir,
     term_events: &mut UnboundedReceiver<Event>,
@@ -815,16 +764,9 @@ async fn run_app(
     spinner.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut confetti = time::interval(Duration::from_millis(50));
     confetti.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut fix_session: Option<SessionHandle> = None;
 
     while !app.should_quit {
         terminal.draw(|frame| frame.draw_app(app))?;
-        let fix_recv = async {
-            match fix_session.as_mut() {
-                Some(session) => session.recv_event().await,
-                None => future::pending().await,
-            }
-        };
         if app.agent_acting {
             terminal.hide_cursor()?;
         } else {
@@ -840,114 +782,34 @@ async fn run_app(
                     app.confetti = None;
                 }
             }
-            Some(session_event) = main_session.recv_event() => {
-                match session_event {
-                    SessionEvent::CommitFix {
-                        request,
-                        verdict,
-                    } if fix_session.is_none() => {
-                        // The request opens a fix session; report that before
-                        // the (potentially long) open below, so the requesting
-                        // bridge connection doesn't wait on the whole open.
-                        let _ = verdict.send(CommitFixVerdict::Opening);
-                        fix_session = Some(
-                            open_commit_fix_session(
-                                app,
-                                main_session,
-                                agent_launcher,
-                                fs_socket_dir.clone(),
-                                request,
-                            )
-                            .await,
-                        );
+            session_event = workflow.recv_event(agent_launcher, fs_socket_dir.clone()) => {
+                if let Some(session_event) = session_event {
+                    match session_event.event {
+                        SessionEvent::CommitFixDone { commit_message } => {
+                            app.chat_log.push_session_transition(MAIN_WORKFLOW);
+                            app.begin_acting_turn();
+                            let resume_prompt = format!("## Commit message used\n\n{commit_message}");
+                            app.chat_log.push_auto_with_workflow(
+                                resume_prompt.clone(),
+                                MAIN_WORKFLOW,
+                            );
+                            let _ = workflow.main_session().send_prompt(resume_prompt);
+                        }
+                        event => app.handle_session_event(event),
                     }
-                    event => app.handle_session_event(event),
                 }
             }
-            Some(session_event) = fix_recv => {
-                match session_event {
-                    SessionEvent::CommitFixDone { commit_message } => {
-                        app.workflow_name = Some(PROGRAMMING_WORKFLOW.to_owned());
-                        fix_session = None;
-                        app.chat_log.push_session_transition(PROGRAMMING_WORKFLOW);
-                        app.begin_acting_turn();
-                        let resume_prompt = format!(
-                            "## Commit message used\n\n{commit_message}"
-                        );
-                        app.chat_log.push_auto_with_workflow(resume_prompt.clone(), PROGRAMMING_WORKFLOW);
-                        let _ = main_session.send_prompt(resume_prompt);
-                    }
-                    event => app.handle_session_event(event),
-                }
-            }
-
-
             Some(term_event) = term_events.recv() => {
                 if let Event::Key(key) = term_event
                     && key.kind == KeyEventKind::Press
                 {
-                    let active_session = fix_session.as_ref().unwrap_or(main_session);
-                    app.handle_key(key, active_session);
+                    app.handle_key(key, workflow.active_session());
                 }
             }
         }
     }
 
     Ok(())
-}
-
-/// Cancels the main session's current turn, waits for it to actually stop,
-/// then opens and seeds a fix session. Blocking on the cancel confirmation
-/// avoids a race between the main session's own event stream and the new
-/// fix session's first events.
-async fn open_commit_fix_session(
-    app: &mut App,
-    main_session: &mut SessionHandle,
-    agent_launcher: &AgentLauncher,
-    fs_socket_dir: FsSocketDir,
-    fix: CommitFixRequest,
-) -> SessionHandle {
-    let CommitFixRequest {
-        instructions,
-        amend,
-        tldr,
-        why,
-        what,
-        cwd,
-    } = fix;
-    main_session.cancel();
-    while let Some(event) = main_session.recv_event().await {
-        let is_cancelled = matches!(event, SessionEvent::Stopped(StopReason::Cancelled));
-        app.handle_session_event(event);
-        if is_cancelled {
-            break;
-        }
-    }
-
-    tracing::info!("main session cancelled; starting commit-fix session");
-    let fix_session = agent_launcher.start(
-        true,
-        Some(COMMIT_FIX_WORKFLOW.to_owned()),
-        fs_socket_dir,
-        cwd,
-    );
-    tracing::info!("commit-fix session started");
-
-    app.workflow_name = Some(COMMIT_FIX_WORKFLOW.to_owned());
-    app.chat_log.push_session_transition(COMMIT_FIX_WORKFLOW);
-    app.begin_acting_turn();
-
-    let amend_decision = if amend { "yes" } else { "no" };
-    let seed_prompt = format!(
-        "{instructions}\n\nCommit Amend Decision: {amend_decision}\n\n## TL;DR\n\n{tldr}\n\n## Why is this change needed?\n\n{why}\n\n## What does this change do?\n\n{what}"
-    );
-    tracing::debug!("sending commit-fix seed prompt");
-
-    app.chat_log
-        .push_auto_with_workflow(seed_prompt.clone(), COMMIT_FIX_WORKFLOW);
-    let _ = fix_session.send_prompt(seed_prompt);
-
-    fix_session
 }
 
 /// Draws application state onto a ratatui `Frame`.
@@ -1012,7 +874,7 @@ impl DrawApp for Frame<'_> {
 
         self.draw_chat_log(app, log_area);
         let prompt_layout = accent_layout(prompt_area, false);
-        let workflow = workflow_color(app.workflow_name.as_deref().unwrap_or(PROGRAMMING_WORKFLOW));
+        let workflow = workflow_color(app.workflow_view.name());
         self.render_widget(
             accent_block(
                 workflow,
@@ -1047,18 +909,17 @@ impl DrawApp for Frame<'_> {
                 prompt_layout.text_rect,
             );
         }
-        if let Some(workflow_name) = app.workflow_name.as_deref() {
-            let color = workflow_color(workflow_name);
-            let mut spans = vec![Span::styled(
-                workflow_name,
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            )];
-            if let Some(model) = app.chat_log.current_model() {
-                spans.push(Span::raw(" · "));
-                spans.push(Span::styled(model, Style::default().fg(PLACEHOLDER_COLOR)));
-            }
-            self.render_widget(Paragraph::new(Line::from(spans)), workflow_area);
+        let workflow_name = app.workflow_view.name();
+        let color = workflow_color(workflow_name);
+        let mut spans = vec![Span::styled(
+            workflow_name,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )];
+        if let Some(model) = app.chat_log.current_model() {
+            spans.push(Span::raw(" · "));
+            spans.push(Span::styled(model, Style::default().fg(PLACEHOLDER_COLOR)));
         }
+        self.render_widget(Paragraph::new(Line::from(spans)), workflow_area);
         if let Some(pending) = &app.pending_permission {
             self.draw_permission_popup(pending, app.permission_popup_scroll, self.area());
         }
@@ -1662,17 +1523,18 @@ pub async fn run(
     disable_confetti: bool,
     fs_socket_dir: FsSocketDir,
 ) -> io::Result<()> {
-    let mut session = agent_launcher.start(disable_confetti, None, fs_socket_dir.clone(), None);
+    let session = agent_launcher.start(disable_confetti, None, fs_socket_dir.clone(), None);
+    let mut workflow = WorkflowManager::new(session);
+    let workflow_view = workflow.view();
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
-    let mut app = App::with_log_buffer(log_buffer);
-    app.workflow_name = Some(PROGRAMMING_WORKFLOW.to_owned());
-    app.chat_log.push_session_transition(PROGRAMMING_WORKFLOW);
+    let mut app = App::with_log_buffer(log_buffer).with_workflow(workflow_view);
+    app.chat_log.push_session_transition(MAIN_WORKFLOW);
 
     let result = run_app(
         &mut terminal,
         &mut app,
-        &mut session,
+        &mut workflow,
         &agent_launcher,
         fs_socket_dir,
         &mut term_events,
@@ -1688,12 +1550,11 @@ pub async fn run(
 mod handle_key_tests {
     use super::{App, SCROLL_STEP, format_permission_parameters};
     use kid_agentic_coding::{
-        CommitFixVerdict, Message, PermissionOption, SessionEvent, SessionHandle,
-        SessionNoticeKind, Status, Step, StopReason, ToolStatus,
+        Message, PermissionOption, SessionEvent, SessionHandle, SessionNoticeKind, Status, Step,
+        StopReason, ToolStatus,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::oneshot;
-    use wire::CommitFixRequest;
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
@@ -1734,38 +1595,6 @@ mod handle_key_tests {
             Message::SessionNotice(notice)
                 if notice.kind == SessionNoticeKind::Error
                     && notice.text == "Session failed: connection lost"
-        ));
-    }
-
-    #[test]
-    fn commit_fix_request_is_reported_ignored_with_a_notice() {
-        let mut app = App::new();
-        let (verdict_tx, mut verdict_rx) = oneshot::channel();
-
-        app.handle_session_event(SessionEvent::CommitFix {
-            request: CommitFixRequest {
-                instructions: "Commit the current changes.".to_owned(),
-                amend: false,
-                tldr: "Second commit-fix request".to_owned(),
-                why: "A fix session is already active.".to_owned(),
-                what: "Request a second fix session.".to_owned(),
-                cwd: None,
-            },
-            verdict: verdict_tx,
-        });
-
-        let verdict = verdict_rx.try_recv().expect("a verdict was reported");
-        assert!(matches!(
-            verdict,
-            CommitFixVerdict::Ignored { reason } if reason.contains("already active")
-        ));
-        assert!(matches!(
-            &app.chat_log.messages()[0],
-            Message::SessionNotice(notice)
-                if notice.kind == SessionNoticeKind::Error
-                    && notice.text
-                        == "commit-fix request ignored (fix session already active): Second \
-                            commit-fix request"
         ));
     }
 
@@ -2909,6 +2738,9 @@ mod confetti_tests {
 #[cfg(test)]
 mod bubble_color_tests {
     use super::*;
+    use kid_agentic_coding_workflow::{
+        COMMIT_FIX_WORKFLOW as WORKFLOW_COMMIT_FIX, Workflow, WorkflowView,
+    };
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
 
@@ -2923,7 +2755,11 @@ mod bubble_color_tests {
     fn session_app(workflow: Option<&str>, agent_replies: usize) -> App {
         let mut app = App::new();
         if let Some(workflow) = workflow {
-            app.workflow_name = Some(workflow.to_owned());
+            app = app.with_workflow(WorkflowView::new(if workflow == WORKFLOW_COMMIT_FIX {
+                Workflow::Fix
+            } else {
+                Workflow::Main
+            }));
             app.chat_log.push_session_transition(workflow);
         }
         app.chat_log
