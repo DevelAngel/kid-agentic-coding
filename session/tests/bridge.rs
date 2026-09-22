@@ -1,6 +1,6 @@
 //! Contract tests for `SessionHandle` identity, used for lifecycle logging.
 
-use kid_agentic_coding::SessionHandle;
+use kid_agentic_coding_session::SessionHandle;
 
 #[test]
 fn disconnected_test_handle_exposes_a_session_id() {

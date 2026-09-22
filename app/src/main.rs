@@ -3,7 +3,7 @@ mod ui;
 use clap::{Parser, ValueHint};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::Result;
-use kid_agentic_coding::{AgentLauncher, FsSocketDir, parse_agent_args};
+use kid_agentic_coding_session::{AgentLauncher, FsSocketDir, parse_agent_args};
 use log_buffer::{AGENT_STDERR_TARGET, LogBuffer};
 use std::env;
 use std::path::PathBuf;
