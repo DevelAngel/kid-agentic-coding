@@ -1,6 +1,6 @@
 //! Contract tests for `ChatLog`.
 
-use kid_agentic_coding::{ChatLog, Message, SessionNoticeKind, Status, Step};
+use kid_agentic_coding_chat::{ChatLog, Message, SessionNoticeKind, Status, Step};
 
 #[test]
 fn new_log_is_empty() {
@@ -140,7 +140,7 @@ fn session_transition_does_not_merge_into_an_open_tool_cluster() {
     assert!(matches!(log.messages()[2], Message::ToolCluster(_)));
 }
 
-fn tool_cluster(log: &ChatLog, message_index: usize) -> &kid_agentic_coding::ToolCluster {
+fn tool_cluster(log: &ChatLog, message_index: usize) -> &kid_agentic_coding_chat::ToolCluster {
     let Message::ToolCluster(cluster) = &log.messages()[message_index] else {
         panic!("expected a tool cluster at index {message_index}");
     };

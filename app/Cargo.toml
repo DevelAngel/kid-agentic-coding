@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+kid-agentic-coding-chat = { path = "../chat" }
 kid-agentic-coding-session.workspace = true
 ansi-to-tui.workspace = true
 clap.workspace = true

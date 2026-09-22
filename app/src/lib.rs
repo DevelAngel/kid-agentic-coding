@@ -3,13 +3,12 @@
 //! Provides interactive ACP session management for the terminal UI.
 
 mod bubble_layout;
-mod chat_log;
 mod markdown;
 
 pub use bubble_layout::{Alignment, Bubble, BubbleLayout, ScrollAnchor, VisibleBubble};
-pub use chat_log::{
-    AgentMessage, AutoMessage, ChatLog, EntryId, Message, SessionNotice, SessionNoticeKind, Status,
-    Step, ToolCallEntry, ToolCluster, UserMessage, strip_redundant_name,
+pub use kid_agentic_coding_chat::{
+    AgentMessage, AutoMessage, ChatLog, EntryId, Message, SessionNotice, SessionNoticeKind,
+    SessionTransition, Status, Step, ToolCallEntry, ToolCluster, UserMessage, strip_redundant_name,
 };
 pub use kid_agentic_coding_session::{
     AgentLauncher, CommitFixVerdict, FsSocketDir, PermissionOption, SessionClosed, SessionEvent,

@@ -15,6 +15,7 @@ pub enum Status {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserMessage {
     pub text: String,
+    pub workflow_name: Option<String>,
 }
 
 /// Text produced by the agent.
@@ -52,6 +53,7 @@ pub struct SessionTransition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoMessage {
     pub text: String,
+    pub workflow_name: Option<String>,
 }
 
 /// A single tool call within a [`ToolCluster`].
@@ -284,14 +286,52 @@ impl ChatLog {
     /// Appends a user message. Ends whatever tool cluster is currently
     /// open, so the next thought or tool call starts a fresh one.
     pub fn push_user(&mut self, text: impl Into<String>) {
-        self.messages
-            .push(Message::User(UserMessage { text: text.into() }));
+        self.push_user_with_workflow_name(text, None);
+    }
+
+    /// Appends a user message with the workflow that created it.
+    pub fn push_user_with_workflow(
+        &mut self,
+        text: impl Into<String>,
+        workflow_name: impl Into<String>,
+    ) {
+        self.push_user_with_workflow_name(text, Some(workflow_name.into()));
+    }
+
+    fn push_user_with_workflow_name(
+        &mut self,
+        text: impl Into<String>,
+        workflow_name: Option<String>,
+    ) {
+        self.messages.push(Message::User(UserMessage {
+            text: text.into(),
+            workflow_name,
+        }));
     }
 
     /// Appends text automatically provided by the client.
     pub fn push_auto(&mut self, text: impl Into<String>) {
-        self.messages
-            .push(Message::Auto(AutoMessage { text: text.into() }));
+        self.push_auto_with_workflow_name(text, None);
+    }
+
+    /// Appends an automatically provided message with its workflow.
+    pub fn push_auto_with_workflow(
+        &mut self,
+        text: impl Into<String>,
+        workflow_name: impl Into<String>,
+    ) {
+        self.push_auto_with_workflow_name(text, Some(workflow_name.into()));
+    }
+
+    fn push_auto_with_workflow_name(
+        &mut self,
+        text: impl Into<String>,
+        workflow_name: Option<String>,
+    ) {
+        self.messages.push(Message::Auto(AutoMessage {
+            text: text.into(),
+            workflow_name,
+        }));
     }
 
     /// Appends a session outcome and ends the current tool cluster.
@@ -702,5 +742,22 @@ mod tests {
                 status: Status::Running, ..
             } if text == "checking existing error handling"
         ));
+    }
+    #[test]
+    fn user_and_auto_messages_keep_their_workflow() {
+        let mut log = ChatLog::new();
+
+        log.push_user_with_workflow("user prompt", "programming");
+        log.push_auto_with_workflow("auto prompt", "commit-fix-rust");
+
+        let Message::User(user) = &log.messages()[0] else {
+            panic!("expected a user message");
+        };
+        assert_eq!(user.workflow_name.as_deref(), Some("programming"));
+
+        let Message::Auto(auto) = &log.messages()[1] else {
+            panic!("expected an auto message");
+        };
+        assert_eq!(auto.workflow_name.as_deref(), Some("commit-fix-rust"));
     }
 }

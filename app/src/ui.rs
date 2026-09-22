@@ -486,7 +486,12 @@ impl App {
                 self.settle_thought();
                 self.workflow_name = session.workflow_name().map(str::to_owned);
                 self.begin_acting_turn();
-                self.chat_log.push_user(prompt_text.clone());
+                self.chat_log.push_user_with_workflow(
+                    prompt_text.clone(),
+                    self.workflow_name
+                        .as_deref()
+                        .unwrap_or(PROGRAMMING_WORKFLOW),
+                );
                 if session.send_prompt(prompt_text).is_err() {
                     self.chat_log.push_agent("[session closed]");
                     self.agent_acting = false;
@@ -869,7 +874,7 @@ async fn run_app(
                         let resume_prompt = format!(
                             "## Commit message used\n\n{commit_message}"
                         );
-                        app.chat_log.push_auto(resume_prompt.clone());
+                        app.chat_log.push_auto_with_workflow(resume_prompt.clone(), PROGRAMMING_WORKFLOW);
                         let _ = main_session.send_prompt(resume_prompt);
                     }
                     event => app.handle_session_event(event),
@@ -938,7 +943,8 @@ async fn open_commit_fix_session(
     );
     tracing::debug!("sending commit-fix seed prompt");
 
-    app.chat_log.push_auto(seed_prompt.clone());
+    app.chat_log
+        .push_auto_with_workflow(seed_prompt.clone(), COMMIT_FIX_WORKFLOW);
     let _ = fix_session.send_prompt(seed_prompt);
 
     fix_session
@@ -1136,16 +1142,10 @@ impl DrawApp for Frame<'_> {
 
         let messages = render_log.messages().iter();
         let visible = layout.visible_bubbles().into_iter();
-        let mut message_workflow = PROGRAMMING_WORKFLOW;
         for (index, (message, visible_bubble)) in messages.zip(visible).enumerate() {
-            if let Message::SessionTransition(t) = message {
-                message_workflow = t.workflow_name.as_str();
-            }
-
             let Some(visible_bubble) = visible_bubble else {
                 continue;
             };
-
             let render_rect = Rect {
                 x: area.x + visible_bubble.screen_rect.x,
                 y: area.y + visible_bubble.screen_rect.y,
@@ -1158,7 +1158,8 @@ impl DrawApp for Frame<'_> {
                     let layout =
                         accent_layout(render_rect, visible_bubble.borders.contains(Borders::TOP));
 
-                    let color = workflow_color(message_workflow);
+                    let color =
+                        workflow_color(m.workflow_name.as_deref().unwrap_or(PROGRAMMING_WORKFLOW));
                     self.render_widget(accent_block(color, USER_PANEL_BG, "┃"), layout.panel_rect);
                     self.render_widget(
                         Paragraph::new(USER_ICON).style(Style::default().fg(color)),
@@ -1172,7 +1173,8 @@ impl DrawApp for Frame<'_> {
 
                 Message::Auto(m) => {
                     let layout = accent_layout(render_rect, false);
-                    let color = workflow_color(message_workflow);
+                    let color =
+                        workflow_color(m.workflow_name.as_deref().unwrap_or(PROGRAMMING_WORKFLOW));
                     self.render_widget(accent_block(color, AUTO_PANEL_BG, "┃"), layout.panel_rect);
                     self.render_widget(
                         Paragraph::new(AUTO_ICON).style(Style::default().fg(color)),
@@ -2924,8 +2926,10 @@ mod bubble_color_tests {
             app.workflow_name = Some(workflow.to_owned());
             app.chat_log.push_session_transition(workflow);
         }
-        app.chat_log.push_auto("auto prompt");
-        app.chat_log.push_user("user prompt");
+        app.chat_log
+            .push_auto_with_workflow("auto prompt", workflow.unwrap_or(PROGRAMMING_WORKFLOW));
+        app.chat_log
+            .push_user_with_workflow("user prompt", workflow.unwrap_or(PROGRAMMING_WORKFLOW));
         for reply in 0..agent_replies {
             app.chat_log.push_agent(format!("agent reply {reply}"));
         }

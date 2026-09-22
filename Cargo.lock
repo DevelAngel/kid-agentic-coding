@@ -1431,6 +1431,7 @@ dependencies = [
  "clap",
  "clap-verbosity-flag",
  "color-eyre",
+ "kid-agentic-coding-chat",
  "kid-agentic-coding-log-buffer",
  "kid-agentic-coding-session",
  "kid-agentic-coding-wire",
@@ -1444,6 +1445,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tui-markdown",
+]
+
+[[package]]
+name = "kid-agentic-coding-chat"
+version = "0.2.0"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]

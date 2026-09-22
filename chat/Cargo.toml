@@ -1,0 +1,7 @@
+[package]
+name = "kid-agentic-coding-chat"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tracing.workspace = true
