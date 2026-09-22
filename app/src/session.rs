@@ -3,7 +3,7 @@
 //! Protocol-facing logic only; the channel plumbing consumers see lives in
 //! [`crate::bridge`].
 
-use crate::bridge::{CommitFixVerdict, SessionEvent, SessionHandle, next_session_id};
+use crate::bridge::{CommitFixVerdict, SessionEvent, SessionHandle, ToolStatus, next_session_id};
 use crate::mcp;
 use crate::mcp::{BridgeSockets, FsSocketDir, SocketFileGuard};
 use crate::prompt::PromptRunner;
@@ -460,9 +460,9 @@ async fn handle_update(
                             tool_call_kinds.insert(tool_call_id.clone(), kind);
                             let target = tool_call_target(kind, &locations, raw_input.as_ref());
                             let _ = event_tx.send(SessionEvent::ToolCall {
-                                id: tool_call_id,
+                                id: tool_call_id.to_string(),
                                 title: tool_call_title(kind, title, target.as_deref()),
-                                status,
+                                status: status.into(),
                                 parameters: raw_input.map(|value| value.to_string()),
                                 result: tool_call_result(
                                     Some(kind),
@@ -494,8 +494,8 @@ async fn handle_update(
                                 tool_call_kinds.remove(&tool_call_id);
                             }
                             let _ = event_tx.send(SessionEvent::ToolCallUpdate {
-                                id: tool_call_id,
-                                status: fields.status,
+                                id: tool_call_id.to_string(),
+                                status: fields.status.map(ToolStatus::from),
                                 parameters: fields.raw_input.map(|value| value.to_string()),
                                 result,
                             });
@@ -517,7 +517,7 @@ async fn handle_update(
                     let (reply_tx, reply_rx) = oneshot::channel();
                     let (title, parameters) = permission_request_details(&request.tool_call);
                     let _ = event_tx.send(SessionEvent::PermissionRequest {
-                        tool_call_id: request.tool_call.tool_call_id,
+                        tool_call_id: request.tool_call.tool_call_id.to_string(),
                         title,
                         parameters,
                         options: request.options,
@@ -545,6 +545,19 @@ async fn handle_update(
     }
 
     Ok(())
+}
+
+/// Non-exhaustive future variants default to [`ToolStatus::Pending`].
+impl From<ToolCallStatus> for ToolStatus {
+    fn from(status: ToolCallStatus) -> Self {
+        match status {
+            ToolCallStatus::Pending => Self::Pending,
+            ToolCallStatus::InProgress => Self::Running,
+            ToolCallStatus::Completed => Self::Done,
+            ToolCallStatus::Failed => Self::Failed,
+            _ => Self::Pending,
+        }
+    }
 }
 
 /// Labels command executions while preserving the command in the title, and
@@ -676,6 +689,7 @@ fn tool_call_result(
 #[cfg(test)]
 mod tests {
     use super::{permission_request_details, tool_call_result, tool_call_target, tool_call_title};
+    use crate::bridge::ToolStatus;
     use agent_client_protocol::schema::v1::{
         ContentBlock, TextContent, ToolCallContent, ToolCallLocation, ToolCallStatus,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind,
@@ -683,6 +697,23 @@ mod tests {
 
     fn text_content(text: &str) -> ToolCallContent {
         ToolCallContent::from(ContentBlock::Text(TextContent::new(text)))
+    }
+
+    #[test]
+    fn every_known_tool_call_status_maps_to_its_counterpart() {
+        assert_eq!(
+            ToolStatus::from(ToolCallStatus::Pending),
+            ToolStatus::Pending
+        );
+        assert_eq!(
+            ToolStatus::from(ToolCallStatus::InProgress),
+            ToolStatus::Running
+        );
+        assert_eq!(
+            ToolStatus::from(ToolCallStatus::Completed),
+            ToolStatus::Done
+        );
+        assert_eq!(ToolStatus::from(ToolCallStatus::Failed), ToolStatus::Failed);
     }
 
     #[test]

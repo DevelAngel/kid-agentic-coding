@@ -3,7 +3,7 @@
 //! This module has no ACP-specific knowledge beyond the event payloads it carries;
 //! the protocol handling lives in [`crate::session`].
 
-use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
+use agent_client_protocol::schema::v1::{PermissionOption, StopReason};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -18,6 +18,15 @@ pub(crate) fn next_session_id() -> String {
     format!("session-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
+/// Lifecycle state of a tool call as reported by the agent.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ToolStatus {
+    Pending,
+    Running,
+    Done,
+    Failed,
+}
+
 /// Events emitted from an interactive session to a UI layer.
 #[derive(Debug)]
 pub enum SessionEvent {
@@ -29,17 +38,17 @@ pub enum SessionEvent {
 
     /// A new tool call has been initiated.
     ToolCall {
-        id: ToolCallId,
+        id: String,
         title: String,
-        status: ToolCallStatus,
+        status: ToolStatus,
         parameters: Option<String>,
         result: Option<String>,
     },
 
     /// A status or content update for an existing tool call.
     ToolCallUpdate {
-        id: ToolCallId,
-        status: Option<ToolCallStatus>,
+        id: String,
+        status: Option<ToolStatus>,
         parameters: Option<String>,
         result: Option<String>,
     },
@@ -55,7 +64,7 @@ pub enum SessionEvent {
     /// input for display. Reply with `Some(option_id)` to select an option,
     /// or `None` to cancel.
     PermissionRequest {
-        tool_call_id: ToolCallId,
+        tool_call_id: String,
         title: String,
         parameters: Option<String>,
         options: Vec<PermissionOption>,
