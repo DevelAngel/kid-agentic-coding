@@ -24,4 +24,4 @@ pub use chat_log::{
 };
 pub use markdown::render as render_markdown;
 pub use prompt::{PromptError, PromptRunner};
-pub use session::start_interactive_session;
+pub use session::{AgentLauncher, start_interactive_session};
