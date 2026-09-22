@@ -22,3 +22,4 @@ serde_json.workspace = true
 textwrap.workspace = true
 wire.workspace = true
 tui-markdown.workspace = true
+kid-agentic-coding-workflow.workspace = true
