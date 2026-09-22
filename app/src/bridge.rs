@@ -3,7 +3,7 @@
 //! This module has no ACP-specific knowledge beyond the event payloads it carries;
 //! the protocol handling lives in [`crate::session`].
 
-use agent_client_protocol::schema::v1::{PermissionOption, StopReason};
+use agent_client_protocol::schema::v1::StopReason;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -25,6 +25,13 @@ pub enum ToolStatus {
     Running,
     Done,
     Failed,
+}
+
+/// A choice offered to the user when the agent requests permission.
+#[derive(Debug, Clone)]
+pub struct PermissionOption {
+    pub id: String,
+    pub label: String,
 }
 
 /// Events emitted from an interactive session to a UI layer.

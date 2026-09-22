@@ -1,14 +1,14 @@
 //! Interactive terminal UI for an ACP session.
 
 use kid_agentic_coding::{
-    BubbleLayout, ChatLog, CommitFixVerdict, EntryId, Message, ScrollAnchor, SessionEvent,
-    SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, ToolStatus, VisibleBubble,
-    strip_redundant_name,
+    BubbleLayout, ChatLog, CommitFixVerdict, EntryId, Message, PermissionOption, ScrollAnchor,
+    SessionEvent, SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, ToolStatus,
+    VisibleBubble, strip_redundant_name,
 };
 use kid_agentic_coding::{FsSocketDir, render_markdown, start_interactive_session};
 use log_buffer::LogBuffer;
 
-use agent_client_protocol::schema::v1::{PermissionOption, StopReason};
+use agent_client_protocol::schema::v1::StopReason;
 use agent_client_protocol::{AcpAgent, AcpAgentConfig};
 use ansi_to_tui::IntoText;
 use rand::RngExt;
@@ -755,7 +755,7 @@ fn handle_permission_key(key: KeyCode, pending: &mut Option<PendingPermission>, 
         KeyCode::Char(c) if c.is_ascii_digit() => {
             let index = c.to_digit(10).unwrap_or(0) as usize;
             if index >= 1 && index <= permission.options.len() {
-                let option_id = permission.options[index - 1].option_id.clone();
+                let option_id = permission.options[index - 1].id.clone();
                 let _ = permission.reply.send(Some(option_id.to_string()));
                 return;
             }
@@ -1258,7 +1258,7 @@ impl DrawApp for Frame<'_> {
         }
         lines.push(Line::default());
         for (index, option) in pending.options.iter().enumerate() {
-            lines.push(Line::raw(format!("{}. {}", index + 1, option.name)));
+            lines.push(Line::raw(format!("{}. {}", index + 1, option.label)));
         }
 
         let block_title = match pending.name.as_deref() {
@@ -1691,10 +1691,10 @@ pub async fn run(
 #[cfg(test)]
 mod handle_key_tests {
     use super::{App, SCROLL_STEP, format_permission_parameters};
-    use agent_client_protocol::schema::v1::{PermissionOption, PermissionOptionKind, StopReason};
+    use agent_client_protocol::schema::v1::StopReason;
     use kid_agentic_coding::{
-        CommitFixVerdict, Message, SessionEvent, SessionHandle, SessionNoticeKind, Status, Step,
-        ToolStatus,
+        CommitFixVerdict, Message, PermissionOption, SessionEvent, SessionHandle,
+        SessionNoticeKind, Status, Step, ToolStatus,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::oneshot;
@@ -1807,11 +1807,11 @@ mod handle_key_tests {
             tool_call_id: "call-1".to_owned(),
             title: "Read app/src/ui.rs".to_owned(),
             parameters: Some(r#"{"path":"app/src/ui.rs"}"#.to_owned()),
-            options: vec![PermissionOption::new(
-                "allow_once",
-                "Allow once",
-                PermissionOptionKind::AllowOnce,
-            )],
+            options: vec![PermissionOption {
+                id: "allow_once".to_owned(),
+                label: "Allow once".to_owned(),
+            }],
+
             reply: reply_tx,
         });
 
@@ -1856,11 +1856,11 @@ mod handle_key_tests {
             tool_call_id: "call-1".to_owned(),
             title: "Read app/src/ui.rs".to_owned(),
             parameters: None,
-            options: vec![PermissionOption::new(
-                "allow_once",
-                "Allow once",
-                PermissionOptionKind::AllowOnce,
-            )],
+            options: vec![PermissionOption {
+                id: "allow_once".to_owned(),
+                label: "Allow once".to_owned(),
+            }],
+
             reply: reply_tx,
         });
 

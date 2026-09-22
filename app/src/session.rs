@@ -3,7 +3,9 @@
 //! Protocol-facing logic only; the channel plumbing consumers see lives in
 //! [`crate::bridge`].
 
-use crate::bridge::{CommitFixVerdict, SessionEvent, SessionHandle, ToolStatus, next_session_id};
+use crate::bridge::{
+    CommitFixVerdict, PermissionOption, SessionEvent, SessionHandle, ToolStatus, next_session_id,
+};
 use crate::mcp;
 use crate::mcp::{BridgeSockets, FsSocketDir, SocketFileGuard};
 use crate::prompt::PromptRunner;
@@ -520,7 +522,14 @@ async fn handle_update(
                         tool_call_id: request.tool_call.tool_call_id.to_string(),
                         title,
                         parameters,
-                        options: request.options,
+                        options: request
+                            .options
+                            .into_iter()
+                            .map(|option| PermissionOption {
+                                id: option.option_id.to_string(),
+                                label: option.name,
+                            })
+                            .collect(),
                         reply: reply_tx,
                     });
 
