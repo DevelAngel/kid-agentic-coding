@@ -12,7 +12,8 @@ mod prompt;
 mod session;
 
 pub use bridge::{
-    CommitFixVerdict, PermissionOption, SessionClosed, SessionEvent, SessionHandle, ToolStatus,
+    CommitFixVerdict, PermissionOption, SessionClosed, SessionEvent, SessionHandle, StopReason,
+    ToolStatus,
 };
 pub use mcp::FsSocketDir;
 
