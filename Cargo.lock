@@ -1427,24 +1427,19 @@ dependencies = [
 name = "kid-agentic-coding"
 version = "0.2.0"
 dependencies = [
- "agent-client-protocol",
- "agent-client-protocol-rmcp",
  "ansi-to-tui",
  "clap",
  "clap-verbosity-flag",
  "color-eyre",
- "derive_more 1.0.0",
  "kid-agentic-coding-log-buffer",
+ "kid-agentic-coding-session",
  "kid-agentic-coding-wire",
  "nerdicons_rs",
  "rand 0.10.2",
  "ratatui",
  "ratatui-textarea",
- "schemars 1.2.2",
- "serde",
  "serde_json",
  "textwrap",
- "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1549,6 +1544,23 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "kid-agentic-coding-session"
+version = "0.2.0"
+dependencies = [
+ "agent-client-protocol",
+ "agent-client-protocol-rmcp",
+ "ansi-to-tui",
+ "derive_more 1.0.0",
+ "kid-agentic-coding-wire",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

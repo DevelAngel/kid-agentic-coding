@@ -3,7 +3,7 @@ mod ui;
 use clap::{Parser, ValueHint};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::Result;
-use kid_agentic_coding::{AgentLauncher, FsSocketDir, PromptRunner};
+use kid_agentic_coding::{AgentLauncher, FsSocketDir, parse_agent_args};
 use log_buffer::{AGENT_STDERR_TARGET, LogBuffer};
 use std::env;
 use std::path::PathBuf;
@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
         })
         .transpose()?;
     let fs_socket_dir = FsSocketDir(fs_socket_dir);
-    let agent = PromptRunner::parse_agent_args(&args.agent_args)?;
+    let agent = parse_agent_args(&args.agent_args)?;
     let agent_launcher = AgentLauncher::new(agent.config().clone());
     ui::run(
         agent_launcher,
