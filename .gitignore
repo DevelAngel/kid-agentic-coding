@@ -24,3 +24,7 @@ target
 # Added by cargo
 
 /target
+
+# The session crate is source code, not a user session directory.
+!/session/
+!/session/**

@@ -1,0 +1,17 @@
+[package]
+name = "kid-agentic-coding-session"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agent-client-protocol.workspace = true
+agent-client-protocol-rmcp.workspace = true
+ansi-to-tui.workspace = true
+derive_more.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+wire.workspace = true

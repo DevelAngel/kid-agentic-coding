@@ -9,7 +9,10 @@ use crate::bridge::{
 };
 use crate::mcp;
 use crate::mcp::{BridgeSockets, FsSocketDir, SocketFileGuard};
-use crate::prompt::PromptRunner;
+use agent_client_protocol::schema::v1::{
+    AudioContent, ContentBlock, EmbeddedResourceResource, ImageContent, TextContent,
+};
+use ansi_to_tui::IntoText;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
@@ -21,7 +24,8 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{
-    AcpAgent, AcpAgentConfig, Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage,
+    AcpAgent, AcpAgentConfig, Agent, Client, ConnectTo, ConnectionTo, Error, LineDirection,
+    SessionMessage,
 };
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -34,26 +38,85 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::future;
+use std::iter;
 use std::path::{Path, PathBuf};
 
+pub fn parse_agent_args(agent_args: &[String]) -> Result<AcpAgent, Error> {
+    let agent = match agent_args {
+        [configuration] if configuration.trim_start().starts_with('{') => configuration.parse()?,
+        arguments => AcpAgent::from_args(arguments)?,
+    };
+    let config = agent.config();
+    let command_line = iter::once(config.command().display().to_string())
+        .chain(config.arguments().iter().cloned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    tracing::info!(%command_line, "agent program");
+    Ok(agent)
+}
+
+fn content_block_to_string(block: &ContentBlock) -> String {
+    match block {
+        ContentBlock::Text(TextContent { text, .. }) => text.clone(),
+        ContentBlock::Image(ImageContent { mime_type, .. }) => format!("[Image: {mime_type}]"),
+        ContentBlock::Audio(AudioContent { mime_type, .. }) => format!("[Audio: {mime_type}]"),
+        ContentBlock::ResourceLink(link) => link.uri.clone(),
+        ContentBlock::Resource(resource) => match &resource.resource {
+            EmbeddedResourceResource::TextResourceContents(text) => text.uri.clone(),
+            EmbeddedResourceResource::BlobResourceContents(blob) => blob.uri.clone(),
+            _ => "[Unknown resource type]".to_owned(),
+        },
+        _ => "[Unknown content type]".to_owned(),
+    }
+}
+
+fn add_stderr_logging(agent: AcpAgent, session_id: String) -> AcpAgent {
+    agent.with_debug(move |line, direction| {
+        if direction != LineDirection::Stderr {
+            return;
+        }
+        let clean_line = match line.as_bytes().to_vec().into_text() {
+            Ok(text) => text
+                .lines
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(_) => line.to_string(),
+        };
+        tracing::debug!(
+            target: AGENT_STDERR_TARGET,
+            session_id = %session_id,
+            "{clean_line}"
+        );
+    })
+}
+
+const AGENT_STDERR_TARGET: &str = "agent_stderr";
 /// Working directory the agent session operates in. `.` ties the session to
 /// the current process's working directory.
 const SESSION_ROOT: &str = ".";
 
 /// Starts an interactive ACP session that stays open across multiple prompts.
-///
-/// Unlike [`crate::prompt_with_callback`], which runs a single turn and returns,
-/// this spawns the agent connection as a background task and returns a
+/// Unlike a one-shot prompt, this keeps the agent connection open across turns.
+/// This spawns the agent connection as a background task and returns a
 /// [`SessionHandle`] immediately. Send prompts and read [`SessionEvent`]s through
 /// the handle for as long as needed; dropping the handle shuts the session down.
 pub fn start_interactive_session(
-    component: impl ConnectTo<Client> + 'static,
+    component: AcpAgent,
     disable_confetti: bool,
     workflow_name: Option<String>,
     fs_socket_dir: FsSocketDir,
     session_root: Option<PathBuf>,
 ) -> SessionHandle {
     let (prompt_tx, prompt_rx) = mpsc::unbounded_channel::<String>();
+    let session_id = next_session_id();
+    let component = add_stderr_logging(component, session_id.clone());
     let (cancel_tx, cancel_rx) = mpsc::unbounded_channel::<()>();
     let (event_tx, event_rx) = mpsc::unbounded_channel::<SessionEvent>();
 
@@ -72,7 +135,7 @@ pub fn start_interactive_session(
         prompt_tx,
         event_rx,
         cancel_tx,
-        session_id: next_session_id(),
+        session_id,
         workflow_name,
     }
 }
@@ -471,13 +534,11 @@ async fn handle_update(
                 .if_notification(async |notification: SessionNotification| {
                     match notification.update {
                         SessionUpdate::AgentMessageChunk(content_chunk) => {
-                            let text =
-                                PromptRunner::content_block_to_string(&content_chunk.content);
+                            let text = content_block_to_string(&content_chunk.content);
                             let _ = event_tx.send(SessionEvent::Chunk(text));
                         }
                         SessionUpdate::AgentThoughtChunk(content_chunk) => {
-                            let text =
-                                PromptRunner::content_block_to_string(&content_chunk.content);
+                            let text = content_block_to_string(&content_chunk.content);
                             let _ = event_tx.send(SessionEvent::Thought(text));
                         }
                         SessionUpdate::ToolCall(ToolCall {
@@ -709,7 +770,7 @@ fn tool_call_result(
             .iter()
             .filter_map(|item| match item {
                 ToolCallContent::Content(content) => {
-                    Some(PromptRunner::content_block_to_string(&content.content))
+                    Some(content_block_to_string(&content.content))
                 }
                 _ => None,
             })
@@ -725,9 +786,7 @@ fn tool_call_result(
     let rendered: Vec<String> = content
         .iter()
         .map(|item| match item {
-            ToolCallContent::Content(content) => {
-                PromptRunner::content_block_to_string(&content.content)
-            }
+            ToolCallContent::Content(content) => content_block_to_string(&content.content),
             ToolCallContent::Diff(diff) => format!("[diff: {}]", diff.path.display()),
             ToolCallContent::Terminal(terminal) => {
                 format!("[terminal: {}]", terminal.terminal_id)
@@ -746,6 +805,7 @@ fn tool_call_result(
 
 #[cfg(test)]
 mod tests {
+    use super::parse_agent_args;
     use super::{permission_request_details, tool_call_result, tool_call_target, tool_call_title};
     use crate::bridge::{StopReason, ToolStatus};
     use agent_client_protocol::schema::v1::{
@@ -971,5 +1031,35 @@ mod tests {
             permission_request_details(&tool_call),
             ("Tool call".to_owned(), None)
         );
+    }
+    #[test]
+    fn parses_json_agent_configuration() {
+        let agent = parse_agent_args(&[
+            r#"{"command":"python","args":["agent.py"],"env":{"RUST_LOG":"debug"}}"#.to_owned(),
+        ])
+        .expect("JSON agent configuration parses");
+
+        assert_eq!(agent.config().command(), std::path::Path::new("python"));
+        assert_eq!(agent.config().arguments(), ["agent.py"]);
+        assert_eq!(
+            agent
+                .config()
+                .environment()
+                .get("RUST_LOG")
+                .map(String::as_str),
+            Some("debug")
+        );
+    }
+
+    #[test]
+    fn preserves_single_executable_path_with_spaces() {
+        let agent =
+            parse_agent_args(&["/Applications/My Agent".to_owned()]).expect("agent path parses");
+
+        assert_eq!(
+            agent.config().command(),
+            std::path::Path::new("/Applications/My Agent")
+        );
+        assert!(agent.config().arguments().is_empty());
     }
 }
