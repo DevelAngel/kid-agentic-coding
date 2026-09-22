@@ -1,10 +1,13 @@
 //! Interactive terminal UI for an ACP session.
 
-use kid_agentic_coding::{AgentLauncher, FsSocketDir, render_markdown};
-use kid_agentic_coding::{
-    BubbleLayout, ChatLog, EntryId, Message, PermissionOption, ScrollAnchor, SessionEvent,
-    SessionHandle, SessionNoticeKind, Status, Step, StopReason, ToolCluster, ToolStatus,
-    VisibleBubble, strip_redundant_name,
+use kid_agentic_coding::{BubbleLayout, ScrollAnchor, VisibleBubble, render_markdown};
+use kid_agentic_coding_chat::{
+    ChatLog, EntryId, Message, SessionNoticeKind, Status, Step, ToolCallEntry, ToolCluster,
+    strip_redundant_name,
+};
+use kid_agentic_coding_session::{
+    AgentLauncher, FsSocketDir, PermissionOption, SessionEvent, SessionHandle, StopReason,
+    ToolStatus,
 };
 use kid_agentic_coding_workflow::{MAIN_WORKFLOW, Workflow, WorkflowManager, WorkflowView};
 use log_buffer::LogBuffer;
@@ -825,12 +828,7 @@ trait DrawApp {
     /// Renders the permission popup over the given area.
     fn draw_permission_popup(&mut self, pending: &PendingPermission, scroll: u16, area: Rect);
     /// Renders a tool call audit popup over the given area.
-    fn draw_tool_call_popup(
-        &mut self,
-        entry: &kid_agentic_coding::ToolCallEntry,
-        scroll: u16,
-        area: Rect,
-    );
+    fn draw_tool_call_popup(&mut self, entry: &ToolCallEntry, scroll: u16, area: Rect);
 
     /// Renders the log popup over the given area.
     fn draw_log_popup(&mut self, lines: &[String], scroll: u16, area: Rect);
@@ -1138,12 +1136,7 @@ impl DrawApp for Frame<'_> {
         self.render_widget(popup, popup_area);
     }
 
-    fn draw_tool_call_popup(
-        &mut self,
-        entry: &kid_agentic_coding::ToolCallEntry,
-        scroll: u16,
-        area: Rect,
-    ) {
+    fn draw_tool_call_popup(&mut self, entry: &ToolCallEntry, scroll: u16, area: Rect) {
         let popup_area = centered_rect(90, 85, area);
         let (status_icon, _, status) = status_style(entry.status);
         let parameters = format_permission_parameters(entry.parameters.as_deref());
@@ -1453,7 +1446,7 @@ fn status_style(status: Status) -> (&'static str, Color, &'static str) {
 #[cfg(test)]
 mod tool_status_icon_tests {
     use super::{animated_status_icon, running_icon, status_style};
-    use kid_agentic_coding::Status;
+    use kid_agentic_coding_chat::Status;
 
     #[test]
     fn running_tool_status_uses_the_live_spinner() {
@@ -1549,9 +1542,9 @@ pub async fn run(
 #[cfg(test)]
 mod handle_key_tests {
     use super::{App, SCROLL_STEP, format_permission_parameters};
-    use kid_agentic_coding::{
-        Message, PermissionOption, SessionEvent, SessionHandle, SessionNoticeKind, Status, Step,
-        StopReason, ToolStatus,
+    use kid_agentic_coding_chat::{Message, SessionNoticeKind, Status, Step};
+    use kid_agentic_coding_session::{
+        PermissionOption, SessionEvent, SessionHandle, StopReason, ToolStatus,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::oneshot;
@@ -2207,10 +2200,10 @@ mod handle_key_tests {
 #[cfg(test)]
 mod session_event_tests {
     use super::{App, map_tool_call_status, render_tool_cluster};
-    use kid_agentic_coding::{
-        Message, SessionEvent, Status, Step, StopReason, ToolCluster, ToolStatus,
-        strip_redundant_name,
+    use kid_agentic_coding_chat::{
+        Message, Status, Step, ToolCallEntry, ToolCluster, strip_redundant_name,
     };
+    use kid_agentic_coding_session::{SessionEvent, StopReason, ToolStatus};
 
     fn thought(text: &str) -> SessionEvent {
         SessionEvent::Thought(text.to_owned())
@@ -2226,8 +2219,7 @@ mod session_event_tests {
         };
         cluster
     }
-
-    fn nth_tool_call(cluster: &ToolCluster, index: usize) -> &kid_agentic_coding::ToolCallEntry {
+    fn nth_tool_call(cluster: &ToolCluster, index: usize) -> &ToolCallEntry {
         let mut calls = cluster.steps().iter().filter_map(|step| match step {
             Step::ToolCall(entry) => Some(entry),
             Step::Thought { .. } => None,

@@ -1,6 +1,7 @@
 //! Contract tests for `BubbleLayout`.
 
-use kid_agentic_coding::{Alignment, BubbleLayout, ChatLog, Status};
+use kid_agentic_coding::{Alignment, BubbleLayout};
+use kid_agentic_coding_chat::{ChatLog, Status};
 use ratatui::widgets::Borders;
 
 #[test]

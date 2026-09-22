@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-kid-agentic-coding-chat = { path = "../chat" }
+kid-agentic-coding-chat.workspace = true
 kid-agentic-coding-session.workspace = true
 ansi-to-tui.workspace = true
 clap.workspace = true
@@ -20,6 +20,5 @@ tracing.workspace = true
 rand.workspace = true
 serde_json.workspace = true
 textwrap.workspace = true
-wire.workspace = true
 tui-markdown.workspace = true
 kid-agentic-coding-workflow.workspace = true

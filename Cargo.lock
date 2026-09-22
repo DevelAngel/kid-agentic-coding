@@ -1434,7 +1434,6 @@ dependencies = [
  "kid-agentic-coding-chat",
  "kid-agentic-coding-log-buffer",
  "kid-agentic-coding-session",
- "kid-agentic-coding-wire",
  "kid-agentic-coding-workflow",
  "nerdicons_rs",
  "rand 0.10.2",

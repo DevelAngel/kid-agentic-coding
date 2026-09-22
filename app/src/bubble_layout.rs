@@ -2,7 +2,7 @@
 //! and scroll bounds. No terminal or I/O access.
 
 use crate::markdown;
-use crate::{ChatLog, Message, Status, Step, ToolCluster, strip_redundant_name};
+use kid_agentic_coding_chat::{ChatLog, Message, Status, Step, ToolCluster, strip_redundant_name};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Borders, Paragraph, Wrap};
 use textwrap::Options;
@@ -331,7 +331,7 @@ fn wrapped_line_count(text: &str, width: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{BubbleLayout, wrapped_line_count};
-    use crate::ChatLog;
+    use kid_agentic_coding_chat::ChatLog;
 
     #[test]
     fn wrapped_line_count_preserves_explicit_newlines() {
