@@ -4,7 +4,8 @@
 //! [`crate::bridge`].
 
 use crate::bridge::{
-    CommitFixVerdict, PermissionOption, SessionEvent, SessionHandle, ToolStatus, next_session_id,
+    CommitFixVerdict, PermissionOption, SessionEvent, SessionHandle, StopReason, ToolStatus,
+    next_session_id,
 };
 use crate::mcp;
 use crate::mcp::{BridgeSockets, FsSocketDir, SocketFileGuard};
@@ -15,8 +16,8 @@ use agent_client_protocol::schema::v1::{
     CancelNotification, InitializeRequest, NewSessionRequest, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
     SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionNotification,
-    SessionUpdate, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus,
-    ToolCallUpdate, ToolKind,
+    SessionUpdate, StopReason as AcpStopReason, ToolCall, ToolCallContent, ToolCallId,
+    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
@@ -548,7 +549,7 @@ async fn handle_update(
                 .await?;
         }
         SessionMessage::StopReason(stop_reason) => {
-            let _ = event_tx.send(SessionEvent::Stopped(stop_reason));
+            let _ = event_tx.send(SessionEvent::Stopped(stop_reason.into()));
         }
         _ => {}
     }
@@ -565,6 +566,20 @@ impl From<ToolCallStatus> for ToolStatus {
             ToolCallStatus::Completed => Self::Done,
             ToolCallStatus::Failed => Self::Failed,
             _ => Self::Pending,
+        }
+    }
+}
+
+/// Non-exhaustive future variants are kept as debug text in [`StopReason::Other`].
+impl From<AcpStopReason> for StopReason {
+    fn from(reason: AcpStopReason) -> Self {
+        match reason {
+            AcpStopReason::EndTurn => Self::EndTurn,
+            AcpStopReason::Cancelled => Self::Cancelled,
+            AcpStopReason::MaxTokens => Self::MaxTokens,
+            AcpStopReason::MaxTurnRequests => Self::MaxTurnRequests,
+            AcpStopReason::Refusal => Self::Refusal,
+            other => Self::Other(format!("{other:?}")),
         }
     }
 }
@@ -698,10 +713,10 @@ fn tool_call_result(
 #[cfg(test)]
 mod tests {
     use super::{permission_request_details, tool_call_result, tool_call_target, tool_call_title};
-    use crate::bridge::ToolStatus;
+    use crate::bridge::{StopReason, ToolStatus};
     use agent_client_protocol::schema::v1::{
-        ContentBlock, TextContent, ToolCallContent, ToolCallLocation, ToolCallStatus,
-        ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+        ContentBlock, StopReason as AcpStopReason, TextContent, ToolCallContent, ToolCallLocation,
+        ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     };
 
     fn text_content(text: &str) -> ToolCallContent {
@@ -723,6 +738,30 @@ mod tests {
             ToolStatus::Done
         );
         assert_eq!(ToolStatus::from(ToolCallStatus::Failed), ToolStatus::Failed);
+    }
+
+    #[test]
+    fn every_known_stop_reason_maps_to_its_counterpart() {
+        assert_eq!(
+            StopReason::from(AcpStopReason::EndTurn),
+            StopReason::EndTurn
+        );
+        assert_eq!(
+            StopReason::from(AcpStopReason::Cancelled),
+            StopReason::Cancelled
+        );
+        assert_eq!(
+            StopReason::from(AcpStopReason::MaxTokens),
+            StopReason::MaxTokens
+        );
+        assert_eq!(
+            StopReason::from(AcpStopReason::MaxTurnRequests),
+            StopReason::MaxTurnRequests
+        );
+        assert_eq!(
+            StopReason::from(AcpStopReason::Refusal),
+            StopReason::Refusal
+        );
     }
 
     #[test]

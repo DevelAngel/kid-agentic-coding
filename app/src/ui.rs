@@ -2,13 +2,12 @@
 
 use kid_agentic_coding::{
     BubbleLayout, ChatLog, CommitFixVerdict, EntryId, Message, PermissionOption, ScrollAnchor,
-    SessionEvent, SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, ToolStatus,
-    VisibleBubble, strip_redundant_name,
+    SessionEvent, SessionHandle, SessionNoticeKind, Status, Step, StopReason, ToolCluster,
+    ToolStatus, VisibleBubble, strip_redundant_name,
 };
 use kid_agentic_coding::{FsSocketDir, render_markdown, start_interactive_session};
 use log_buffer::LogBuffer;
 
-use agent_client_protocol::schema::v1::StopReason;
 use agent_client_protocol::{AcpAgent, AcpAgentConfig};
 use ansi_to_tui::IntoText;
 use rand::RngExt;
@@ -716,7 +715,7 @@ fn stop_reason_text(reason: StopReason) -> String {
         }
         StopReason::Refusal => "Session stopped: agent refused the request.".to_string(),
         StopReason::EndTurn => "".to_string(),
-        _ => format!("Session stopped: {reason:?}."),
+        StopReason::Other(text) => format!("Session stopped: {text}."),
     }
 }
 
@@ -1691,10 +1690,9 @@ pub async fn run(
 #[cfg(test)]
 mod handle_key_tests {
     use super::{App, SCROLL_STEP, format_permission_parameters};
-    use agent_client_protocol::schema::v1::StopReason;
     use kid_agentic_coding::{
         CommitFixVerdict, Message, PermissionOption, SessionEvent, SessionHandle,
-        SessionNoticeKind, Status, Step, ToolStatus,
+        SessionNoticeKind, Status, Step, StopReason, ToolStatus,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::oneshot;
@@ -2384,7 +2382,8 @@ mod handle_key_tests {
 mod session_event_tests {
     use super::{App, map_tool_call_status, render_tool_cluster};
     use kid_agentic_coding::{
-        Message, SessionEvent, Status, Step, ToolCluster, ToolStatus, strip_redundant_name,
+        Message, SessionEvent, Status, Step, StopReason, ToolCluster, ToolStatus,
+        strip_redundant_name,
     };
 
     fn thought(text: &str) -> SessionEvent {
@@ -2427,9 +2426,7 @@ mod session_event_tests {
             result: None,
         });
         app.handle_session_event(chunk("Here is the fix."));
-        app.handle_session_event(SessionEvent::Stopped(
-            agent_client_protocol::schema::v1::StopReason::EndTurn,
-        ));
+        app.handle_session_event(SessionEvent::Stopped(StopReason::EndTurn));
 
         assert_eq!(app.chat_log.len(), 5);
         assert!(
@@ -2822,9 +2819,7 @@ mod session_event_tests {
         let mut app = App::new();
 
         app.handle_session_event(thought("final thoughts"));
-        app.handle_session_event(SessionEvent::Stopped(
-            agent_client_protocol::schema::v1::StopReason::EndTurn,
-        ));
+        app.handle_session_event(SessionEvent::Stopped(StopReason::EndTurn));
 
         let Step::Thought { status, .. } = &tool_cluster(&app, 0).steps()[0] else {
             panic!("expected a thought step");
@@ -2868,9 +2863,7 @@ mod session_event_tests {
         let mut app = App::new();
 
         app.handle_session_event(thought("internal reasoning to hide"));
-        app.handle_session_event(SessionEvent::Stopped(
-            agent_client_protocol::schema::v1::StopReason::EndTurn,
-        ));
+        app.handle_session_event(SessionEvent::Stopped(StopReason::EndTurn));
 
         let rendered = render_tool_cluster(tool_cluster(&app, 0), false, true, None, 0, 80);
         let lines: Vec<String> = rendered.lines.iter().map(|line| line.to_string()).collect();

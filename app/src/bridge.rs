@@ -3,7 +3,6 @@
 //! This module has no ACP-specific knowledge beyond the event payloads it carries;
 //! the protocol handling lives in [`crate::session`].
 
-use agent_client_protocol::schema::v1::StopReason;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -32,6 +31,18 @@ pub enum ToolStatus {
 pub struct PermissionOption {
     pub id: String,
     pub label: String,
+}
+
+/// Why the agent's turn ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StopReason {
+    EndTurn,
+    Cancelled,
+    MaxTokens,
+    MaxTurnRequests,
+    Refusal,
+    /// Debug text of a future variant not yet known to this crate.
+    Other(String),
 }
 
 /// Events emitted from an interactive session to a UI layer.
