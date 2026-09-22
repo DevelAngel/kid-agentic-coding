@@ -1,14 +1,13 @@
 //! Interactive terminal UI for an ACP session.
 
+use kid_agentic_coding::{AgentLauncher, FsSocketDir, render_markdown};
 use kid_agentic_coding::{
     BubbleLayout, ChatLog, CommitFixVerdict, EntryId, Message, PermissionOption, ScrollAnchor,
     SessionEvent, SessionHandle, SessionNoticeKind, Status, Step, StopReason, ToolCluster,
     ToolStatus, VisibleBubble, strip_redundant_name,
 };
-use kid_agentic_coding::{FsSocketDir, render_markdown, start_interactive_session};
 use log_buffer::LogBuffer;
 
-use agent_client_protocol::{AcpAgent, AcpAgentConfig};
 use ansi_to_tui::IntoText;
 use rand::RngExt;
 use ratatui::Frame;
@@ -803,7 +802,7 @@ async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     main_session: &mut SessionHandle,
-    agent_config: &AcpAgentConfig,
+    agent_launcher: &AgentLauncher,
     fs_socket_dir: FsSocketDir,
     term_events: &mut UnboundedReceiver<Event>,
 ) -> io::Result<()> {
@@ -850,7 +849,7 @@ async fn run_app(
                             open_commit_fix_session(
                                 app,
                                 main_session,
-                                agent_config,
+                                agent_launcher,
                                 fs_socket_dir.clone(),
                                 request,
                             )
@@ -899,7 +898,7 @@ async fn run_app(
 async fn open_commit_fix_session(
     app: &mut App,
     main_session: &mut SessionHandle,
-    agent_config: &AcpAgentConfig,
+    agent_launcher: &AgentLauncher,
     fs_socket_dir: FsSocketDir,
     fix: CommitFixRequest,
 ) -> SessionHandle {
@@ -921,9 +920,7 @@ async fn open_commit_fix_session(
     }
 
     tracing::info!("main session cancelled; starting commit-fix session");
-    let fix_component = AcpAgent::new(agent_config.clone());
-    let fix_session = start_interactive_session(
-        fix_component,
+    let fix_session = agent_launcher.start(
         true,
         Some(COMMIT_FIX_WORKFLOW.to_owned()),
         fs_socket_dir,
@@ -1658,14 +1655,12 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 /// Runs the interactive terminal UI against the given agent component until
 /// the user quits, restoring the terminal afterwards regardless of outcome.
 pub async fn run(
-    agent: AcpAgent,
+    agent_launcher: AgentLauncher,
     log_buffer: LogBuffer,
     disable_confetti: bool,
     fs_socket_dir: FsSocketDir,
 ) -> io::Result<()> {
-    let agent_config = agent.config().clone();
-    let mut session =
-        start_interactive_session(agent, disable_confetti, None, fs_socket_dir.clone(), None);
+    let mut session = agent_launcher.start(disable_confetti, None, fs_socket_dir.clone(), None);
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
     let mut app = App::with_log_buffer(log_buffer);
@@ -1676,7 +1671,7 @@ pub async fn run(
         &mut terminal,
         &mut app,
         &mut session,
-        &agent_config,
+        &agent_launcher,
         fs_socket_dir,
         &mut term_events,
     )

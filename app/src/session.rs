@@ -20,7 +20,9 @@ use agent_client_protocol::schema::v1::{
     ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::util::MatchDispatch;
-use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage};
+use agent_client_protocol::{
+    AcpAgent, AcpAgentConfig, Agent, Client, ConnectTo, ConnectionTo, Error, SessionMessage,
+};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
@@ -72,6 +74,35 @@ pub fn start_interactive_session(
         cancel_tx,
         session_id: next_session_id(),
         workflow_name,
+    }
+}
+
+/// Starts fresh ACP agent sessions from a saved agent configuration, so
+/// consumers can open new sessions (e.g. for a commit-fix workflow) without
+/// depending on `agent_client_protocol` themselves.
+pub struct AgentLauncher {
+    config: AcpAgentConfig,
+}
+
+impl AgentLauncher {
+    pub fn new(config: AcpAgentConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn start(
+        &self,
+        disable_confetti: bool,
+        workflow_name: Option<String>,
+        fs_socket_dir: FsSocketDir,
+        session_root: Option<PathBuf>,
+    ) -> SessionHandle {
+        start_interactive_session(
+            AcpAgent::new(self.config.clone()),
+            disable_confetti,
+            workflow_name,
+            fs_socket_dir,
+            session_root,
+        )
     }
 }
 
@@ -557,7 +588,7 @@ async fn handle_update(
     Ok(())
 }
 
-/// Non-exhaustive future variants default to [`ToolStatus::Pending`].
+/// `ToolCallStatus` currently has no `Cancelled`-like or catch-all variant (that belongs to `StopReason`); the wildcard below only satisfies `#[non_exhaustive]` and logs if the crate ever adds one.
 impl From<ToolCallStatus> for ToolStatus {
     fn from(status: ToolCallStatus) -> Self {
         match status {
@@ -565,7 +596,10 @@ impl From<ToolCallStatus> for ToolStatus {
             ToolCallStatus::InProgress => Self::Running,
             ToolCallStatus::Completed => Self::Done,
             ToolCallStatus::Failed => Self::Failed,
-            _ => Self::Pending,
+            other => {
+                tracing::warn!("unsupported ToolCallStatus variant: {other:?}");
+                Self::Pending
+            }
         }
     }
 }
