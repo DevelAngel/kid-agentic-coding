@@ -11,7 +11,7 @@ mod mcp;
 mod prompt;
 mod session;
 
-pub use bridge::{CommitFixVerdict, SessionClosed, SessionEvent, SessionHandle};
+pub use bridge::{CommitFixVerdict, SessionClosed, SessionEvent, SessionHandle, ToolStatus};
 pub use mcp::FsSocketDir;
 
 pub use bubble_layout::{Alignment, Bubble, BubbleLayout, ScrollAnchor, VisibleBubble};

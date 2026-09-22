@@ -2,13 +2,13 @@
 
 use kid_agentic_coding::{
     BubbleLayout, ChatLog, CommitFixVerdict, EntryId, Message, ScrollAnchor, SessionEvent,
-    SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, VisibleBubble,
+    SessionHandle, SessionNoticeKind, Status, Step, ToolCluster, ToolStatus, VisibleBubble,
     strip_redundant_name,
 };
 use kid_agentic_coding::{FsSocketDir, render_markdown, start_interactive_session};
 use log_buffer::LogBuffer;
 
-use agent_client_protocol::schema::v1::{PermissionOption, StopReason, ToolCallId, ToolCallStatus};
+use agent_client_protocol::schema::v1::{PermissionOption, StopReason};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig};
 use ansi_to_tui::IntoText;
 use rand::RngExt;
@@ -139,7 +139,7 @@ struct App {
     /// navigating to older content; re-enabled via [`KeyCode::End`].
     autoscroll: bool,
     should_quit: bool,
-    tool_call_ids: HashMap<ToolCallId, EntryId>,
+    tool_call_ids: HashMap<String, EntryId>,
     confetti: Option<Confetti>,
     spinner_phase: usize,
     /// Index into `chat_log.messages()` of the `ToolCluster` currently
@@ -697,15 +697,13 @@ fn next_tool_call(tool_calls: &[EntryId], selected: Option<EntryId>) -> Option<E
     }
 }
 
-/// Maps an ACP tool call status onto the chat log's protocol-agnostic
-/// [`Status`]. Non-exhaustive future variants default to [`Status::Pending`].
-fn map_tool_call_status(status: ToolCallStatus) -> Status {
+/// Maps a session tool status onto the chat log's [`Status`].
+fn map_tool_call_status(status: ToolStatus) -> Status {
     match status {
-        ToolCallStatus::Pending => Status::Pending,
-        ToolCallStatus::InProgress => Status::Running,
-        ToolCallStatus::Completed => Status::Done,
-        ToolCallStatus::Failed => Status::Failed,
-        _ => Status::Pending,
+        ToolStatus::Pending => Status::Pending,
+        ToolStatus::Running => Status::Running,
+        ToolStatus::Done => Status::Done,
+        ToolStatus::Failed => Status::Failed,
     }
 }
 
@@ -1693,11 +1691,10 @@ pub async fn run(
 #[cfg(test)]
 mod handle_key_tests {
     use super::{App, SCROLL_STEP, format_permission_parameters};
-    use agent_client_protocol::schema::v1::{
-        PermissionOption, PermissionOptionKind, StopReason, ToolCallId, ToolCallStatus,
-    };
+    use agent_client_protocol::schema::v1::{PermissionOption, PermissionOptionKind, StopReason};
     use kid_agentic_coding::{
         CommitFixVerdict, Message, SessionEvent, SessionHandle, SessionNoticeKind, Status, Step,
+        ToolStatus,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::oneshot;
@@ -1709,9 +1706,9 @@ mod handle_key_tests {
 
     fn push_tool_call(app: &mut App, id: &str, name: &str) {
         app.handle_session_event(SessionEvent::ToolCall {
-            id: ToolCallId::new(id.to_owned()),
+            id: id.to_owned(),
             title: name.to_owned(),
-            status: ToolCallStatus::Pending,
+            status: ToolStatus::Pending,
             parameters: None,
             result: None,
         });
@@ -1807,7 +1804,7 @@ mod handle_key_tests {
         let (reply_tx, _reply_rx) = oneshot::channel();
 
         app.handle_session_event(SessionEvent::PermissionRequest {
-            tool_call_id: ToolCallId::new("call-1".to_owned()),
+            tool_call_id: "call-1".to_owned(),
             title: "Read app/src/ui.rs".to_owned(),
             parameters: Some(r#"{"path":"app/src/ui.rs"}"#.to_owned()),
             options: vec![PermissionOption::new(
@@ -1836,7 +1833,7 @@ mod handle_key_tests {
         let (reply_tx, _reply_rx) = oneshot::channel();
 
         app.handle_session_event(SessionEvent::PermissionRequest {
-            tool_call_id: ToolCallId::new("call-unknown".to_owned()),
+            tool_call_id: "call-unknown".to_owned(),
             title: "Tool call".to_owned(),
             parameters: None,
             options: vec![],
@@ -1856,7 +1853,7 @@ mod handle_key_tests {
         let (reply_tx, mut reply_rx) = oneshot::channel();
 
         app.handle_session_event(SessionEvent::PermissionRequest {
-            tool_call_id: ToolCallId::new("call-1".to_owned()),
+            tool_call_id: "call-1".to_owned(),
             title: "Read app/src/ui.rs".to_owned(),
             parameters: None,
             options: vec![PermissionOption::new(
@@ -1881,7 +1878,7 @@ mod handle_key_tests {
         let (first_reply_tx, _first_reply_rx) = oneshot::channel();
 
         app.handle_session_event(SessionEvent::PermissionRequest {
-            tool_call_id: ToolCallId::new("call-1".to_owned()),
+            tool_call_id: "call-1".to_owned(),
             title: "Read app/src/ui.rs".to_owned(),
             parameters: None,
             options: vec![],
@@ -1893,7 +1890,7 @@ mod handle_key_tests {
         app.handle_key(key(KeyCode::Esc), &session);
         let (second_reply_tx, _second_reply_rx) = oneshot::channel();
         app.handle_session_event(SessionEvent::PermissionRequest {
-            tool_call_id: ToolCallId::new("call-2".to_owned()),
+            tool_call_id: "call-2".to_owned(),
             title: "Write app/src/ui.rs".to_owned(),
             parameters: None,
             options: vec![],
@@ -2278,9 +2275,9 @@ mod handle_key_tests {
         let session = test_session();
         push_tool_call(&mut app, "call-1", "run_tests");
         app.handle_session_event(SessionEvent::ToolCallUpdate {
-            id: ToolCallId::new("call-1".to_owned()),
+            id: "call-1".to_owned(),
             parameters: None,
-            status: Some(ToolCallStatus::Failed),
+            status: Some(ToolStatus::Failed),
             result: Some("assertion failed: left != right".to_owned()),
         });
 
@@ -2303,9 +2300,9 @@ mod handle_key_tests {
         let session = test_session();
         push_tool_call(&mut app, "call-1", "read_file");
         app.handle_session_event(SessionEvent::ToolCallUpdate {
-            id: ToolCallId::new("call-1".to_owned()),
+            id: "call-1".to_owned(),
             parameters: None,
-            status: Some(ToolCallStatus::Completed),
+            status: Some(ToolStatus::Done),
             result: Some("line one\nline two\nline three".to_owned()),
         });
 
@@ -2386,9 +2383,8 @@ mod handle_key_tests {
 #[cfg(test)]
 mod session_event_tests {
     use super::{App, map_tool_call_status, render_tool_cluster};
-    use agent_client_protocol::schema::v1::{ToolCallId, ToolCallStatus};
     use kid_agentic_coding::{
-        Message, SessionEvent, Status, Step, ToolCluster, strip_redundant_name,
+        Message, SessionEvent, Status, Step, ToolCluster, ToolStatus, strip_redundant_name,
     };
 
     fn thought(text: &str) -> SessionEvent {
@@ -2424,9 +2420,9 @@ mod session_event_tests {
         app.handle_session_event(thought("checking the project files"));
         app.handle_session_event(chunk("I found the relevant code."));
         app.handle_session_event(SessionEvent::ToolCall {
-            id: ToolCallId::new("call-1".to_owned()),
+            id: "call-1".to_owned(),
             title: "read_file".to_owned(),
-            status: ToolCallStatus::Pending,
+            status: ToolStatus::Pending,
             parameters: None,
             result: None,
         });
@@ -2461,13 +2457,13 @@ mod session_event_tests {
     #[test]
     fn tool_call_event_appends_entry_with_mapped_status() {
         let mut app = App::new();
-        let id = ToolCallId::new("call-1".to_owned());
+        let id = "call-1".to_owned();
 
         app.handle_session_event(SessionEvent::ToolCall {
             id,
             title: "read_file".to_owned(),
             parameters: Some("{\"path\":\"src/lib.rs\"}".to_owned()),
-            status: ToolCallStatus::InProgress,
+            status: ToolStatus::Running,
             result: None,
         });
 
@@ -2486,26 +2482,26 @@ mod session_event_tests {
     #[test]
     fn tool_call_update_changes_status_of_the_matching_entry() {
         let mut app = App::new();
-        let id = ToolCallId::new("call-1".to_owned());
+        let id = "call-1".to_owned();
 
         app.handle_session_event(SessionEvent::ToolCall {
             id: id.clone(),
             title: "read_file".to_owned(),
             parameters: Some("{\"path\":\"src/lib.rs\"}".to_owned()),
-            status: ToolCallStatus::Pending,
+            status: ToolStatus::Pending,
             result: None,
         });
         app.handle_session_event(SessionEvent::ToolCall {
-            id: ToolCallId::new("call-2".to_owned()),
+            id: "call-2".to_owned(),
             title: "write_file".to_owned(),
             parameters: Some("{\"path\":\"src/main.rs\"}".to_owned()),
-            status: ToolCallStatus::Pending,
+            status: ToolStatus::Pending,
             result: None,
         });
         app.handle_session_event(SessionEvent::ToolCallUpdate {
             id,
             parameters: Some("{\"path\":\"src/lib.rs\"}".to_owned()),
-            status: Some(ToolCallStatus::Completed),
+            status: Some(ToolStatus::Done),
             result: None,
         });
         let entry = nth_tool_call(tool_cluster(&app, 0), 0);
@@ -2526,17 +2522,17 @@ mod session_event_tests {
     fn tool_call_update_for_unknown_id_is_a_no_op() {
         let mut app = App::new();
         app.handle_session_event(SessionEvent::ToolCall {
-            id: ToolCallId::new("call-1".to_owned()),
+            id: "call-1".to_owned(),
             title: "read_file".to_owned(),
             parameters: None,
-            status: ToolCallStatus::Pending,
+            status: ToolStatus::Pending,
             result: None,
         });
 
         app.handle_session_event(SessionEvent::ToolCallUpdate {
-            id: ToolCallId::new("call-unknown".to_owned()),
+            id: "call-unknown".to_owned(),
             parameters: None,
-            status: Some(ToolCallStatus::Completed),
+            status: Some(ToolStatus::Done),
             result: None,
         });
 
@@ -2549,12 +2545,12 @@ mod session_event_tests {
     #[test]
     fn tool_call_update_without_status_is_a_no_op() {
         let mut app = App::new();
-        let id = ToolCallId::new("call-1".to_owned());
+        let id = "call-1".to_owned();
         app.handle_session_event(SessionEvent::ToolCall {
             id: id.clone(),
             title: "read_file".to_owned(),
             parameters: None,
-            status: ToolCallStatus::Pending,
+            status: ToolStatus::Pending,
             result: None,
         });
 
@@ -2576,10 +2572,10 @@ mod session_event_tests {
         let mut app = App::new();
 
         app.handle_session_event(SessionEvent::ToolCall {
-            id: ToolCallId::new("call-1".to_owned()),
+            id: "call-1".to_owned(),
             title: "read_file".to_owned(),
             parameters: None,
-            status: ToolCallStatus::Completed,
+            status: ToolStatus::Done,
             result: Some("file contents".to_owned()),
         });
 
@@ -2590,18 +2586,18 @@ mod session_event_tests {
     #[test]
     fn tool_call_update_stores_successful_result() {
         let mut app = App::new();
-        let id = ToolCallId::new("call-1".to_owned());
+        let id = "call-1".to_owned();
         app.handle_session_event(SessionEvent::ToolCall {
             id: id.clone(),
             title: "run_tests".to_owned(),
             parameters: None,
-            status: ToolCallStatus::InProgress,
+            status: ToolStatus::Running,
             result: None,
         });
 
         app.handle_session_event(SessionEvent::ToolCallUpdate {
             id,
-            status: Some(ToolCallStatus::Completed),
+            status: Some(ToolStatus::Done),
             parameters: None,
             result: Some("3 passed; 0 failed".to_owned()),
         });
@@ -2615,10 +2611,10 @@ mod session_event_tests {
     fn successful_tool_call_hides_result_inline() {
         let mut app = App::new();
         app.handle_session_event(SessionEvent::ToolCall {
-            id: ToolCallId::new("call-1".to_owned()),
+            id: "call-1".to_owned(),
             title: "Shell command".to_owned(),
             parameters: None,
-            status: ToolCallStatus::Completed,
+            status: ToolStatus::Done,
             result: Some("command output".to_owned()),
         });
 
@@ -2644,10 +2640,10 @@ mod session_event_tests {
     fn failed_tool_call_renders_result_on_the_same_line_as_the_tool_call() {
         let mut app = App::new();
         app.handle_session_event(SessionEvent::ToolCall {
-            id: ToolCallId::new("call-1".to_owned()),
+            id: "call-1".to_owned(),
             title: "Shell command".to_owned(),
             parameters: None,
-            status: ToolCallStatus::Failed,
+            status: ToolStatus::Failed,
             result: Some("command output".to_owned()),
         });
 
@@ -2665,10 +2661,10 @@ mod session_event_tests {
     fn tool_cluster_strips_redundant_name_prefix_from_failure_comment() {
         let mut app = App::new();
         app.handle_session_event(SessionEvent::ToolCall {
-            id: ToolCallId::new("call-1".to_owned()),
+            id: "call-1".to_owned(),
             title: "run_tests".to_owned(),
             parameters: None,
-            status: ToolCallStatus::Failed,
+            status: ToolStatus::Failed,
             result: Some(
                 "run_tests: ok (12 words) with a long result comment that must wrap".to_owned(),
             ),
@@ -2712,18 +2708,18 @@ mod session_event_tests {
     #[test]
     fn tool_call_update_stores_failure_result() {
         let mut app = App::new();
-        let id = ToolCallId::new("call-1".to_owned());
+        let id = "call-1".to_owned();
         app.handle_session_event(SessionEvent::ToolCall {
             id: id.clone(),
             title: "run_tests".to_owned(),
             parameters: None,
-            status: ToolCallStatus::InProgress,
+            status: ToolStatus::Running,
             result: None,
         });
 
         app.handle_session_event(SessionEvent::ToolCallUpdate {
             id,
-            status: Some(ToolCallStatus::Failed),
+            status: Some(ToolStatus::Failed),
             parameters: None,
             result: Some("assertion failed: left != right".to_owned()),
         });
@@ -2738,19 +2734,10 @@ mod session_event_tests {
 
     #[test]
     fn map_tool_call_status_covers_the_known_variants() {
-        assert_eq!(
-            map_tool_call_status(ToolCallStatus::Pending),
-            Status::Pending
-        );
-        assert_eq!(
-            map_tool_call_status(ToolCallStatus::InProgress),
-            Status::Running
-        );
-        assert_eq!(
-            map_tool_call_status(ToolCallStatus::Completed),
-            Status::Done
-        );
-        assert_eq!(map_tool_call_status(ToolCallStatus::Failed), Status::Failed);
+        assert_eq!(map_tool_call_status(ToolStatus::Pending), Status::Pending);
+        assert_eq!(map_tool_call_status(ToolStatus::Running), Status::Running);
+        assert_eq!(map_tool_call_status(ToolStatus::Done), Status::Done);
+        assert_eq!(map_tool_call_status(ToolStatus::Failed), Status::Failed);
     }
 
     #[test]
@@ -2793,9 +2780,9 @@ mod session_event_tests {
 
         app.handle_session_event(thought("thinking about this"));
         app.handle_session_event(SessionEvent::ToolCall {
-            id: ToolCallId::new("call-1".to_owned()),
+            id: "call-1".to_owned(),
             title: "run_tests".to_owned(),
-            status: ToolCallStatus::Pending,
+            status: ToolStatus::Pending,
             parameters: None,
             result: None,
         });
@@ -2817,9 +2804,9 @@ mod session_event_tests {
 
         app.handle_session_event(thought("thinking about this"));
         app.handle_session_event(SessionEvent::ToolCall {
-            id: ToolCallId::new("call-1".to_owned()),
+            id: "call-1".to_owned(),
             title: "run_tests".to_owned(),
-            status: ToolCallStatus::Pending,
+            status: ToolStatus::Pending,
             parameters: None,
             result: None,
         });
