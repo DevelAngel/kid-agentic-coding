@@ -159,6 +159,7 @@ struct App {
     /// speech chunks. Cleared when a non-Chunk event arrives.
     last_agent_message_entry_id: Option<EntryId>,
     agent_acting: bool,
+    last_chat_workflow: &'static str,
 }
 
 impl App {
@@ -172,6 +173,7 @@ impl App {
             pending_scroll_delta: 0,
             pending_permission: None,
             autoscroll: true,
+            last_chat_workflow: MAIN_WORKFLOW,
             should_quit: false,
             tool_call_ids: HashMap::new(),
             confetti: None,
@@ -181,6 +183,7 @@ impl App {
             tool_call_popup: None,
             tool_call_popup_scroll: 0,
             permission_popup_scroll: 0,
+
             log_buffer: LogBuffer::default(),
             log_popup: false,
             log_popup_scroll: 0,
@@ -398,6 +401,14 @@ impl App {
     fn begin_acting_turn(&mut self) {
         self.agent_acting = true;
         self.prompt = new_prompt_textarea(true, workflow_color(self.workflow_view.name()));
+    }
+
+    fn sync_chat_workflow(&mut self) {
+        let workflow = self.workflow_view.name();
+        if workflow != self.last_chat_workflow {
+            self.chat_log.push_session_transition(workflow);
+            self.last_chat_workflow = workflow;
+        }
     }
 
     fn handle_key(&mut self, key: KeyEvent, session: &SessionHandle) {
@@ -789,9 +800,9 @@ async fn run_app(
             }
             session_event = workflow.recv_event(agent_launcher, fs_socket_dir.clone()) => {
                 if let Some(session_event) = session_event {
+                    app.sync_chat_workflow();
                     match session_event.event {
                         SessionEvent::CommitFixDone { commit_message } => {
-                            app.chat_log.push_session_transition(MAIN_WORKFLOW);
                             app.begin_acting_turn();
                             let resume_prompt = format!("## Commit message used\n\n{commit_message}");
                             app.chat_log.push_auto_with_workflow(
