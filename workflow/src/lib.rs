@@ -87,7 +87,7 @@ impl WorkflowManager {
         self.view.clone()
     }
 
-    fn set_workflow(&mut self, workflow: Workflow) {
+    fn set_workflow(&self, workflow: Workflow) {
         let value = match workflow {
             Workflow::Main => 0,
             Workflow::OpeningFix => 1,
@@ -202,8 +202,7 @@ impl WorkflowManager {
             && matches!(reason, StopReason::Cancelled | StopReason::EndTurn)
             && let Some(request) = self.pending_fix.take()
         {
-            self.start_fix(request, launcher, fs_socket_dir);
-            return None;
+            return Some(self.start_fix(request, launcher, fs_socket_dir));
         }
 
         Some(WorkflowEvent {
@@ -217,11 +216,11 @@ impl WorkflowManager {
             SessionEvent::CommitFixDone { commit_message } => {
                 self.fix = None;
                 self.close_pending = None;
-                self.set_workflow(Workflow::Main);
-                Some(WorkflowEvent {
-                    workflow: Workflow::Main,
-                    event: SessionEvent::CommitFixDone { commit_message },
-                })
+                Some(self.send_prompt(
+                    &self.main,
+                    Workflow::Main,
+                    format!("## Commit message used\n\n{commit_message}"),
+                ))
             }
             SessionEvent::CloseActionOutcome { action, .. } => {
                 if self.close_pending == Some(action) {
@@ -242,12 +241,25 @@ impl WorkflowManager {
         &self.main
     }
 
+    fn send_prompt(
+        &self,
+        session: &SessionHandle,
+        workflow: Workflow,
+        prompt: String,
+    ) -> WorkflowEvent {
+        self.set_workflow(workflow);
+        let _ = session.send_prompt(&prompt);
+        WorkflowEvent {
+            workflow,
+            event: SessionEvent::AutoPrompt(prompt),
+        }
+    }
     fn start_fix(
         &mut self,
         request: CommitFixRequest,
         launcher: &AgentLauncher,
         fs_socket_dir: FsSocketDir,
-    ) {
+    ) -> WorkflowEvent {
         let CommitFixRequest {
             instructions,
             amend,
@@ -263,15 +275,13 @@ impl WorkflowManager {
             fs_socket_dir,
             cwd,
         );
-
         let amend_decision = if amend { "yes" } else { "no" };
         let seed_prompt = format!(
             "{instructions}\n\nCommit Amend Decision: {amend_decision}\n\n## TL;DR\n\n{tldr}\n\n## Why is this change needed?\n\n{why}\n\n## What does this change do?\n\n{what}"
         );
-
-        let _ = fix.send_prompt(seed_prompt);
+        let event = self.send_prompt(&fix, Workflow::Fix, seed_prompt);
         self.fix = Some(fix);
-        self.set_workflow(Workflow::Fix);
+        event
     }
 }
 
@@ -297,6 +307,19 @@ mod tests {
 
         assert_eq!(manager.view().workflow(), Workflow::Main);
         assert_eq!(manager.view().name(), MAIN_WORKFLOW);
+    }
+
+    #[test]
+    fn fix_prompt_is_emitted_as_an_auto_prompt() {
+        let manager = WorkflowManager::new(SessionHandle::new_disconnected_for_test());
+        let fix = SessionHandle::new_disconnected_for_test();
+
+        let event = manager.send_prompt(&fix, Workflow::Main, "seed prompt".to_owned());
+        assert_eq!(event.workflow, Workflow::Main);
+        assert!(matches!(
+            event.event,
+            SessionEvent::AutoPrompt(prompt) if prompt == "seed prompt"
+        ));
     }
 
     #[test]
@@ -439,9 +462,14 @@ mod tests {
             .handle_fix_event(SessionEvent::CommitFixDone {
                 commit_message: "fix: trim".to_owned(),
             })
-            .expect("commit-fix-done bubbles up to the caller");
+            .expect("commit-fix-done is converted to an auto prompt");
 
         assert_eq!(event.workflow, Workflow::Main);
+        assert!(matches!(
+            event.event,
+            SessionEvent::AutoPrompt(prompt)
+                if prompt == "## Commit message used\n\nfix: trim"
+        ));
         assert_eq!(manager.view().workflow(), Workflow::Main);
     }
 }
