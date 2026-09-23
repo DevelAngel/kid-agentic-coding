@@ -115,20 +115,6 @@ fn push_session_transition_appends_a_banner_message() {
 }
 
 #[test]
-fn last_session_transition_workflow_returns_the_newest_workflow() {
-    let mut log = ChatLog::new();
-    assert_eq!(log.last_session_transition_workflow(), None);
-
-    log.push_session_transition("programming");
-    log.push_session_transition("commit-fix-rust");
-
-    assert_eq!(
-        log.last_session_transition_workflow(),
-        Some("commit-fix-rust")
-    );
-}
-
-#[test]
 fn session_transition_receives_the_active_model() {
     let mut log = ChatLog::new();
     log.push_session_transition("programming");

@@ -351,16 +351,6 @@ impl ChatLog {
             }));
     }
 
-    /// Returns the workflow name of the newest session transition, if any.
-    pub fn last_session_transition_workflow(&self) -> Option<&str> {
-        self.messages.iter().rev().find_map(|message| {
-            if let Message::SessionTransition(transition) = message {
-                Some(transition.workflow_name.as_str())
-            } else {
-                None
-            }
-        })
-    }
     /// Sets the model reported as currently active and completes the newest
     /// transition that was waiting for its model. New agent messages are
     /// stamped with this value; existing messages are unaffected.
