@@ -153,7 +153,7 @@ struct App {
     /// speech chunks. Cleared when a non-Chunk event arrives.
     last_agent_message_entry_id: Option<EntryId>,
     agent_acting: bool,
-    last_chat_workflow: &'static str,
+    last_chat_workflow: Workflow,
 }
 
 impl App {
@@ -167,7 +167,7 @@ impl App {
             pending_scroll_delta: 0,
             pending_permission: None,
             autoscroll: true,
-            last_chat_workflow: Workflow::Main.name(),
+            last_chat_workflow: Workflow::Main,
             should_quit: false,
             tool_call_ids: HashMap::new(),
             confetti: None,
@@ -205,14 +205,11 @@ impl App {
         match event {
             SessionEvent::AutoPrompt(_) => {}
             SessionEvent::Confetti => {
-                tracing::debug!("event: confetti");
                 self.settle_thought();
                 self.last_agent_message_entry_id = None;
                 self.confetti = Some(Confetti::new());
             }
-            SessionEvent::CommitFixDone { .. } => {
-                tracing::debug!("event: commit-fix-done");
-            }
+            SessionEvent::CommitFixDone { .. } => {}
             SessionEvent::CommitFix { .. } => {}
             // Consumed by WorkflowManager before this event surfaces.
             SessionEvent::CloseAction { .. } | SessionEvent::CloseActionOutcome { .. } => {}
@@ -226,11 +223,6 @@ impl App {
                     return; // Skip empty chunks
                 }
 
-                tracing::debug!(
-                    len = text.len(),
-                    has_entry = self.last_agent_message_entry_id.is_some(),
-                    "event: chunk"
-                );
                 self.settle_thought();
 
                 if let Some(entry_id) = self.last_agent_message_entry_id {
@@ -258,13 +250,6 @@ impl App {
                             .tool_call(entry_id)
                             .map(|entry| entry.name.clone())
                     });
-                tracing::debug!(
-                    %title,
-                    %tool_call_id,
-                    ?name,
-                    option_count = options.len(),
-                    "event: permission_request"
-                );
                 self.settle_thought();
                 self.last_agent_message_entry_id = None;
                 self.permission_popup_scroll = 0;
@@ -277,7 +262,6 @@ impl App {
                 });
             }
             SessionEvent::Stopped(reason) => {
-                tracing::debug!(?reason, "event: stopped");
                 self.settle_thought();
                 self.last_agent_message_entry_id = None;
                 if !self.agent_buffer.is_empty() {
@@ -291,7 +275,6 @@ impl App {
                 }
             }
             SessionEvent::Error(error) => {
-                tracing::debug!(%error, "event: error");
                 self.settle_thought();
                 self.last_agent_message_entry_id = None;
                 if !self.agent_buffer.is_empty() {
@@ -305,11 +288,6 @@ impl App {
                 );
             }
             SessionEvent::Thought(text) => {
-                tracing::debug!(
-                    len = text.len(),
-                    has_entry = self.last_thought_entry_id.is_some(),
-                    "event: thought"
-                );
                 self.last_agent_message_entry_id = None;
                 self.flush_agent_buffer();
 
@@ -329,7 +307,6 @@ impl App {
                 parameters,
                 result,
             } => {
-                tracing::debug!(%title, %id, ?status, "event: tool_call");
                 self.settle_thought();
                 self.last_agent_message_entry_id = None;
                 self.flush_agent_buffer();
@@ -349,7 +326,6 @@ impl App {
                 parameters,
                 result,
             } => {
-                tracing::debug!(%id, "event: tool_call_update");
                 if let Some(&entry_id) = self.tool_call_ids.get(&id) {
                     if let Some(status) = status {
                         self.chat_log
@@ -365,7 +341,6 @@ impl App {
                 }
             }
             SessionEvent::ModelChanged(model) => {
-                tracing::debug!(%model, "event: model_changed");
                 self.chat_log.set_current_model(model);
             }
         }
@@ -400,9 +375,9 @@ impl App {
     }
 
     fn sync_chat_workflow(&mut self) {
-        let workflow = self.workflow_view.name();
+        let workflow = self.workflow_view.workflow();
         if workflow != self.last_chat_workflow {
-            self.chat_log.push_session_transition(workflow);
+            self.chat_log.push_session_transition(workflow.name());
             self.last_chat_workflow = workflow;
         }
     }
