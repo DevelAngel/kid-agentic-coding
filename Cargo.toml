@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["agent/lorem-agent", "app", "chat", "confetti-mcp", "gh-mcp", "git-commit-fix-close-mcp", "git-commit-fix-open-mcp", "log-buffer", "python-mcp", "rust-mcp", "session", "wire", "workflow"]
+members = ["agent/lorem-agent", "app", "chat", "confetti-mcp", "git-commit-fix-close-mcp", "git-commit-fix-open-mcp", "log-buffer", "mcp/gh", "mcp/python", "mcp/rust", "session", "wire", "workflow"]
 
 [workspace.package]
 version = "0.2.0"
