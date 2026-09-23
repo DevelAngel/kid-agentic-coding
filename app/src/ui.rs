@@ -153,7 +153,6 @@ struct App {
     /// speech chunks. Cleared when a non-Chunk event arrives.
     last_agent_message_entry_id: Option<EntryId>,
     agent_acting: bool,
-    last_chat_workflow: Workflow,
 }
 
 impl App {
@@ -167,7 +166,6 @@ impl App {
             pending_scroll_delta: 0,
             pending_permission: None,
             autoscroll: true,
-            last_chat_workflow: Workflow::Main,
             should_quit: false,
             tool_call_ids: HashMap::new(),
             confetti: None,
@@ -376,12 +374,13 @@ impl App {
 
     fn sync_chat_workflow(&mut self) {
         let workflow = self.workflow_view.workflow();
-        if workflow != self.last_chat_workflow {
+        let last_transition = self.chat_log.last_session_transition_workflow();
+        if last_transition != Some(workflow.name())
+            && (workflow != Workflow::Main || last_transition.is_some())
+        {
             self.chat_log.push_session_transition(workflow.name());
-            self.last_chat_workflow = workflow;
         }
     }
-
     fn handle_key(&mut self, key: KeyEvent, session: &SessionHandle) {
         if self.pending_permission.is_some() {
             handle_permission_key(
