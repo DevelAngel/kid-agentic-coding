@@ -215,6 +215,8 @@ impl App {
                 tracing::debug!("event: commit-fix-done");
             }
             SessionEvent::CommitFix { .. } => {}
+            // Consumed by WorkflowManager before this event surfaces.
+            SessionEvent::CloseAction { .. } | SessionEvent::CloseActionOutcome { .. } => {}
             SessionEvent::Chunk(mut text) => {
                 // Trim leading newlines only on first chunk of a message
                 if self.last_agent_message_entry_id.is_none() {

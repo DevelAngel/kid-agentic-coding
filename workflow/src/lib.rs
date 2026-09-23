@@ -7,7 +7,7 @@ use kid_agentic_coding_session::{
     AgentLauncher, FsSocketDir, SessionEvent, SessionHandle, StopReason,
 };
 use tokio::sync::oneshot;
-use wire::{CommitFixRequest, CommitFixVerdict};
+use wire::{CloseAction, CloseActionVerdict, CommitFixRequest, CommitFixVerdict};
 
 pub const MAIN_WORKFLOW: &str = "programming";
 pub const COMMIT_FIX_WORKFLOW: &str = "commit-fix";
@@ -67,6 +67,8 @@ pub struct WorkflowManager {
     main: SessionHandle,
     fix: Option<SessionHandle>,
     pending_fix: Option<CommitFixRequest>,
+    /// Close-side Git action currently authorized and running.
+    close_pending: Option<CloseAction>,
     view: WorkflowView,
 }
 
@@ -76,6 +78,7 @@ impl WorkflowManager {
             main,
             fix: None,
             pending_fix: None,
+            close_pending: None,
             view: WorkflowView::new(Workflow::Main),
         }
     }
@@ -133,6 +136,9 @@ impl WorkflowManager {
                         return Some(event);
                     }
                 }
+                (Workflow::Fix, SessionEvent::CloseAction { action, verdict }) => {
+                    self.request_close_action(action, verdict);
+                }
                 (Workflow::Fix, event) => {
                     if let Some(event) = self.handle_fix_event(event) {
                         return Some(event);
@@ -161,6 +167,30 @@ impl WorkflowManager {
         self.set_workflow(Workflow::OpeningFix);
     }
 
+    /// Gates a close-side Git action: only one attempt at a time, and only
+    /// while a fix session is active.
+    pub fn request_close_action(
+        &mut self,
+        action: CloseAction,
+        verdict: oneshot::Sender<CloseActionVerdict>,
+    ) {
+        if self.view.workflow() != Workflow::Fix {
+            let _ = verdict.send(CloseActionVerdict::Rejected {
+                reason: "no fix session is active".to_owned(),
+            });
+            return;
+        }
+        if self.close_pending.is_some() {
+            let _ = verdict.send(CloseActionVerdict::Rejected {
+                reason: "another Git action is already being processed".to_owned(),
+            });
+            return;
+        }
+
+        self.close_pending = Some(action);
+        let _ = verdict.send(CloseActionVerdict::Authorized);
+    }
+
     fn handle_main_event(
         &mut self,
         event: SessionEvent,
@@ -183,19 +213,29 @@ impl WorkflowManager {
     }
 
     fn handle_fix_event(&mut self, event: SessionEvent) -> Option<WorkflowEvent> {
-        if let SessionEvent::CommitFixDone { commit_message } = event {
-            self.fix = None;
-            self.set_workflow(Workflow::Main);
-            return Some(WorkflowEvent {
-                workflow: Workflow::Main,
-                event: SessionEvent::CommitFixDone { commit_message },
-            });
+        match event {
+            SessionEvent::CommitFixDone { commit_message } => {
+                self.fix = None;
+                self.close_pending = None;
+                self.set_workflow(Workflow::Main);
+                Some(WorkflowEvent {
+                    workflow: Workflow::Main,
+                    event: SessionEvent::CommitFixDone { commit_message },
+                })
+            }
+            SessionEvent::CloseActionOutcome { action, .. } => {
+                if self.close_pending == Some(action) {
+                    self.close_pending = None;
+                } else {
+                    // The session already logged the unexpected event.
+                }
+                None
+            }
+            event => Some(WorkflowEvent {
+                workflow: Workflow::Fix,
+                event,
+            }),
         }
-
-        Some(WorkflowEvent {
-            workflow: Workflow::Fix,
-            event,
-        })
     }
 
     pub fn main_session(&self) -> &SessionHandle {
@@ -285,5 +325,123 @@ mod tests {
             Some(CommitFixVerdict::Ignored { .. })
         ));
         assert_eq!(manager.view().workflow(), Workflow::OpeningFix);
+    }
+
+    /// Builds a manager already in the `Fix` workflow, for tests that gate
+    /// close actions and don't exercise opening a real fix session.
+    fn manager_in_fix_workflow() -> WorkflowManager {
+        let mut manager = WorkflowManager::new(SessionHandle::new_disconnected_for_test());
+        manager.fix = Some(SessionHandle::new_disconnected_for_test());
+        manager.set_workflow(Workflow::Fix);
+        manager
+    }
+
+    #[test]
+    fn close_action_is_rejected_without_an_active_fix_session() {
+        let mut manager = WorkflowManager::new(SessionHandle::new_disconnected_for_test());
+        let (verdict_tx, mut verdict_rx) = oneshot::channel();
+
+        manager.request_close_action(CloseAction::Add, verdict_tx);
+
+        assert!(matches!(
+            verdict_rx.try_recv().ok(),
+            Some(CloseActionVerdict::Rejected { .. })
+        ));
+    }
+
+    #[test]
+    fn close_action_is_authorized_while_the_fix_session_is_active() {
+        let mut manager = manager_in_fix_workflow();
+        let (verdict_tx, mut verdict_rx) = oneshot::channel();
+
+        manager.request_close_action(CloseAction::Add, verdict_tx);
+
+        assert_eq!(
+            verdict_rx.try_recv().ok(),
+            Some(CloseActionVerdict::Authorized)
+        );
+    }
+
+    #[test]
+    fn a_second_close_action_is_rejected_while_one_is_still_pending() {
+        let mut manager = manager_in_fix_workflow();
+        let (first_tx, mut first_rx) = oneshot::channel();
+        manager.request_close_action(CloseAction::Commit, first_tx);
+        assert_eq!(
+            first_rx.try_recv().ok(),
+            Some(CloseActionVerdict::Authorized)
+        );
+
+        let (second_tx, mut second_rx) = oneshot::channel();
+        manager.request_close_action(CloseAction::Commit, second_tx);
+
+        assert!(matches!(
+            second_rx.try_recv().ok(),
+            Some(CloseActionVerdict::Rejected { .. })
+        ));
+    }
+
+    #[test]
+    fn close_action_outcome_releases_the_pending_gate_and_stays_in_fix() {
+        let mut manager = manager_in_fix_workflow();
+        let (first_tx, _first_rx) = oneshot::channel();
+        manager.request_close_action(CloseAction::Add, first_tx);
+
+        let outcome = manager.handle_fix_event(SessionEvent::CloseActionOutcome {
+            action: CloseAction::Add,
+            success: false,
+            reason: Some("git add failed".to_owned()),
+        });
+
+        assert!(outcome.is_none());
+        assert_eq!(manager.view().workflow(), Workflow::Fix);
+
+        let (second_tx, mut second_rx) = oneshot::channel();
+        manager.request_close_action(CloseAction::Add, second_tx);
+        assert_eq!(
+            second_rx.try_recv().ok(),
+            Some(CloseActionVerdict::Authorized)
+        );
+    }
+
+    #[test]
+    fn unexpected_close_action_outcome_does_not_release_the_pending_gate() {
+        let mut manager = manager_in_fix_workflow();
+        let (first_tx, mut first_rx) = oneshot::channel();
+        manager.request_close_action(CloseAction::Add, first_tx);
+        assert_eq!(
+            first_rx.try_recv().ok(),
+            Some(CloseActionVerdict::Authorized)
+        );
+
+        let outcome = manager.handle_fix_event(SessionEvent::CloseActionOutcome {
+            action: CloseAction::Commit,
+            success: true,
+            reason: None,
+        });
+
+        assert!(outcome.is_none());
+
+        let (second_tx, mut second_rx) = oneshot::channel();
+        manager.request_close_action(CloseAction::Commit, second_tx);
+        assert!(matches!(
+            second_rx.try_recv().ok(),
+            Some(CloseActionVerdict::Rejected { .. })
+        ));
+    }
+    #[test]
+    fn commit_fix_done_also_releases_the_pending_gate() {
+        let mut manager = manager_in_fix_workflow();
+        let (commit_tx, _commit_rx) = oneshot::channel();
+        manager.request_close_action(CloseAction::Commit, commit_tx);
+
+        let event = manager
+            .handle_fix_event(SessionEvent::CommitFixDone {
+                commit_message: "fix: trim".to_owned(),
+            })
+            .expect("commit-fix-done bubbles up to the caller");
+
+        assert_eq!(event.workflow, Workflow::Main);
+        assert_eq!(manager.view().workflow(), Workflow::Main);
     }
 }

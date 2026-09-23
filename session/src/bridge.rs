@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::Sender;
-use wire::CommitFixRequest;
-pub use wire::CommitFixVerdict;
+use wire::{CloseAction, CommitFixRequest};
+pub use wire::{CloseActionVerdict, CommitFixVerdict};
 
 /// Generates a process-unique id for [`SessionHandle`] lifecycle logging.
 /// Unrelated to the agent's own protocol-level session id.
@@ -99,6 +99,24 @@ pub enum SessionEvent {
 
     /// The fix session committed its changes, closing the commit-fix workflow.
     CommitFixDone { commit_message: String },
+
+    /// The fix session's close server requests authorization for a Git
+    /// action (staging or committing) before it runs.
+    CloseAction {
+        action: CloseAction,
+        /// The requesting bridge connection awaits this verdict, so every
+        /// request must be answered exactly once.
+        verdict: Sender<CloseActionVerdict>,
+    },
+
+    /// The fix session's close server reports that a previously authorized
+    /// Git action has run, releasing the one-attempt-at-a-time gate. Not
+    /// sent for a successful commit - `CommitFixDone` already reports that.
+    CloseActionOutcome {
+        action: CloseAction,
+        success: bool,
+        reason: Option<String>,
+    },
 
     /// The confetti MCP tool was invoked successfully.
     Confetti,

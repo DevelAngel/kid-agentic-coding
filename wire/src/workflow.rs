@@ -1,3 +1,6 @@
+use crate::close_action::{
+    CLOSE_ACTION_EVENT, CLOSE_ACTION_OUTCOME_EVENT, CloseActionOutcome, CloseActionRequest,
+};
 use crate::commit_fix::{COMMIT_FIX_DONE_EVENT, COMMIT_FIX_EVENT, CommitFixDone, CommitFixRequest};
 
 /// A message received on the workflow socket.
@@ -5,6 +8,8 @@ use crate::commit_fix::{COMMIT_FIX_DONE_EVENT, COMMIT_FIX_EVENT, CommitFixDone, 
 pub enum WorkflowEvent {
     CommitFix(CommitFixRequest),
     CommitFixDone(CommitFixDone),
+    CloseAction(CloseActionRequest),
+    CloseActionOutcome(CloseActionOutcome),
 }
 
 impl WorkflowEvent {
@@ -19,6 +24,12 @@ impl WorkflowEvent {
                 .map_err(|err| err.to_string()),
             Some(COMMIT_FIX_DONE_EVENT) => serde_json::from_value(value)
                 .map(Self::CommitFixDone)
+                .map_err(|err| err.to_string()),
+            Some(CLOSE_ACTION_EVENT) => serde_json::from_value(value)
+                .map(Self::CloseAction)
+                .map_err(|err| err.to_string()),
+            Some(CLOSE_ACTION_OUTCOME_EVENT) => serde_json::from_value(value)
+                .map(Self::CloseActionOutcome)
                 .map_err(|err| err.to_string()),
             other => Err(format!(
                 "unhandled workflow event '{}'",
