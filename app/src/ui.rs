@@ -9,6 +9,7 @@ use kid_agentic_coding_session::{
     AgentLauncher, FsSocketDir, PermissionOption, SessionEvent, SessionHandle, StopReason,
     ToolStatus,
 };
+use kid_agentic_coding_workflow::COMMIT_FIX_WORKFLOW;
 use kid_agentic_coding_workflow::{MAIN_WORKFLOW, Workflow, WorkflowManager, WorkflowView};
 use log_buffer::LogBuffer;
 
@@ -51,12 +52,6 @@ const AUTO_PANEL_BG: Color = Color::Rgb(38, 30, 42);
 const USER_ICON: &str = nerdicons_rs::fa::RSUSER;
 const AUTO_ICON: &str = nerdicons_rs::fa::RSWAND_SPARKLES;
 const PROMPT_ICON: &str = nerdicons_rs::fa::RSUSER_PEN;
-
-/// Workflow name for the main programming session.
-const PROGRAMMING_WORKFLOW: &str = "programming";
-
-/// Workflow name for the fix session opened by the commit workflow.
-const COMMIT_FIX_WORKFLOW: &str = "commit-fix-rust";
 
 fn workflow_color(workflow_name: &str) -> Color {
     match workflow_name {
@@ -166,7 +161,7 @@ impl App {
     fn new() -> Self {
         Self {
             chat_log: ChatLog::new(),
-            prompt: new_prompt_textarea(false, workflow_color(PROGRAMMING_WORKFLOW)),
+            prompt: new_prompt_textarea(false, workflow_color(MAIN_WORKFLOW)),
             workflow_view: WorkflowView::new(Workflow::Main),
             agent_buffer: String::new(),
             scroll_anchor: None,
@@ -1030,8 +1025,7 @@ impl DrawApp for Frame<'_> {
                     let layout =
                         accent_layout(render_rect, visible_bubble.borders.contains(Borders::TOP));
 
-                    let color =
-                        workflow_color(m.workflow_name.as_deref().unwrap_or(PROGRAMMING_WORKFLOW));
+                    let color = workflow_color(m.workflow_name.as_deref().unwrap_or(MAIN_WORKFLOW));
                     self.render_widget(accent_block(color, USER_PANEL_BG, "┃"), layout.panel_rect);
                     self.render_widget(
                         Paragraph::new(USER_ICON).style(Style::default().fg(color)),
@@ -1045,8 +1039,7 @@ impl DrawApp for Frame<'_> {
 
                 Message::Auto(m) => {
                     let layout = accent_layout(render_rect, false);
-                    let color =
-                        workflow_color(m.workflow_name.as_deref().unwrap_or(PROGRAMMING_WORKFLOW));
+                    let color = workflow_color(m.workflow_name.as_deref().unwrap_or(MAIN_WORKFLOW));
                     self.render_widget(accent_block(color, AUTO_PANEL_BG, "┃"), layout.panel_rect);
                     self.render_widget(
                         Paragraph::new(AUTO_ICON).style(Style::default().fg(color)),
@@ -2768,9 +2761,9 @@ mod bubble_color_tests {
             app.chat_log.push_session_transition(workflow);
         }
         app.chat_log
-            .push_auto_with_workflow("auto prompt", workflow.unwrap_or(PROGRAMMING_WORKFLOW));
+            .push_auto_with_workflow("auto prompt", workflow.unwrap_or(MAIN_WORKFLOW));
         app.chat_log
-            .push_user_with_workflow("user prompt", workflow.unwrap_or(PROGRAMMING_WORKFLOW));
+            .push_user_with_workflow("user prompt", workflow.unwrap_or(MAIN_WORKFLOW));
         for reply in 0..agent_replies {
             app.chat_log.push_agent(format!("agent reply {reply}"));
         }
