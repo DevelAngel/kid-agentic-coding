@@ -60,6 +60,7 @@ impl WorkflowView {
 
 pub struct WorkflowEvent {
     pub workflow: Workflow,
+    pub transition: Option<Workflow>,
     pub event: SessionEvent,
 }
 
@@ -87,13 +88,14 @@ impl WorkflowManager {
         self.view.clone()
     }
 
-    fn set_workflow(&self, workflow: Workflow) {
+    fn set_workflow(&self, workflow: Workflow) -> Option<Workflow> {
         let value = match workflow {
             Workflow::Main => 0,
             Workflow::OpeningFix => 1,
             Workflow::Fix => 2,
         };
-        self.view.state.store(value, Ordering::Release);
+        let previous = self.view.state.swap(value, Ordering::AcqRel);
+        (previous != value).then_some(workflow)
     }
 
     pub fn active_session(&self) -> &SessionHandle {
@@ -207,6 +209,7 @@ impl WorkflowManager {
 
         Some(WorkflowEvent {
             workflow: Workflow::Main,
+            transition: None,
             event,
         })
     }
@@ -232,6 +235,7 @@ impl WorkflowManager {
             }
             event => Some(WorkflowEvent {
                 workflow: Workflow::Fix,
+                transition: None,
                 event,
             }),
         }
@@ -247,11 +251,12 @@ impl WorkflowManager {
         workflow: Workflow,
         prompt: String,
     ) -> WorkflowEvent {
-        self.set_workflow(workflow);
+        let transition = self.set_workflow(workflow);
         let _ = session.send_prompt(&prompt);
         WorkflowEvent {
             workflow,
             event: SessionEvent::AutoPrompt(prompt),
+            transition,
         }
     }
     fn start_fix(
@@ -316,10 +321,23 @@ mod tests {
 
         let event = manager.send_prompt(&fix, Workflow::Main, "seed prompt".to_owned());
         assert_eq!(event.workflow, Workflow::Main);
+        assert_eq!(event.transition, None);
         assert!(matches!(
             event.event,
             SessionEvent::AutoPrompt(prompt) if prompt == "seed prompt"
         ));
+    }
+
+    #[test]
+    fn workflow_transition_is_attached_to_the_emitted_event() {
+        let manager = WorkflowManager::new(SessionHandle::new_disconnected_for_test());
+        let fix = SessionHandle::new_disconnected_for_test();
+
+        let event = manager.send_prompt(&fix, Workflow::Fix, "seed prompt".to_owned());
+        assert_eq!(event.transition, Some(Workflow::Fix));
+
+        let event = manager.send_prompt(&manager.main, Workflow::Main, "back to main".to_owned());
+        assert_eq!(event.transition, Some(Workflow::Main));
     }
 
     #[test]

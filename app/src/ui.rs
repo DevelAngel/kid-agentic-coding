@@ -372,15 +372,6 @@ impl App {
         self.prompt = new_prompt_textarea(true, workflow_color(self.workflow_view.name()));
     }
 
-    fn sync_chat_workflow(&mut self) {
-        let workflow = self.workflow_view.workflow();
-        let last_transition = self.chat_log.last_session_transition_workflow();
-        if last_transition != Some(workflow.name())
-            && (workflow != Workflow::Main || last_transition.is_some())
-        {
-            self.chat_log.push_session_transition(workflow.name());
-        }
-    }
     fn handle_key(&mut self, key: KeyEvent, session: &SessionHandle) {
         if self.pending_permission.is_some() {
             handle_permission_key(
@@ -770,8 +761,10 @@ async fn run_app(
             }
             session_event = workflow.recv_event(agent_launcher, fs_socket_dir.clone()) => {
                 if let Some(session_event) = session_event {
-                    app.sync_chat_workflow();
                     let event_workflow = session_event.workflow;
+                    if let Some(workflow) = session_event.transition {
+                        app.chat_log.push_session_transition(workflow.name());
+                    }
                     match session_event.event {
                         SessionEvent::AutoPrompt(prompt) => {
                             app.begin_acting_turn();
