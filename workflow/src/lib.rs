@@ -80,12 +80,16 @@ impl WorkflowManager {
             fix: None,
             pending_fix: None,
             close_pending: None,
-            view: WorkflowView::new(Workflow::Main),
+            view: WorkflowView::new(Self::initial_workflow()),
         }
     }
 
     pub fn view(&self) -> WorkflowView {
         self.view.clone()
+    }
+
+    pub fn initial_workflow() -> Workflow {
+        Workflow::Main
     }
 
     fn set_workflow(&self, workflow: Workflow) -> Option<Workflow> {
