@@ -159,8 +159,11 @@ impl App {
     fn new() -> Self {
         Self {
             chat_log: ChatLog::new(),
-            prompt: new_prompt_textarea(false, workflow_color(Workflow::Main.name())),
-            workflow_view: WorkflowView::new(Workflow::Main),
+            prompt: new_prompt_textarea(
+                false,
+                workflow_color(WorkflowManager::initial_workflow().name()),
+            ),
+            workflow_view: WorkflowView::new(WorkflowManager::initial_workflow()),
             agent_buffer: String::new(),
             scroll_anchor: None,
             pending_scroll_delta: 0,
@@ -991,8 +994,11 @@ impl DrawApp for Frame<'_> {
                     let layout =
                         accent_layout(render_rect, visible_bubble.borders.contains(Borders::TOP));
 
-                    let color =
-                        workflow_color(m.workflow_name.as_deref().unwrap_or(Workflow::Main.name()));
+                    let color = workflow_color(
+                        m.workflow_name
+                            .as_deref()
+                            .unwrap_or(WorkflowManager::initial_workflow().name()),
+                    );
                     self.render_widget(accent_block(color, USER_PANEL_BG, "┃"), layout.panel_rect);
                     self.render_widget(
                         Paragraph::new(USER_ICON).style(Style::default().fg(color)),
@@ -1006,8 +1012,11 @@ impl DrawApp for Frame<'_> {
 
                 Message::Auto(m) => {
                     let layout = accent_layout(render_rect, false);
-                    let color =
-                        workflow_color(m.workflow_name.as_deref().unwrap_or(Workflow::Main.name()));
+                    let color = workflow_color(
+                        m.workflow_name
+                            .as_deref()
+                            .unwrap_or(WorkflowManager::initial_workflow().name()),
+                    );
                     self.render_widget(accent_block(color, AUTO_PANEL_BG, "┃"), layout.panel_rect);
                     self.render_widget(
                         Paragraph::new(AUTO_ICON).style(Style::default().fg(color)),
@@ -2723,14 +2732,18 @@ mod bubble_color_tests {
             app = app.with_workflow(WorkflowView::new(if workflow == Workflow::Fix.name() {
                 Workflow::Fix
             } else {
-                Workflow::Main
+                WorkflowManager::initial_workflow()
             }));
             app.chat_log.push_session_transition(workflow);
         }
-        app.chat_log
-            .push_auto_with_workflow("auto prompt", workflow.unwrap_or(Workflow::Main.name()));
-        app.chat_log
-            .push_user_with_workflow("user prompt", workflow.unwrap_or(Workflow::Main.name()));
+        app.chat_log.push_auto_with_workflow(
+            "auto prompt",
+            workflow.unwrap_or(WorkflowManager::initial_workflow().name()),
+        );
+        app.chat_log.push_user_with_workflow(
+            "user prompt",
+            workflow.unwrap_or(WorkflowManager::initial_workflow().name()),
+        );
         for reply in 0..agent_replies {
             app.chat_log.push_agent(format!("agent reply {reply}"));
         }
