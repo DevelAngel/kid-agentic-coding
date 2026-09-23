@@ -4,8 +4,8 @@
 //! [`crate::bridge`].
 
 use crate::bridge::{
-    CommitFixVerdict, PermissionOption, SessionEvent, SessionHandle, StopReason, ToolStatus,
-    next_session_id,
+    CloseActionVerdict, CommitFixVerdict, PermissionOption, SessionEvent, SessionHandle,
+    StopReason, ToolStatus, next_session_id,
 };
 use crate::mcp;
 use crate::mcp::{BridgeSockets, FsSocketDir, SocketFileGuard};
@@ -32,7 +32,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
-use wire::{CommitFixDone, Confetti, VERDICT_TIMEOUT, WorkflowEvent};
+use wire::{CloseActionOutcome, CommitFixDone, Confetti, VERDICT_TIMEOUT, WorkflowEvent};
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -444,6 +444,44 @@ async fn run_session(
                                                 .send(SessionEvent::CommitFixDone { commit_message });
                                         }
                                     }
+                                    Ok(WorkflowEvent::CloseAction(request)) => {
+                                        tracing::info!(
+                                            action = ?request.action,
+                                            "close-action event received"
+                                        );
+                                        let (verdict_tx, verdict_rx) = oneshot::channel();
+                                        let event = SessionEvent::CloseAction {
+                                            action: request.action,
+                                            verdict: verdict_tx,
+                                        };
+                                        if session_event_tx.send(event).is_ok() {
+                                            tokio::spawn(dispatch_close_action(stream, verdict_rx));
+                                        } else {
+                                            let _ = send_close_action_ack(
+                                                &mut stream,
+                                                &CloseActionVerdict::Rejected {
+                                                    reason: "session is shutting down".to_owned(),
+                                                },
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                    Ok(WorkflowEvent::CloseActionOutcome(CloseActionOutcome {
+                                        action,
+                                        success,
+                                        reason,
+                                    })) => {
+                                        tracing::info!(
+                                            ?action,
+                                            success,
+                                            "close-action-outcome event received"
+                                        );
+                                        let _ = session_event_tx.send(SessionEvent::CloseActionOutcome {
+                                            action,
+                                            success,
+                                            reason,
+                                        });
+                                    }
                                     Err(reason) => {
                                         tracing::warn!(%reason, "rejecting workflow event");
                                         let _ = send_workflow_ack(
@@ -515,6 +553,36 @@ async fn dispatch_commit_fix(
         },
     };
     let _ = send_workflow_ack(&mut stream, &verdict).await;
+    // The requesting bridge connection reads until EOF; dropping the stream
+    // sends it.
+    drop(stream);
+}
+
+async fn send_close_action_ack(
+    stream: &mut tokio::net::UnixStream,
+    verdict: &CloseActionVerdict,
+) -> std::io::Result<()> {
+    let line = verdict.to_line().map_err(std::io::Error::other)?;
+    stream.write_all(format!("{line}\n").as_bytes()).await
+}
+
+/// Waits for the workflow manager's verdict on a close-action request and
+/// writes it back to the requesting bridge connection. Runs in its own task
+/// for the same reason as [`dispatch_commit_fix`].
+async fn dispatch_close_action(
+    mut stream: tokio::net::UnixStream,
+    verdict_rx: oneshot::Receiver<CloseActionVerdict>,
+) {
+    let verdict = match tokio::time::timeout(VERDICT_TIMEOUT, verdict_rx).await {
+        Ok(Ok(verdict)) => verdict,
+        Ok(Err(_)) => CloseActionVerdict::Rejected {
+            reason: "session is shutting down".to_owned(),
+        },
+        Err(_) => CloseActionVerdict::Rejected {
+            reason: "the session did not answer the close-action request in time".to_owned(),
+        },
+    };
+    let _ = send_close_action_ack(&mut stream, &verdict).await;
     // The requesting bridge connection reads until EOF; dropping the stream
     // sends it.
     drop(stream);

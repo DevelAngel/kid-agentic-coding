@@ -11,11 +11,15 @@ use rmcp::{
 use serde_json::json;
 use thiserror::Error;
 use tokio::task;
-use wire::{CommitFixDone, bridge_error, connect_to_bridge, send_line};
+use wire::{
+    ACK_WAIT, CloseAction, CloseActionOutcome, CloseActionRequest, CloseActionVerdict,
+    CommitFixDone, bridge_error, connect_to_bridge, send_line,
+};
 
 use std::env;
-use std::io;
+use std::io::{self, Read};
 use std::mem;
+use std::net::Shutdown;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::result;
@@ -334,14 +338,23 @@ impl GitCommitFixCloseTools {
         &self,
         Parameters(params): Parameters<AddParams>,
     ) -> Result<CallToolResult, McpError> {
+        authorize_action(&self.socket_name, CloseAction::Add)?;
+
         let path = params.path.to_string_lossy();
-        command_result(
+        let result = command_result(
             "git",
             &["add", path.as_ref()],
             "git add",
             params.cwd.as_deref(),
         )
-        .await
+        .await;
+        let outcome = CloseActionOutcome {
+            action: CloseAction::Add,
+            success: result.is_ok(),
+            reason: result.as_ref().err().map(ToString::to_string),
+        };
+        notify_outcome(&self.socket_name, outcome)?;
+        result
     }
 
     #[tool(
@@ -369,7 +382,7 @@ impl GitCommitFixCloseTools {
                 return Ok(CallToolResult::error(vec![ContentBlock::text(text)]));
             }
         };
-
+        authorize_action(&self.socket_name, CloseAction::Commit)?;
         let result = if params.amend {
             command_result(
                 "git",
@@ -377,7 +390,7 @@ impl GitCommitFixCloseTools {
                 "git commit (amend)",
                 params.cwd.as_deref(),
             )
-            .await?
+            .await
         } else {
             command_result(
                 "git",
@@ -385,27 +398,119 @@ impl GitCommitFixCloseTools {
                 "git commit",
                 params.cwd.as_deref(),
             )
-            .await?
+            .await
         };
 
-        let line = CommitFixDone { commit_message }.to_line().map_err(|err| {
-            McpError::internal_error(
-                "failed to encode commit-fix-done event",
-                Some(json!({"reason": err.to_string()})),
-            )
-        })?;
-        notify_bridge(&self.socket_name, &line).map_err(|err| {
-            let message = bridge_error(&self.socket_name, &err);
-            tracing::error!("{message}");
-            McpError::internal_error(
-                "failed to notify commit-fix-done bridge",
-                Some(json!({"reason": message})),
-            )
-        })?;
-        tracing::debug!("commit-fix-done event sent");
-
-        Ok(result)
+        match result {
+            Ok(result) => {
+                let line = CommitFixDone { commit_message }.to_line().map_err(|err| {
+                    McpError::internal_error(
+                        "failed to encode commit-fix-done event",
+                        Some(json!({"reason": err.to_string()})),
+                    )
+                })?;
+                notify_bridge(&self.socket_name, &line).map_err(|err| {
+                    let message = bridge_error(&self.socket_name, &err);
+                    tracing::error!("{message}");
+                    McpError::internal_error(
+                        "failed to notify commit-fix-done bridge",
+                        Some(json!({"reason": message})),
+                    )
+                })?;
+                tracing::debug!("commit-fix-done event sent");
+                Ok(result)
+            }
+            Err(error) => {
+                notify_outcome(
+                    &self.socket_name,
+                    CloseActionOutcome {
+                        action: CloseAction::Commit,
+                        success: false,
+                        reason: Some(error.to_string()),
+                    },
+                )?;
+                Err(error)
+            }
+        }
     }
+}
+fn authorize_action(socket: &str, action: CloseAction) -> Result<(), McpError> {
+    let request = CloseActionRequest { action };
+    let line = request.to_line().map_err(|err| {
+        McpError::internal_error(
+            "failed to encode close-action event",
+            Some(json!({"reason": err.to_string()})),
+        )
+    })?;
+    let mut stream = connect_to_bridge(socket).map_err(|err| {
+        let message = bridge_error(socket, &err);
+        McpError::internal_error(
+            "failed to connect to close-action bridge",
+            Some(json!({"reason": message})),
+        )
+    })?;
+    send_line(&mut stream, &line).map_err(|err| {
+        McpError::internal_error(
+            "failed to send close-action request",
+            Some(json!({"reason": err.to_string()})),
+        )
+    })?;
+    stream.shutdown(Shutdown::Write).map_err(|err| {
+        McpError::internal_error(
+            "failed to half-close close-action bridge",
+            Some(json!({"reason": err.to_string()})),
+        )
+    })?;
+    stream.set_read_timeout(Some(ACK_WAIT)).map_err(|err| {
+        McpError::internal_error(
+            "failed to arm close-action verdict timeout",
+            Some(json!({"reason": err.to_string()})),
+        )
+    })?;
+
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).map_err(|err| {
+        McpError::internal_error(
+            "failed to read close-action verdict",
+            Some(json!({"reason": err.to_string()})),
+        )
+    })?;
+    let response = std::str::from_utf8(&response).map_err(|err| {
+        McpError::internal_error(
+            "close-action verdict is not valid UTF-8",
+            Some(json!({"reason": err.to_string()})),
+        )
+    })?;
+    let line = response.lines().next().unwrap_or("");
+    match CloseActionVerdict::from_line(line).map_err(|err| {
+        McpError::internal_error(
+            "malformed close-action verdict",
+            Some(json!({"reason": err.to_string()})),
+        )
+    })? {
+        CloseActionVerdict::Authorized => Ok(()),
+        CloseActionVerdict::Rejected { reason } => Err(McpError::internal_error(
+            "close-action rejected",
+            Some(json!({"reason": reason})),
+        )),
+    }
+}
+
+fn notify_outcome(socket: &str, outcome: CloseActionOutcome) -> Result<(), McpError> {
+    let line = outcome.to_line().map_err(|err| {
+        McpError::internal_error(
+            "failed to encode close-action outcome",
+            Some(json!({"reason": err.to_string()})),
+        )
+    })?;
+    notify_bridge(socket, &line).map_err(|err| {
+        let message = bridge_error(socket, &err);
+        tracing::error!("{message}");
+        McpError::internal_error(
+            "failed to notify close-action outcome",
+            Some(json!({"reason": message})),
+        )
+    })
 }
 
 #[tool_handler]
@@ -521,7 +626,68 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
     use std::{env, fs, process};
+
+    fn test_socket(suffix: &str) -> (PathBuf, UnixListener) {
+        let path = env::temp_dir().join(format!(
+            "kid-agentic-coding-close-{suffix}-{}.sock",
+            process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("bind succeeds");
+        (path, listener)
+    }
+
+    #[test]
+    fn authorize_action_waits_for_an_authorized_verdict() {
+        let (path, listener) = test_socket("authorized");
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept succeeds");
+            let mut payload = String::new();
+            stream.read_to_string(&mut payload).expect("reads request");
+            let request =
+                serde_json::from_str::<CloseActionRequest>(payload.trim()).expect("request parses");
+            assert_eq!(request.action, CloseAction::Add);
+            let verdict = CloseActionVerdict::Authorized
+                .to_line()
+                .expect("verdict encodes");
+            stream
+                .write_all(format!("{verdict}\n").as_bytes())
+                .expect("writes verdict");
+        });
+
+        authorize_action(&path.display().to_string(), CloseAction::Add)
+            .expect("authorized action succeeds");
+        responder.join().expect("responder finishes");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn authorize_action_rejects_without_running_the_git_action() {
+        let (path, listener) = test_socket("rejected");
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept succeeds");
+            let mut payload = String::new();
+            stream.read_to_string(&mut payload).expect("reads request");
+            let verdict = CloseActionVerdict::Rejected {
+                reason: "another action is pending".to_owned(),
+            }
+            .to_line()
+            .expect("verdict encodes");
+            stream
+                .write_all(format!("{verdict}\n").as_bytes())
+                .expect("writes verdict");
+        });
+
+        let error = authorize_action(&path.display().to_string(), CloseAction::Commit)
+            .expect_err("rejected action fails");
+        assert!(error.to_string().contains("close-action rejected"));
+        responder.join().expect("responder finishes");
+        let _ = fs::remove_file(path);
+    }
 
     #[tokio::test]
     async fn command_result_includes_stderr_when_command_fails() {

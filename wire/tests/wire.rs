@@ -1,7 +1,8 @@
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use wire::{
-    COMMIT_FIX_DONE_EVENT, COMMIT_FIX_EVENT, CommitFixDone, CommitFixRequest, CommitFixVerdict,
+    CLOSE_ACTION_EVENT, COMMIT_FIX_DONE_EVENT, COMMIT_FIX_EVENT, CloseAction, CloseActionOutcome,
+    CloseActionRequest, CloseActionVerdict, CommitFixDone, CommitFixRequest, CommitFixVerdict,
     Confetti, WorkflowEvent,
 };
 
@@ -253,4 +254,130 @@ fn workflow_event_rejects_unknown_or_untagged_events() {
 #[test]
 fn workflow_event_rejects_a_malformed_commit_fix_request() {
     assert!(WorkflowEvent::parse(br#"{"event":"commit-fix"}"#).is_err());
+}
+
+#[test]
+fn close_action_request_has_a_pinned_single_line_wire_format() {
+    let cases = [
+        (
+            CloseActionRequest {
+                action: CloseAction::Add,
+            },
+            r#"{"event":"close-action","action":"add"}"#,
+        ),
+        (
+            CloseActionRequest {
+                action: CloseAction::Commit,
+            },
+            r#"{"event":"close-action","action":"commit"}"#,
+        ),
+    ];
+
+    for (request, wire) in cases {
+        assert_eq!(request.to_line().unwrap(), wire);
+        let value = serde_json::from_str::<Value>(wire).unwrap();
+        assert_eq!(value["event"], CLOSE_ACTION_EVENT);
+    }
+}
+
+#[test]
+fn close_action_verdicts_have_a_pinned_single_line_wire_format() {
+    let cases = [
+        (
+            CloseActionVerdict::Authorized,
+            r#"{"outcome":"authorized"}"#,
+        ),
+        (
+            CloseActionVerdict::Rejected {
+                reason: "no fix session is active".to_owned(),
+            },
+            r#"{"outcome":"rejected","reason":"no fix session is active"}"#,
+        ),
+    ];
+
+    for (verdict, wire) in cases {
+        assert_eq!(verdict.to_line().unwrap(), wire);
+        assert_eq!(CloseActionVerdict::from_line(wire).unwrap(), verdict);
+    }
+}
+
+#[test]
+fn malformed_close_action_verdicts_fail_to_parse() {
+    for line in [
+        "",
+        "not json",
+        r#"{"outcome":"unknown"}"#,
+        r#"{"outcome":"rejected"}"#,
+    ] {
+        assert!(
+            CloseActionVerdict::from_line(line).is_err(),
+            "accepted invalid verdict: {line}"
+        );
+    }
+}
+
+#[test]
+fn close_action_outcome_has_a_pinned_single_line_wire_format() {
+    let outcome = CloseActionOutcome {
+        action: CloseAction::Commit,
+        success: false,
+        reason: Some("git commit failed".to_owned()),
+    };
+
+    assert_eq!(
+        outcome.to_line().unwrap(),
+        r#"{"event":"close-action-outcome","action":"commit","success":false,"reason":"git commit failed"}"#
+    );
+}
+
+#[test]
+fn close_action_outcome_allows_a_missing_reason() {
+    let parsed = serde_json::from_value::<CloseActionOutcome>(json!({
+        "event": "close-action-outcome",
+        "action": "add",
+        "success": true,
+    }))
+    .unwrap();
+
+    assert_eq!(
+        parsed,
+        CloseActionOutcome {
+            action: CloseAction::Add,
+            success: true,
+            reason: None,
+        }
+    );
+}
+
+#[test]
+fn workflow_event_parses_a_close_action_request() {
+    let request = CloseActionRequest {
+        action: CloseAction::Add,
+    };
+    let line = request.to_line().unwrap();
+
+    assert_eq!(
+        WorkflowEvent::parse(line.as_bytes()),
+        Ok(WorkflowEvent::CloseAction(request))
+    );
+}
+
+#[test]
+fn workflow_event_parses_a_close_action_outcome_event() {
+    let outcome = CloseActionOutcome {
+        action: CloseAction::Commit,
+        success: false,
+        reason: Some("git commit failed".to_owned()),
+    };
+    let line = outcome.to_line().unwrap();
+
+    assert_eq!(
+        WorkflowEvent::parse(line.as_bytes()),
+        Ok(WorkflowEvent::CloseActionOutcome(outcome))
+    );
+}
+
+#[test]
+fn workflow_event_rejects_a_malformed_close_action_request() {
+    assert!(WorkflowEvent::parse(br#"{"event":"close-action"}"#).is_err());
 }
