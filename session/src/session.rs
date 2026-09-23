@@ -408,7 +408,7 @@ async fn run_session(
                         if let Some(Ok((mut stream, _))) = workflow {
                             tracing::debug!("commit-fix workflow event received");
                             let mut message = Vec::new();
-                            if stream.read_to_end(&mut message).await.is_ok() {
+                            if stream.read_to_end(&mut message).await.is_ok() && !message.is_empty() {
                                 match WorkflowEvent::parse(&message) {
                                     Ok(WorkflowEvent::CommitFix(request)) => {
                                         tracing::info!(

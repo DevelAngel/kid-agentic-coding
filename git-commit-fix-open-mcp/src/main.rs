@@ -186,13 +186,11 @@ async fn main() -> Result<()> {
     tracing::debug!("git-commit-fix-open logging initialized");
 
     let args = Args::parse();
-    // Probe the bridge socket, but never abort on failure: exiting here
-    // would leave the agent waiting for this server to become ready, and
-    // server stderr is not reliably visible to the user anyway. Tool calls
-    // report the same error when they need the bridge.
+
     if let Err(err) = connect_to_bridge(&args.socket) {
         tracing::error!("{}", bridge_error(&args.socket, &err));
     }
+
     let server = GitCommitFixOpenTools::new(args.socket);
     let transport = transport::io::stdio();
     let running = service::serve_server(server, transport).await?;
