@@ -97,6 +97,9 @@ pub enum SessionEvent {
         verdict: Sender<CommitFixVerdict>,
     },
 
+    /// A prompt was automatically sent by the workflow manager.
+    AutoPrompt(String),
+
     /// The fix session committed its changes, closing the commit-fix workflow.
     CommitFixDone { commit_message: String },
 

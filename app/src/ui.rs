@@ -9,8 +9,7 @@ use kid_agentic_coding_session::{
     AgentLauncher, FsSocketDir, PermissionOption, SessionEvent, SessionHandle, StopReason,
     ToolStatus,
 };
-use kid_agentic_coding_workflow::COMMIT_FIX_WORKFLOW;
-use kid_agentic_coding_workflow::{MAIN_WORKFLOW, Workflow, WorkflowManager, WorkflowView};
+use kid_agentic_coding_workflow::{Workflow, WorkflowManager, WorkflowView};
 use log_buffer::LogBuffer;
 
 use ansi_to_tui::IntoText;
@@ -55,7 +54,7 @@ const PROMPT_ICON: &str = nerdicons_rs::fa::RSUSER_PEN;
 
 fn workflow_color(workflow_name: &str) -> Color {
     match workflow_name {
-        COMMIT_FIX_WORKFLOW => WORKFLOW_YELLOW,
+        name if name == Workflow::Fix.name() => WORKFLOW_YELLOW,
         _ => WORKFLOW_TEAL,
     }
 }
@@ -161,14 +160,14 @@ impl App {
     fn new() -> Self {
         Self {
             chat_log: ChatLog::new(),
-            prompt: new_prompt_textarea(false, workflow_color(MAIN_WORKFLOW)),
+            prompt: new_prompt_textarea(false, workflow_color(Workflow::Main.name())),
             workflow_view: WorkflowView::new(Workflow::Main),
             agent_buffer: String::new(),
             scroll_anchor: None,
             pending_scroll_delta: 0,
             pending_permission: None,
             autoscroll: true,
-            last_chat_workflow: MAIN_WORKFLOW,
+            last_chat_workflow: Workflow::Main.name(),
             should_quit: false,
             tool_call_ids: HashMap::new(),
             confetti: None,
@@ -202,7 +201,9 @@ impl App {
     }
 
     fn handle_session_event(&mut self, event: SessionEvent) {
+        tracing::debug!(?event, "event");
         match event {
+            SessionEvent::AutoPrompt(_) => {}
             SessionEvent::Confetti => {
                 tracing::debug!("event: confetti");
                 self.settle_thought();
@@ -796,21 +797,19 @@ async fn run_app(
             session_event = workflow.recv_event(agent_launcher, fs_socket_dir.clone()) => {
                 if let Some(session_event) = session_event {
                     app.sync_chat_workflow();
+                    let event_workflow = session_event.workflow;
                     match session_event.event {
-                        SessionEvent::CommitFixDone { commit_message } => {
+                        SessionEvent::AutoPrompt(prompt) => {
                             app.begin_acting_turn();
-                            let resume_prompt = format!("## Commit message used\n\n{commit_message}");
-                            app.chat_log.push_auto_with_workflow(
-                                resume_prompt.clone(),
-                                MAIN_WORKFLOW,
-                            );
-                            let _ = workflow.main_session().send_prompt(resume_prompt);
+                            app.chat_log
+                                .push_auto_with_workflow(prompt, event_workflow.name());
                         }
                         event => app.handle_session_event(event),
                     }
                 }
             }
             Some(term_event) = term_events.recv() => {
+
                 if let Event::Key(key) = term_event
                     && key.kind == KeyEventKind::Press
                 {
@@ -1025,7 +1024,8 @@ impl DrawApp for Frame<'_> {
                     let layout =
                         accent_layout(render_rect, visible_bubble.borders.contains(Borders::TOP));
 
-                    let color = workflow_color(m.workflow_name.as_deref().unwrap_or(MAIN_WORKFLOW));
+                    let color =
+                        workflow_color(m.workflow_name.as_deref().unwrap_or(Workflow::Main.name()));
                     self.render_widget(accent_block(color, USER_PANEL_BG, "┃"), layout.panel_rect);
                     self.render_widget(
                         Paragraph::new(USER_ICON).style(Style::default().fg(color)),
@@ -1039,7 +1039,8 @@ impl DrawApp for Frame<'_> {
 
                 Message::Auto(m) => {
                     let layout = accent_layout(render_rect, false);
-                    let color = workflow_color(m.workflow_name.as_deref().unwrap_or(MAIN_WORKFLOW));
+                    let color =
+                        workflow_color(m.workflow_name.as_deref().unwrap_or(Workflow::Main.name()));
                     self.render_widget(accent_block(color, AUTO_PANEL_BG, "┃"), layout.panel_rect);
                     self.render_widget(
                         Paragraph::new(AUTO_ICON).style(Style::default().fg(color)),
@@ -1528,7 +1529,7 @@ pub async fn run(
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
     let mut app = App::with_log_buffer(log_buffer).with_workflow(workflow_view);
-    app.chat_log.push_session_transition(MAIN_WORKFLOW);
+    app.chat_log.push_session_transition(Workflow::Main.name());
 
     let result = run_app(
         &mut terminal,
@@ -2736,9 +2737,7 @@ mod confetti_tests {
 #[cfg(test)]
 mod bubble_color_tests {
     use super::*;
-    use kid_agentic_coding_workflow::{
-        COMMIT_FIX_WORKFLOW as WORKFLOW_COMMIT_FIX, Workflow, WorkflowView,
-    };
+    use kid_agentic_coding_workflow::{Workflow, WorkflowView};
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
 
@@ -2753,7 +2752,7 @@ mod bubble_color_tests {
     fn session_app(workflow: Option<&str>, agent_replies: usize) -> App {
         let mut app = App::new();
         if let Some(workflow) = workflow {
-            app = app.with_workflow(WorkflowView::new(if workflow == WORKFLOW_COMMIT_FIX {
+            app = app.with_workflow(WorkflowView::new(if workflow == Workflow::Fix.name() {
                 Workflow::Fix
             } else {
                 Workflow::Main
@@ -2761,9 +2760,9 @@ mod bubble_color_tests {
             app.chat_log.push_session_transition(workflow);
         }
         app.chat_log
-            .push_auto_with_workflow("auto prompt", workflow.unwrap_or(MAIN_WORKFLOW));
+            .push_auto_with_workflow("auto prompt", workflow.unwrap_or(Workflow::Main.name()));
         app.chat_log
-            .push_user_with_workflow("user prompt", workflow.unwrap_or(MAIN_WORKFLOW));
+            .push_user_with_workflow("user prompt", workflow.unwrap_or(Workflow::Main.name()));
         for reply in 0..agent_replies {
             app.chat_log.push_agent(format!("agent reply {reply}"));
         }
@@ -2807,7 +2806,7 @@ mod bubble_color_tests {
 
     #[test]
     fn prompts_keep_commit_fix_color_when_banner_is_scrolled_out() {
-        let mut app = session_app(Some(COMMIT_FIX_WORKFLOW), REPLIES_PAST_BANNER);
+        let mut app = session_app(Some(Workflow::Fix.name()), REPLIES_PAST_BANNER);
 
         let buffer = render(&mut app);
 
@@ -2821,7 +2820,7 @@ mod bubble_color_tests {
 
     #[test]
     fn prompts_keep_commit_fix_color_when_banner_is_in_view() {
-        let mut app = session_app(Some(COMMIT_FIX_WORKFLOW), 0);
+        let mut app = session_app(Some(Workflow::Fix.name()), 0);
 
         let buffer = render(&mut app);
 
