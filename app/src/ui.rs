@@ -1496,7 +1496,8 @@ pub async fn run(
     let mut term_events = spawn_terminal_events();
     let mut terminal = setup_terminal()?;
     let mut app = App::with_log_buffer(log_buffer).with_workflow(workflow_view);
-    app.chat_log.push_session_transition(Workflow::Main.name());
+    app.chat_log
+        .push_session_transition(WorkflowManager::initial_workflow().name());
 
     let result = run_app(
         &mut terminal,
