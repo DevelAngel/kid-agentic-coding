@@ -9,7 +9,7 @@ use kid_agentic_coding_session::{
     AgentLauncher, FsSocketDir, PermissionOption, SessionEvent, SessionHandle, StopReason,
     ToolStatus,
 };
-use kid_agentic_coding_workflow::{Workflow, WorkflowManager, WorkflowView};
+use kid_agentic_coding_workflow::{Workflow, WorkflowEvent, WorkflowManager, WorkflowView};
 use log_buffer::LogBuffer;
 
 use ansi_to_tui::IntoText;
@@ -763,18 +763,36 @@ async fn run_app(
                 }
             }
             session_event = workflow.recv_event(agent_launcher, fs_socket_dir.clone()) => {
-                if let Some(session_event) = session_event {
-                    let event_workflow = session_event.workflow;
-                    if let Some(workflow) = session_event.transition {
-                        app.chat_log.push_session_transition(workflow.name());
-                    }
-                    match session_event.event {
-                        SessionEvent::AutoPrompt(prompt) => {
-                            app.begin_acting_turn();
-                            app.chat_log
-                                .push_auto_with_workflow(prompt, event_workflow.name());
+                match session_event {
+                    WorkflowEvent::Session {
+                        workflow: event_workflow,
+                        transition,
+                        event,
+                    } => {
+                        if let Some(workflow) = transition {
+                            app.chat_log.push_session_transition(workflow.name());
                         }
-                        event => app.handle_session_event(event),
+                        match event {
+                            SessionEvent::AutoPrompt(prompt) => {
+                                app.begin_acting_turn();
+                                app.chat_log
+                                    .push_auto_with_workflow(prompt, event_workflow.name());
+                            }
+                            event => app.handle_session_event(event),
+                        }
+                    }
+                    WorkflowEvent::SessionEnded {
+                        workflow: ended_workflow,
+                    } => {
+                        app.settle_thought();
+                        app.last_agent_message_entry_id = None;
+                        app.agent_acting = false;
+                        app.prompt =
+                            new_prompt_textarea(false, workflow_color(workflow.view().name()));
+                        app.chat_log.push_session_notice(
+                            SessionNoticeKind::Stopped,
+                            format!("{} session ended", ended_workflow.name()),
+                        );
                     }
                 }
             }

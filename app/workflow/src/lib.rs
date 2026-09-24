@@ -58,13 +58,19 @@ impl WorkflowView {
     }
 }
 
-pub struct WorkflowEvent {
-    pub workflow: Workflow,
-    pub transition: Option<Workflow>,
-    pub event: SessionEvent,
+pub enum WorkflowEvent {
+    Session {
+        workflow: Workflow,
+        transition: Option<Workflow>,
+        event: SessionEvent,
+    },
+    SessionEnded {
+        workflow: Workflow,
+    },
 }
 
 pub struct WorkflowManager {
+    main_ended: bool,
     main: SessionHandle,
     fix: Option<SessionHandle>,
     pending_fix: Option<CommitFixRequest>,
@@ -78,6 +84,7 @@ impl WorkflowManager {
         Self {
             main,
             fix: None,
+            main_ended: false,
             pending_fix: None,
             close_pending: None,
             view: WorkflowView::new(Self::initial_workflow()),
@@ -102,6 +109,23 @@ impl WorkflowManager {
         (previous != value).then_some(workflow)
     }
 
+    fn handle_session_end(&mut self, workflow: Workflow) -> WorkflowEvent {
+        match workflow {
+            Workflow::Main => {
+                self.main_ended = true;
+                self.pending_fix = None;
+            }
+            Workflow::Fix => {
+                self.fix = None;
+                self.close_pending = None;
+                self.set_workflow(Workflow::Main);
+            }
+            Workflow::OpeningFix => {}
+        }
+
+        WorkflowEvent::SessionEnded { workflow }
+    }
+
     pub fn active_session(&self) -> &SessionHandle {
         self.fix.as_ref().unwrap_or(&self.main)
     }
@@ -110,27 +134,24 @@ impl WorkflowManager {
         &mut self,
         launcher: &AgentLauncher,
         fs_socket_dir: FsSocketDir,
-    ) -> Option<WorkflowEvent> {
+    ) -> WorkflowEvent {
         loop {
-            let event = match self.fix.as_mut() {
+            let (workflow, event) = match self.fix.as_mut() {
+                Some(fix) if self.main_ended => (Workflow::Fix, fix.recv_event().await),
                 Some(fix) => {
                     tokio::select! {
-                        event = self.main.recv_event() => {
-                            event.map(|event| (Workflow::Main, event))
-                        }
-                        event = fix.recv_event() => {
-                            event.map(|event| (Workflow::Fix, event))
-                        }
+                        event = self.main.recv_event() => (Workflow::Main, event),
+                        event = fix.recv_event() => (Workflow::Fix, event),
                     }
                 }
-                None => self
-                    .main
-                    .recv_event()
-                    .await
-                    .map(|event| (Workflow::Main, event)),
-            }?;
+                None if self.main_ended => std::future::pending().await,
+                None => (Workflow::Main, self.main.recv_event().await),
+            };
 
-            let (workflow, event) = event;
+            let Some(event) = event else {
+                return self.handle_session_end(workflow);
+            };
+
             match (workflow, event) {
                 (Workflow::Main, SessionEvent::CommitFix { request, verdict }) => {
                     self.request_fix(request, verdict);
@@ -139,7 +160,7 @@ impl WorkflowManager {
                     if let Some(event) =
                         self.handle_main_event(event, launcher, fs_socket_dir.clone())
                     {
-                        return Some(event);
+                        return event;
                     }
                 }
                 (Workflow::Fix, SessionEvent::CloseAction { action, verdict }) => {
@@ -147,10 +168,10 @@ impl WorkflowManager {
                 }
                 (Workflow::Fix, event) => {
                     if let Some(event) = self.handle_fix_event(event) {
-                        return Some(event);
+                        return event;
                     }
                 }
-                (Workflow::OpeningFix, _) => {}
+                (Workflow::OpeningFix, _) => unreachable!("opening state cannot own a session"),
             }
         }
     }
@@ -211,7 +232,7 @@ impl WorkflowManager {
             return Some(self.start_fix(request, launcher, fs_socket_dir));
         }
 
-        Some(WorkflowEvent {
+        Some(WorkflowEvent::Session {
             workflow: Workflow::Main,
             transition: None,
             event,
@@ -237,7 +258,7 @@ impl WorkflowManager {
                 }
                 None
             }
-            event => Some(WorkflowEvent {
+            event => Some(WorkflowEvent::Session {
                 workflow: Workflow::Fix,
                 transition: None,
                 event,
@@ -257,7 +278,7 @@ impl WorkflowManager {
     ) -> WorkflowEvent {
         let transition = self.set_workflow(workflow);
         let _ = session.send_prompt(&prompt);
-        WorkflowEvent {
+        WorkflowEvent::Session {
             workflow,
             event: SessionEvent::AutoPrompt(prompt),
             transition,
@@ -324,10 +345,19 @@ mod tests {
         let fix = SessionHandle::new_disconnected_for_test();
 
         let event = manager.send_prompt(&fix, Workflow::Main, "seed prompt".to_owned());
-        assert_eq!(event.workflow, Workflow::Main);
-        assert_eq!(event.transition, None);
+
+        let WorkflowEvent::Session {
+            workflow,
+            transition,
+            event,
+        } = event
+        else {
+            panic!("expected session event");
+        };
+        assert_eq!(workflow, Workflow::Main);
+        assert_eq!(transition, None);
         assert!(matches!(
-            event.event,
+            event,
             SessionEvent::AutoPrompt(prompt) if prompt == "seed prompt"
         ));
     }
@@ -337,11 +367,21 @@ mod tests {
         let manager = WorkflowManager::new(SessionHandle::new_disconnected_for_test());
         let fix = SessionHandle::new_disconnected_for_test();
 
-        let event = manager.send_prompt(&fix, Workflow::Fix, "seed prompt".to_owned());
-        assert_eq!(event.transition, Some(Workflow::Fix));
+        assert!(matches!(
+            manager.send_prompt(&fix, Workflow::Fix, "seed prompt".to_owned()),
+            WorkflowEvent::Session {
+                transition: Some(Workflow::Fix),
+                ..
+            }
+        ));
 
-        let event = manager.send_prompt(&manager.main, Workflow::Main, "back to main".to_owned());
-        assert_eq!(event.transition, Some(Workflow::Main));
+        assert!(matches!(
+            manager.send_prompt(&manager.main, Workflow::Main, "back to main".to_owned()),
+            WorkflowEvent::Session {
+                transition: Some(Workflow::Main),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -350,7 +390,6 @@ mod tests {
         let (verdict_tx, mut verdict_rx) = oneshot::channel();
 
         manager.request_fix(request(), verdict_tx);
-
         assert_eq!(verdict_rx.try_recv().ok(), Some(CommitFixVerdict::Opening));
         assert_eq!(manager.view().workflow(), Workflow::OpeningFix);
     }
@@ -392,6 +431,36 @@ mod tests {
             verdict_rx.try_recv().ok(),
             Some(CloseActionVerdict::Rejected { .. })
         ));
+    }
+
+    #[test]
+    fn fix_session_end_returns_to_main() {
+        let mut manager = manager_in_fix_workflow();
+
+        assert!(matches!(
+            manager.handle_session_end(Workflow::Fix),
+            WorkflowEvent::SessionEnded {
+                workflow: Workflow::Fix
+            }
+        ));
+        assert_eq!(manager.view().workflow(), Workflow::Main);
+        assert!(manager.fix.is_none());
+        assert!(manager.active_session().workflow_name().is_none());
+    }
+
+    #[test]
+    fn main_session_end_is_recorded_without_replacing_the_session() {
+        let mut manager = WorkflowManager::new(SessionHandle::new_disconnected_for_test());
+
+        assert!(matches!(
+            manager.handle_session_end(Workflow::Main),
+            WorkflowEvent::SessionEnded {
+                workflow: Workflow::Main
+            }
+        ));
+        assert!(manager.main_ended);
+        assert!(manager.fix.is_none());
+        assert_eq!(manager.view().workflow(), Workflow::Main);
     }
 
     #[test]
@@ -486,11 +555,13 @@ mod tests {
             })
             .expect("commit-fix-done is converted to an auto prompt");
 
-        assert_eq!(event.workflow, Workflow::Main);
         assert!(matches!(
-            event.event,
-            SessionEvent::AutoPrompt(prompt)
-                if prompt == "## Commit message used\n\nfix: trim"
+            event,
+            WorkflowEvent::Session {
+                workflow: Workflow::Main,
+                event: SessionEvent::AutoPrompt(prompt),
+                ..
+            } if prompt == "## Commit message used\n\nfix: trim"
         ));
         assert_eq!(manager.view().workflow(), Workflow::Main);
     }
