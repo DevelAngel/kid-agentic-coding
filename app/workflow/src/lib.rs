@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use kid_agentic_coding_session::{
@@ -10,6 +13,7 @@ use tokio::sync::oneshot;
 use wire::{CloseAction, CloseActionVerdict, CommitFixRequest, CommitFixVerdict};
 
 pub const MAIN_WORKFLOW: &str = "programming";
+const CLOSE_ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 pub const COMMIT_FIX_WORKFLOW: &str = "commit-fix";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +79,7 @@ pub struct WorkflowManager {
     fix: Option<SessionHandle>,
     pending_fix: Option<CommitFixRequest>,
     /// Close-side Git action currently authorized and running.
-    close_pending: Option<CloseAction>,
+    close_pending: Option<(CloseAction, Instant)>,
     view: WorkflowView,
 }
 
@@ -136,17 +140,28 @@ impl WorkflowManager {
         fs_socket_dir: FsSocketDir,
     ) -> WorkflowEvent {
         loop {
-            let (workflow, event) = match self.fix.as_mut() {
-                Some(fix) if self.main_ended => (Workflow::Fix, fix.recv_event().await),
-                Some(fix) => {
-                    tokio::select! {
-                        event = self.main.recv_event() => (Workflow::Main, event),
-                        event = fix.recv_event() => (Workflow::Fix, event),
-                    }
+            let close_action_deadline = self.close_pending.map(|(_, deadline)| deadline);
+            let close_action_timeout = async {
+                match close_action_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                    None => std::future::pending().await,
                 }
-                None if self.main_ended => std::future::pending().await,
-                None => (Workflow::Main, self.main.recv_event().await),
             };
+            let (workflow, event, close_action_expired) = match self.fix.as_mut() {
+                Some(fix) => tokio::select! {
+                    event = self.main.recv_event(), if !self.main_ended => {
+                        (Workflow::Main, event, false)
+                    }
+                    event = fix.recv_event() => (Workflow::Fix, event, false),
+                    _ = close_action_timeout => (Workflow::Fix, None, true),
+                },
+                None if self.main_ended => std::future::pending().await,
+                None => (Workflow::Main, self.main.recv_event().await, false),
+            };
+            if close_action_expired {
+                self.expire_close_action(Instant::now());
+                continue;
+            }
 
             let Some(event) = event else {
                 return self.handle_session_end(workflow);
@@ -214,8 +229,19 @@ impl WorkflowManager {
             return;
         }
 
-        self.close_pending = Some(action);
+        self.close_pending = Some((action, Instant::now() + CLOSE_ACTION_TIMEOUT));
         let _ = verdict.send(CloseActionVerdict::Authorized);
+    }
+
+    fn expire_close_action(&mut self, now: Instant) -> bool {
+        if self
+            .close_pending
+            .is_some_and(|(_, deadline)| deadline <= now)
+        {
+            self.close_pending = None;
+            return true;
+        }
+        false
     }
 
     fn handle_main_event(
@@ -251,7 +277,10 @@ impl WorkflowManager {
                 ))
             }
             SessionEvent::CloseActionOutcome { action, .. } => {
-                if self.close_pending == Some(action) {
+                if self
+                    .close_pending
+                    .is_some_and(|(pending, _)| pending == action)
+                {
                     self.close_pending = None;
                 } else {
                     // The session already logged the unexpected event.
@@ -493,6 +522,15 @@ mod tests {
             second_rx.try_recv().ok(),
             Some(CloseActionVerdict::Rejected { .. })
         ));
+    }
+
+    #[test]
+    fn expired_close_action_releases_the_pending_gate() {
+        let mut manager = manager_in_fix_workflow();
+        manager.close_pending = Some((CloseAction::Add, Instant::now() - Duration::from_secs(1)));
+
+        assert!(manager.expire_close_action(Instant::now()));
+        assert!(manager.close_pending.is_none());
     }
 
     #[test]
