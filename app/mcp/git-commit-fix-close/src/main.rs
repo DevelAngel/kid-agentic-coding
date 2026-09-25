@@ -42,8 +42,8 @@ struct CommitParams {
     scope: Option<String>,
     /// Commit description.
     description: String,
-    /// Commit body paragraphs, each word-wrapped independently.
-    body: Vec<String>,
+    /// Commit body as plain text; blank lines separate paragraphs, each word-wrapped independently.
+    body: String,
     /// Optional breaking-change note.
     #[serde(default)]
     breaking_change_note: Option<String>,
@@ -110,31 +110,27 @@ enum CommitMessageError {
 
 fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<CommitMessageError>> {
     let mut errors = Vec::new();
+    let paragraphs = split_paragraphs(&params.body);
 
     if !VALID_COMMIT_TYPES.contains(&params.commit_type.as_str()) {
         errors.push(CommitMessageError::InvalidType(params.commit_type.clone()));
     }
-    if params
-        .body
-        .iter()
-        .all(|paragraph| paragraph.trim().is_empty())
-    {
+    if paragraphs.iter().all(|paragraph| paragraph.is_empty()) {
         errors.push(CommitMessageError::EmptyBody);
     }
-    if params
-        .body
+    if paragraphs
         .iter()
         .any(|paragraph| paragraph.contains("BREAKING CHANGE"))
     {
         errors.push(CommitMessageError::BreakingChangeInBody);
     }
 
-    let body_lines = wrap_body_lines(&params.body);
+    let body_lines = wrap_body_lines(&paragraphs);
     if body_lines.len() > 12 {
         errors.push(CommitMessageError::TooManyBodyLines {
             lines: body_lines.len(),
-            words: word_count(&params.body),
-            paragraphs: params.body.len(),
+            words: word_count(&paragraphs),
+            paragraphs: paragraphs.len(),
         });
     }
 
@@ -182,6 +178,15 @@ fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<Com
         message.push_str(&lines.join("\n    "));
     }
     Ok(message)
+}
+
+/// Splits body text into paragraphs at blank lines, trimming and dropping empty ones.
+fn split_paragraphs(text: &str) -> Vec<String> {
+    text.split("\n\n")
+        .map(str::trim)
+        .filter(|paragraph| !paragraph.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Total word count across all body paragraphs — reported alongside a
@@ -751,7 +756,7 @@ mod tests {
         let params: CommitParams = serde_json::from_value(json!({
             "type": "fix",
             "description": "Review feedback",
-            "body": ["Address the review feedback."],
+            "body": "Address the review feedback.",
         }))
         .unwrap();
 
@@ -765,7 +770,7 @@ mod tests {
             commit_type: "feat".to_owned(),
             scope: Some("session".to_owned()),
             description: "Improve commit handling".to_owned(),
-            body: vec!["Handle commit messages centrally.".to_owned()],
+            body: "Handle commit messages centrally.".to_owned(),
             cwd: None,
             breaking_change_note: Some("The commit input is now structured.".to_owned()),
             amend: false,
@@ -785,7 +790,7 @@ mod tests {
             commit_type: "unknown".to_owned(),
             scope: None,
             description: "A very long description that makes the summary too long".to_owned(),
-            body: vec!["BREAKING CHANGE".to_owned()],
+            body: "BREAKING CHANGE".to_owned(),
             breaking_change_note: None,
             amend: false,
             cwd: None,
@@ -817,7 +822,7 @@ mod tests {
             commit_type: "fix".to_owned(),
             scope: None,
             description: "Trim the body".to_owned(),
-            body: vec!["line".to_owned(); 13],
+            body: vec!["line"; 13].join("\n\n"),
             breaking_change_note: None,
             amend: false,
             cwd: None,
@@ -839,7 +844,7 @@ mod tests {
             commit_type: "feat".to_owned(),
             scope: None,
             description: "Break something".to_owned(),
-            body: vec!["Explain the break.".to_owned()],
+            body: "Explain the break.".to_owned(),
             breaking_change_note: Some(note),
             amend: false,
             cwd: None,
@@ -860,7 +865,7 @@ mod tests {
             commit_type: "fix".to_owned(),
             scope: None,
             description: "Trim the body".to_owned(),
-            body: vec!["one two three four".to_owned(); 13],
+            body: vec!["one two three four"; 13].join("\n\n"),
             breaking_change_note: None,
             amend: false,
             cwd: None,
@@ -881,7 +886,7 @@ mod tests {
             commit_type: "feat".to_owned(),
             scope: None,
             description: "Break something".to_owned(),
-            body: vec!["Explain the break.".to_owned()],
+            body: "Explain the break.".to_owned(),
             breaking_change_note: Some(note),
             amend: false,
             cwd: None,
@@ -897,15 +902,12 @@ mod tests {
     }
 
     #[test]
-    fn build_commit_message_separates_body_paragraphs_with_a_blank_line() {
+    fn build_commit_message_splits_body_paragraphs_on_blank_lines() {
         let params = CommitParams {
             commit_type: "fix".to_owned(),
             scope: None,
             description: "Explain in two paragraphs".to_owned(),
-            body: vec![
-                "First paragraph.".to_owned(),
-                "Second paragraph.".to_owned(),
-            ],
+            body: "First paragraph.\n\nSecond paragraph.".to_owned(),
             breaking_change_note: None,
             amend: false,
             cwd: None,
@@ -925,7 +927,7 @@ mod tests {
             commit_type: "fix".to_owned(),
             scope: None,
             description: "Rewrap a pre-broken paragraph".to_owned(),
-            body: vec!["Line one\nline two\nline three".to_owned()],
+            body: "Line one\nline two\nline three".to_owned(),
             breaking_change_note: None,
             amend: false,
             cwd: None,
