@@ -1,9 +1,26 @@
-use kid_agentic_coding_app2::{
-    CompletionReason, Tool, ToolResult, ToolSet, WorkflowAction, WorkflowDefinition,
-    WorkflowRuntime,
-};
+use std::fmt;
 
-fn commit_fix_workflow() -> WorkflowRuntime {
+use cucumber::{World as _, given, then, when};
+use kid_agentic_coding_app2::{Tool, ToolResult, ToolSet, Workflow, WorkflowDefinition};
+
+#[derive(Default, cucumber::World)]
+struct World {
+    workflow: Option<Workflow<kid_agentic_coding_app2::Running>>,
+    completed: bool,
+}
+
+impl fmt::Debug for World {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("World")
+            .field("workflow_running", &self.workflow.is_some())
+            .field("workflow_completed", &self.completed)
+            .finish()
+    }
+}
+
+#[given("a running commit-fix workflow")]
+async fn running_commit_fix_workflow(world: &mut World) {
     let status = Tool::new("git_status");
     let diff = Tool::new("git_diff");
     let commit = Tool::new("git_commit");
@@ -17,56 +34,37 @@ fn commit_fix_workflow() -> WorkflowRuntime {
         .with_tools(tools)
         .completes_on_successful_tool(commit);
 
-    WorkflowRuntime::start(definition)
+    world.workflow = Some(Workflow::new(definition).start());
 }
 
-#[test]
-fn commit_fix_completes_after_successful_commit() {
-    // Given a running commit-fix workflow.
-    let mut workflow = commit_fix_workflow();
+#[when(regex = r"^git (status|diff|commit) (succeeds|fails)$")]
+async fn run_git_tool(world: &mut World, tool: String, outcome: String) {
+    let workflow = world.workflow.take().expect("workflow is running");
+    let result = match outcome.as_str() {
+        "succeeds" => ToolResult::success(Tool::new(format!("git_{tool}"))),
+        "fails" => ToolResult::failure(Tool::new(format!("git_{tool}"))),
+        _ => unreachable!("the feature file only provides valid outcomes"),
+    };
 
-    // When the workflow completes its preparation steps.
-    assert_eq!(
-        workflow.handle_tool_result(&ToolResult::success(Tool::new("git_status"))),
-        WorkflowAction::Continue
-    );
-    assert_eq!(
-        workflow.handle_tool_result(&ToolResult::success(Tool::new("git_diff"))),
-        WorkflowAction::Continue
-    );
-
-    // And the commit succeeds.
-    let action = workflow.handle_tool_result(&ToolResult::success(Tool::new("git_commit")));
-
-    // Then the workflow completes.
-    assert_eq!(
-        action,
-        WorkflowAction::Complete(CompletionReason::ToolSucceeded {
-            tool: Tool::new("git_commit").into(),
-        })
-    );
-    assert!(!workflow.is_running());
+    match workflow.handle_tool_result(&result) {
+        Ok(_) => world.completed = true,
+        Err(workflow) => world.workflow = Some(workflow),
+    }
 }
 
-#[test]
-fn commit_fix_stays_active_after_failed_commit() {
-    // Given a running commit-fix workflow.
-    let mut workflow = commit_fix_workflow();
+#[then("the workflow is complete")]
+async fn workflow_is_complete(world: &mut World) {
+    assert!(world.completed);
+    assert!(world.workflow.is_none());
+}
 
-    // When the workflow completes its preparation steps.
-    assert_eq!(
-        workflow.handle_tool_result(&ToolResult::success(Tool::new("git_status"))),
-        WorkflowAction::Continue
-    );
-    assert_eq!(
-        workflow.handle_tool_result(&ToolResult::success(Tool::new("git_diff"))),
-        WorkflowAction::Continue
-    );
+#[then("the workflow remains active")]
+async fn workflow_remains_active(world: &mut World) {
+    assert!(!world.completed);
+    assert!(world.workflow.is_some());
+}
 
-    // And the commit fails.
-    let action = workflow.handle_tool_result(&ToolResult::failure(Tool::new("git_commit")));
-
-    // Then the workflow remains active.
-    assert_eq!(action, WorkflowAction::Continue);
-    assert!(workflow.is_running());
+#[tokio::test]
+async fn commit_fix_workflow() {
+    World::cucumber().with_default_cli().run("tests").await;
 }

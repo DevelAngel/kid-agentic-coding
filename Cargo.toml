@@ -31,6 +31,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "chron
 rand = "0.10"
 textwrap = "0.16"
 tui-markdown = "0.3.9"
+cucumber = "0.23"
 wire = { package = "kid-agentic-coding-wire", path = "app/wire" }
 kid-agentic-coding-session = { path = "app/session" }
 kid-agentic-coding-workflow = { path = "app/workflow" }

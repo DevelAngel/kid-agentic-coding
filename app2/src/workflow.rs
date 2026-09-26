@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use crate::{Tool, ToolResult, ToolSet, completion_tool::CompletionTool};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,30 +42,39 @@ pub enum CompletionReason {
     ToolSucceeded { tool: CompletionTool },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum WorkflowAction {
-    Continue,
-    Complete(CompletionReason),
-}
+pub struct Defined;
+pub struct Running;
+pub struct Completed;
 
-pub struct WorkflowRuntime {
+pub struct Workflow<S> {
     definition: WorkflowDefinition,
-    running: bool,
+    completion_reason: Option<CompletionReason>,
+    state: PhantomData<S>,
 }
 
-impl WorkflowRuntime {
-    pub fn start(definition: WorkflowDefinition) -> Self {
+impl Workflow<Defined> {
+    pub fn new(definition: WorkflowDefinition) -> Self {
         Self {
             definition,
-            running: true,
+            completion_reason: None,
+            state: PhantomData,
         }
     }
 
-    pub fn handle_tool_result(&mut self, result: &ToolResult) -> WorkflowAction {
-        if !self.running {
-            return WorkflowAction::Continue;
+    pub fn start(self) -> Workflow<Running> {
+        Workflow {
+            definition: self.definition,
+            completion_reason: None,
+            state: PhantomData,
         }
+    }
+}
 
+impl Workflow<Running> {
+    pub fn handle_tool_result(
+        self,
+        result: &ToolResult,
+    ) -> Result<Workflow<Completed>, Workflow<Running>> {
         let should_complete = result.is_success()
             && self
                 .definition
@@ -72,18 +83,17 @@ impl WorkflowRuntime {
                 .map(CompletionTool::name)
                 == Some(result.tool().name());
 
-        if should_complete {
-            self.running = false;
-            return WorkflowAction::Complete(CompletionReason::ToolSucceeded {
-                tool: result.tool().clone().into(),
-            });
+        if !should_complete {
+            return Err(self);
         }
 
-        WorkflowAction::Continue
-    }
-
-    pub fn is_running(&self) -> bool {
-        self.running
+        Ok(Workflow {
+            definition: self.definition,
+            completion_reason: Some(CompletionReason::ToolSucceeded {
+                tool: result.tool().clone().into(),
+            }),
+            state: PhantomData,
+        })
     }
 
     pub fn definition(&self) -> &WorkflowDefinition {
@@ -91,57 +101,71 @@ impl WorkflowRuntime {
     }
 }
 
+impl Workflow<Completed> {
+    pub fn definition(&self) -> &WorkflowDefinition {
+        &self.definition
+    }
+
+    pub fn completion_reason(&self) -> Option<&CompletionReason> {
+        self.completion_reason.as_ref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn commit_tool() -> Tool {
         Tool::new("git_commit")
     }
-    #[test]
-    fn successful_completion_tool_stops_workflow() {
-        let commit = commit_tool();
-        let definition = WorkflowDefinition::new("commit-fix")
-            .with_tools(ToolSet::default().with(commit.clone()))
-            .completes_on_successful_tool(commit.clone());
-        let mut workflow = WorkflowRuntime::start(definition);
 
-        let action = workflow.handle_tool_result(&ToolResult::success(commit));
+    fn commit_fix_workflow() -> Workflow<Running> {
+        Workflow::new(
+            WorkflowDefinition::new("commit-fix")
+                .with_tools(ToolSet::default().with(commit_tool()))
+                .completes_on_successful_tool(commit_tool()),
+        )
+        .start()
+    }
+
+    #[test]
+    fn successful_completion_transitions_to_completed() {
+        let workflow = commit_fix_workflow();
+
+        let completed = match workflow.handle_tool_result(&ToolResult::success(commit_tool())) {
+            Ok(completed) => completed,
+            Err(_) => panic!("successful completion must transition to completed"),
+        };
 
         assert_eq!(
-            action,
-            WorkflowAction::Complete(CompletionReason::ToolSucceeded {
+            completed.completion_reason(),
+            Some(&CompletionReason::ToolSucceeded {
                 tool: commit_tool().into(),
             })
         );
-        assert!(!workflow.is_running());
     }
 
     #[test]
-    fn failed_completion_tool_does_not_stop_workflow() {
-        let commit = commit_tool();
-        let definition = WorkflowDefinition::new("commit-fix")
-            .with_tools(ToolSet::default().with(commit.clone()))
-            .completes_on_successful_tool(commit.clone());
-        let mut workflow = WorkflowRuntime::start(definition);
+    fn failed_completion_keeps_workflow_running() {
+        let workflow = commit_fix_workflow();
+        let workflow = match workflow.handle_tool_result(&ToolResult::failure(commit_tool())) {
+            Err(workflow) => workflow,
+            Ok(_) => panic!("failed completion must keep workflow running"),
+        };
 
-        let action = workflow.handle_tool_result(&ToolResult::failure(commit));
-
-        assert_eq!(action, WorkflowAction::Continue);
-        assert!(workflow.is_running());
+        assert_eq!(workflow.definition().name(), "commit-fix");
     }
 
     #[test]
-    fn unrelated_successful_tool_does_not_stop_workflow() {
-        let commit = commit_tool();
-        let status = Tool::new("git_status");
-        let definition = WorkflowDefinition::new("commit-fix")
-            .with_tools(ToolSet::default().with(commit.clone()).with(status.clone()))
-            .completes_on_successful_tool(commit.clone());
-        let mut workflow = WorkflowRuntime::start(definition);
+    fn unrelated_success_keeps_workflow_running() {
+        let workflow = commit_fix_workflow();
 
-        let action = workflow.handle_tool_result(&ToolResult::success(status));
+        let workflow =
+            match workflow.handle_tool_result(&ToolResult::success(Tool::new("git_status"))) {
+                Err(workflow) => workflow,
+                Ok(_) => panic!("unrelated tool must keep workflow running"),
+            };
 
-        assert_eq!(action, WorkflowAction::Continue);
-        assert!(workflow.is_running());
+        assert_eq!(workflow.definition().name(), "commit-fix");
     }
 }
