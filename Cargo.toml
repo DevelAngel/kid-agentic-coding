@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["agent/lorem-agent", "app/chat", "app/cli", "app/log-buffer", "app/mcp/confetti", "app/mcp/git-commit-fix-close", "app/mcp/git-commit-fix-open", "app/session", "app/wire", "app/workflow", "mcp/gh", "mcp/python", "mcp/rust"]
+members = ["agent/lorem-agent", "app/chat", "app/cli", "app/log-buffer", "app/mcp/confetti", "app/mcp/git-commit-fix-close", "app/mcp/git-commit-fix-open", "app/session", "app/wire", "app/workflow", "app2", "mcp/gh", "mcp/python", "mcp/rust"]
 
 [workspace.package]
 version = "0.2.0"
@@ -31,6 +31,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "chron
 rand = "0.10"
 textwrap = "0.16"
 tui-markdown = "0.3.9"
+cucumber = "0.23"
 wire = { package = "kid-agentic-coding-wire", path = "app/wire" }
 kid-agentic-coding-session = { path = "app/session" }
 kid-agentic-coding-workflow = { path = "app/workflow" }
