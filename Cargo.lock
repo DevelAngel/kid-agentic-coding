@@ -1448,6 +1448,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kid-agentic-coding-app2"
+version = "0.2.0"
+
+[[package]]
 name = "kid-agentic-coding-chat"
 version = "0.2.0"
 dependencies = [
