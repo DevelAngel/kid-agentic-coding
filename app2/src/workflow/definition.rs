@@ -1,28 +1,28 @@
-use crate::{CompletionTool, Tool, ToolSet};
+use crate::{McpServer, Tool};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WorkflowDefinition {
-    tools: ToolSet,
-    pub(super) completion_tool: Option<CompletionTool>,
+    mcp_servers: Vec<McpServer>,
+    pub(super) completion_tool: Option<Tool>,
 }
 
 impl WorkflowDefinition {
-    pub fn with_tools(mut self, tools: ToolSet) -> Self {
-        self.tools = tools;
+    pub fn with_mcp_server(mut self, server: McpServer) -> Self {
+        self.mcp_servers.push(server);
         self
     }
 
     pub fn completes_on_successful_tool(mut self, tool: Tool) -> Self {
-        self.completion_tool = Some(tool.into());
+        self.completion_tool = Some(tool);
         self
     }
 
-    pub fn tools(&self) -> &ToolSet {
-        &self.tools
+    pub fn mcp_servers(&self) -> &[McpServer] {
+        &self.mcp_servers
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkflowCompletionReason {
-    ToolSucceeded { tool: CompletionTool },
+    ToolSucceeded { tool: Tool },
 }
