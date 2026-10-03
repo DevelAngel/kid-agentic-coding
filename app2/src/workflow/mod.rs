@@ -32,7 +32,7 @@ impl Workflow<Programming, Running> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Tool, ToolResult};
+    use crate::{McpServer, Tool, ToolResult};
     use std::assert_matches;
 
     fn commit_tool() -> Tool {
@@ -41,6 +41,16 @@ mod tests {
 
     fn commit_fix_workflow() -> Workflow<CommitFix, Running> {
         Workflow::<CommitFix, Defined>::transient().start()
+    }
+
+    #[test]
+    fn commit_fix_defines_required_mcp_server() {
+        let workflow = commit_fix_workflow();
+
+        assert_eq!(
+            workflow.definition().mcp_servers(),
+            &[McpServer::new("git-commit-fix-close-tools")]
+        );
     }
 
     #[test]
@@ -67,7 +77,7 @@ mod tests {
         assert_eq!(
             completed.completion_reason(),
             &WorkflowCompletionReason::ToolSucceeded {
-                tool: commit_tool().into(),
+                tool: commit_tool(),
             }
         );
     }

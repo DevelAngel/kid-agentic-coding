@@ -5,7 +5,7 @@ use kid_agentic_coding_app2::{
 #[test]
 fn planning_workflow_is_initial_and_has_no_tools() {
     let workflow: Workflow<Planning, Defined> = ApplicationEntry::<Planning>::default().workflow();
-    assert!(workflow.definition().tools().is_empty());
+    assert!(workflow.definition().mcp_servers().is_empty());
 
     let workflow: Workflow<Planning, Running> = workflow.start();
     let result = workflow.try_complete(&ToolResult::success(Tool::new("git_commit")));

@@ -1,5 +1,5 @@
 use super::{Defined, Workflow, WorkflowDefinition};
-use crate::{Tool, ToolSet};
+use crate::{McpServer, Tool};
 
 #[derive(Default)]
 pub struct Programming;
@@ -33,18 +33,11 @@ impl InitialWorkflow for Workflow<Planning, Defined> {
 
 impl TransientWorkflow for Workflow<CommitFix, Defined> {
     fn transient() -> Self {
-        let status = Tool::new("git_status");
-        let diff = Tool::new("git_diff");
         let commit = Tool::new("git_commit");
-
-        let tools = ToolSet::default()
-            .with(status)
-            .with(diff)
-            .with(commit.clone());
 
         Self::from_definition(
             WorkflowDefinition::default()
-                .with_tools(tools)
+                .with_mcp_server(McpServer::new("git-commit-fix-close-tools"))
                 .completes_on_successful_tool(commit),
         )
     }

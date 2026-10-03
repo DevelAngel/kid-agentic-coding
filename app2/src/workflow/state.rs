@@ -1,5 +1,5 @@
 use super::{Workflow, WorkflowCompletionReason};
-use crate::{CompletionTool, ToolResult};
+use crate::{Tool, ToolResult};
 use std::marker::PhantomData;
 
 pub struct Defined;
@@ -36,11 +36,7 @@ impl<K> Workflow<K, Running> {
         result: &ToolResult,
     ) -> Result<Workflow<K, Completed>, Workflow<K, Running>> {
         let should_complete = result.is_success()
-            && self
-                .definition
-                .completion_tool
-                .as_ref()
-                .map(CompletionTool::name)
+            && self.definition.completion_tool.as_ref().map(Tool::name)
                 == Some(result.tool().name());
 
         if !should_complete {
@@ -51,7 +47,7 @@ impl<K> Workflow<K, Running> {
             definition: self.definition,
             state: Completed {
                 reason: WorkflowCompletionReason::ToolSucceeded {
-                    tool: result.tool().clone().into(),
+                    tool: result.tool().clone(),
                 },
             },
             kind: PhantomData,
