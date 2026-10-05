@@ -1641,8 +1641,12 @@ name = "kid-agentic-coding-app2"
 version = "0.2.0"
 dependencies = [
  "agent-client-protocol",
+ "anyhow",
+ "clap",
  "cucumber",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
