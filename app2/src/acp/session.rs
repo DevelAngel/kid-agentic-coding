@@ -53,43 +53,36 @@ impl Session<Closed> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::schema::v1::McpServerStdio;
 
-    use agent_client_protocol::schema::v2::McpServerStdio;
+    fn client() -> Client<super::super::Connected> {
+        Client::connected_for_test()
+    }
 
-    #[test]
-    fn session_owns_selected_mcp_servers() {
+    #[tokio::test]
+    async fn session_owns_selected_mcp_servers() {
         let filesystem = McpServer::Stdio(McpServerStdio::new("filesystem", "/bin/true"));
         let git = McpServer::Stdio(McpServerStdio::new("git", "/bin/true"));
 
-        let session = Client::<super::super::Disconnected>::default()
-            .connect()
+        let session = client()
             .initialize()
             .new_session(vec![filesystem.clone(), git.clone()]);
 
         assert_eq!(session.mcp_servers(), &[filesystem, git]);
     }
 
-    #[test]
-    fn active_session_can_be_closed_or_deleted() {
-        let closed = Client::<super::super::Disconnected>::default()
-            .connect()
-            .initialize()
-            .new_session(Vec::new())
-            .close();
-        let deleted = Client::<super::super::Disconnected>::default()
-            .connect()
-            .initialize()
-            .new_session(Vec::new())
-            .delete();
+    #[tokio::test]
+    async fn active_session_can_be_closed_or_deleted() {
+        let closed = client().initialize().new_session(Vec::new()).close();
+        let deleted = client().initialize().new_session(Vec::new()).delete();
 
         let _: Session<Closed> = closed;
         let _: Session<Deleted> = deleted;
     }
 
-    #[test]
-    fn closed_session_can_be_deleted() {
-        let session = Client::<super::super::Disconnected>::default()
-            .connect()
+    #[tokio::test]
+    async fn closed_session_can_be_deleted() {
+        let session = client()
             .initialize()
             .new_session(Vec::new())
             .close()
