@@ -54,27 +54,29 @@ impl Session<Closed> {
 mod tests {
     use super::*;
 
+    use agent_client_protocol::schema::v2::McpServerStdio;
+
     #[test]
     fn session_owns_selected_mcp_servers() {
-        let session = Client::<super::super::Disconnected>::new()
+        let filesystem = McpServer::Stdio(McpServerStdio::new("filesystem", "/bin/true"));
+        let git = McpServer::Stdio(McpServerStdio::new("git", "/bin/true"));
+
+        let session = Client::<super::super::Disconnected>::default()
             .connect()
             .initialize()
-            .new_session(vec![McpServer::new("filesystem"), McpServer::new("git")]);
+            .new_session(vec![filesystem.clone(), git.clone()]);
 
-        assert_eq!(
-            session.mcp_servers(),
-            &[McpServer::new("filesystem"), McpServer::new("git")]
-        );
+        assert_eq!(session.mcp_servers(), &[filesystem, git]);
     }
 
     #[test]
     fn active_session_can_be_closed_or_deleted() {
-        let closed = Client::<super::super::Disconnected>::new()
+        let closed = Client::<super::super::Disconnected>::default()
             .connect()
             .initialize()
             .new_session(Vec::new())
             .close();
-        let deleted = Client::<super::super::Disconnected>::new()
+        let deleted = Client::<super::super::Disconnected>::default()
             .connect()
             .initialize()
             .new_session(Vec::new())
@@ -86,7 +88,7 @@ mod tests {
 
     #[test]
     fn closed_session_can_be_deleted() {
-        let session = Client::<super::super::Disconnected>::new()
+        let session = Client::<super::super::Disconnected>::default()
             .connect()
             .initialize()
             .new_session(Vec::new())

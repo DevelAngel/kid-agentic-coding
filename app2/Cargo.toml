@@ -6,6 +6,9 @@ edition.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+agent-client-protocol.workspace = true
+
 [dev-dependencies]
 cucumber.workspace = true
 tokio.workspace = true

@@ -14,19 +14,15 @@ pub struct Client<S> {
     state: PhantomData<S>,
 }
 
-impl Client<Disconnected> {
-    pub fn new() -> Self {
+impl Default for Client<Disconnected> {
+    fn default() -> Self {
         Self { state: PhantomData }
-    }
-
-    pub fn connect(self) -> Client<Connected> {
-        Client { state: PhantomData }
     }
 }
 
-impl Default for Client<Disconnected> {
-    fn default() -> Self {
-        Self::new()
+impl Client<Disconnected> {
+    pub fn connect(self) -> Client<Connected> {
+        Client { state: PhantomData }
     }
 }
 
@@ -42,7 +38,7 @@ mod tests {
 
     #[test]
     fn client_initializes_after_connecting() {
-        let client = Client::<Disconnected>::new().connect().initialize();
+        let client = Client::<Disconnected>::default().connect().initialize();
         let _: Client<Initialized> = client;
     }
 }

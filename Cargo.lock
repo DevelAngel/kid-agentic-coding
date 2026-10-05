@@ -1640,6 +1640,7 @@ dependencies = [
 name = "kid-agentic-coding-app2"
 version = "0.2.0"
 dependencies = [
+ "agent-client-protocol",
  "cucumber",
  "tokio",
 ]
