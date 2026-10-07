@@ -26,6 +26,7 @@ async fn running_commit_fix_workflow(world: &mut World) {
         ApplicationEntry::<Programming>::default()
             .workflow()
             .start()
+            .run()
             .commit_fix(),
     );
 }

@@ -11,6 +11,6 @@ pub use acp::{
 pub use application::ApplicationEntry;
 pub use tool::{CompletionTool, Tool, ToolResult, ToolSet};
 pub use workflow::{
-    CommitFix, Completed, Defined, InitialWorkflow, Planning, Programming, Running, Workflow,
-    WorkflowCompletionReason, WorkflowDefinition,
+    CommitFix, Completed, Defined, InitialWorkflow, Planning, Programming, Running, Started,
+    Workflow, WorkflowCompletionReason, WorkflowDefinition, WorkflowPromptProvider,
 };
