@@ -1,7 +1,9 @@
 use agent_client_protocol::AcpAgent;
 use anyhow::{Context, Result};
 use clap::Parser;
-use kid_agentic_coding_app2::{ApplicationEntry, Client, ClientDisconnected, Programming};
+use kid_agentic_coding_app2::{
+    ApplicationEntry, Client, ClientDisconnected, Programming, WorkflowPromptProvider,
+};
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 
 #[derive(Debug, Parser)]
@@ -30,6 +32,23 @@ async fn main() -> Result<()> {
         .start();
 
     let mut stdin = BufReader::new(io::stdin());
+    println!("Enter a prompt:");
+    let mut prompt = String::new();
+    if stdin.read_line(&mut prompt).await? == 0 {
+        client
+            .disconnect()
+            .await
+            .context(format!("Agent {agent_args} stopped with an error"))?;
+        return Ok(());
+    }
+
+    client
+        .prompt(workflow.prompt(prompt.trim().to_owned()).into_inner())
+        .await
+        .context(format!("Agent {agent_args} stopped with an error"))?;
+
+    let workflow = workflow.run();
+
     loop {
         println!("Enter a prompt:");
         let mut prompt = String::new();

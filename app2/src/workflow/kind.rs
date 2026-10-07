@@ -1,4 +1,4 @@
-use super::{Defined, Running, Workflow, WorkflowDefinition, WorkflowPrompt};
+use super::{Defined, Running, Started, Workflow, WorkflowDefinition, WorkflowPrompt};
 use crate::{Tool, ToolSet};
 
 #[derive(Default)]
@@ -15,21 +15,31 @@ pub trait InitialWorkflow {
     fn initial() -> Self;
 }
 
+pub trait WorkflowPromptProvider {
+    fn prompt(&self, prompt: String) -> WorkflowPrompt;
+}
+
 pub(super) trait TransientWorkflow {
     fn transient() -> Self;
+}
+
+impl WorkflowPromptProvider for Workflow<Programming, Started> {
+    fn prompt(&self, prompt: String) -> WorkflowPrompt {
+        WorkflowPrompt::new(format!(
+            "Handle programming tasks within the Programming workflow.\n\n{prompt}"
+        ))
+    }
+}
+
+impl WorkflowPromptProvider for Workflow<Programming, Running> {
+    fn prompt(&self, prompt: String) -> WorkflowPrompt {
+        WorkflowPrompt::new(prompt)
+    }
 }
 
 impl InitialWorkflow for Workflow<Programming, Defined> {
     fn initial() -> Self {
         Workflow::from_definition(WorkflowDefinition::default())
-    }
-}
-
-impl Workflow<Programming, Running> {
-    pub fn prompt(&self, prompt: String) -> WorkflowPrompt {
-        WorkflowPrompt::new(format!(
-            "Handle the following request as a programming task within the Programming workflow.\n\n{prompt}"
-        ))
     }
 }
 

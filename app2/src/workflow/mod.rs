@@ -3,8 +3,8 @@ mod kind;
 mod state;
 pub use definition::{WorkflowCompletionReason, WorkflowDefinition, WorkflowPrompt};
 use kind::TransientWorkflow;
-pub use kind::{CommitFix, InitialWorkflow, Planning, Programming};
-pub use state::{Completed, Defined, Running};
+pub use kind::{CommitFix, InitialWorkflow, Planning, Programming, WorkflowPromptProvider};
+pub use state::{Completed, Defined, Running, Started};
 
 use std::marker::PhantomData;
 
@@ -24,7 +24,7 @@ impl<K, S> Workflow<K, S> {
 impl Workflow<Programming, Running> {
     pub fn commit_fix(self) -> Workflow<CommitFix, Running> {
         let _ = self;
-        Workflow::<CommitFix, Defined>::transient().start()
+        Workflow::<CommitFix, Defined>::transient().start().run()
     }
 }
 
@@ -39,28 +39,38 @@ mod tests {
     }
 
     fn commit_fix_workflow() -> Workflow<CommitFix, Running> {
-        Workflow::<CommitFix, Defined>::transient().start()
+        Workflow::<CommitFix, Defined>::transient().start().run()
     }
 
     #[test]
     fn initial_workflow_uses_initial_entry_state() {
         let workflow = Workflow::<Programming, Defined>::initial();
-        let _: Workflow<Programming, Running> = workflow.start();
+        let _: Workflow<Programming, Started> = workflow.start();
     }
 
     #[test]
-    fn programming_combines_workflow_context_with_user_prompt() {
+    fn programming_combines_workflow_context_with_first_prompt() {
         let workflow = Workflow::<Programming, Defined>::initial().start();
 
         assert_eq!(
             workflow.prompt("Fix the parser".to_owned()).as_str(),
-            "Handle the following request as a programming task within the Programming workflow.\n\nFix the parser"
+            "Handle programming tasks within the Programming workflow.\n\nFix the parser"
+        );
+    }
+
+    #[test]
+    fn programming_sends_user_prompt_without_workflow_context_after_startup() {
+        let workflow = Workflow::<Programming, Defined>::initial().start().run();
+
+        assert_eq!(
+            workflow.prompt("Fix the parser".to_owned()).as_str(),
+            "Fix the parser"
         );
     }
 
     #[test]
     fn programming_can_enter_commit_fix() {
-        let workflow = Workflow::<Programming, Defined>::initial().start();
+        let workflow = Workflow::<Programming, Defined>::initial().start().run();
         let _: Workflow<CommitFix, Running> = workflow.commit_fix();
     }
 

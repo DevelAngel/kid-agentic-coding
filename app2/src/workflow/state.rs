@@ -5,6 +5,9 @@ use std::marker::PhantomData;
 pub struct Defined;
 
 #[cfg_attr(test, derive(Debug))]
+pub struct Started;
+
+#[cfg_attr(test, derive(Debug))]
 pub struct Running;
 
 #[cfg_attr(test, derive(Debug))]
@@ -21,7 +24,17 @@ impl<K> Workflow<K, Defined> {
         }
     }
 
-    pub fn start(self) -> Workflow<K, Running> {
+    pub fn start(self) -> Workflow<K, Started> {
+        Workflow {
+            definition: self.definition,
+            state: Started,
+            kind: PhantomData,
+        }
+    }
+}
+
+impl<K> Workflow<K, Started> {
+    pub fn run(self) -> Workflow<K, Running> {
         Workflow {
             definition: self.definition,
             state: Running,
