@@ -49,6 +49,16 @@ mod tests {
     }
 
     #[test]
+    fn programming_combines_workflow_context_with_user_prompt() {
+        let workflow = Workflow::<Programming, Defined>::initial().start();
+
+        assert_eq!(
+            workflow.prompt("Fix the parser".to_owned()).as_str(),
+            "Handle the following request as a programming task within the Programming workflow.\n\nFix the parser"
+        );
+    }
+
+    #[test]
     fn programming_can_enter_commit_fix() {
         let workflow = Workflow::<Programming, Defined>::initial().start();
         let _: Workflow<CommitFix, Running> = workflow.commit_fix();

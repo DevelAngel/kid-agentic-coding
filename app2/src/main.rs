@@ -28,6 +28,7 @@ async fn main() -> Result<()> {
     let workflow = ApplicationEntry::<Programming>::default()
         .workflow()
         .start();
+
     let mut stdin = BufReader::new(io::stdin());
     loop {
         println!("Enter a prompt:");
