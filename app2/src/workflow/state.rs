@@ -31,12 +31,6 @@ impl<K> Workflow<K, Defined> {
 }
 
 impl<K> Workflow<K, Running> {
-    pub fn prompt(&self, prompt: String) -> super::WorkflowPrompt {
-        super::WorkflowPrompt::new(prompt)
-    }
-}
-
-impl<K> Workflow<K, Running> {
     pub fn try_complete(
         self,
         result: &ToolResult,
