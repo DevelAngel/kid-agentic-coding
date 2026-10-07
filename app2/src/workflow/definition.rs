@@ -23,6 +23,23 @@ impl WorkflowDefinition {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowPrompt(String);
+
+impl WorkflowPrompt {
+    pub(super) fn new(prompt: String) -> Self {
+        Self(prompt)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkflowCompletionReason {
     ToolSucceeded { tool: CompletionTool },
 }

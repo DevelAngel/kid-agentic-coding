@@ -1,8 +1,7 @@
 mod definition;
 mod kind;
 mod state;
-
-pub use definition::{WorkflowCompletionReason, WorkflowDefinition};
+pub use definition::{WorkflowCompletionReason, WorkflowDefinition, WorkflowPrompt};
 use kind::TransientWorkflow;
 pub use kind::{CommitFix, InitialWorkflow, Planning, Programming};
 pub use state::{Completed, Defined, Running};
