@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use super::{Client, Initialized};
+use super::{Client, Connected};
 use crate::acp::mcp::McpServer;
 
 pub struct Active;
@@ -12,7 +12,7 @@ pub struct Session<S> {
     state: PhantomData<S>,
 }
 
-impl Client<Initialized> {
+impl Client<Connected> {
     pub fn new_session(self, mcp_servers: Vec<McpServer>) -> Session<Active> {
         Session {
             mcp_servers,
@@ -64,17 +64,15 @@ mod tests {
         let filesystem = McpServer::Stdio(McpServerStdio::new("filesystem", "/bin/true"));
         let git = McpServer::Stdio(McpServerStdio::new("git", "/bin/true"));
 
-        let session = client()
-            .initialize()
-            .new_session(vec![filesystem.clone(), git.clone()]);
+        let session = client().new_session(vec![filesystem.clone(), git.clone()]);
 
         assert_eq!(session.mcp_servers(), &[filesystem, git]);
     }
 
     #[tokio::test]
     async fn active_session_can_be_closed_or_deleted() {
-        let closed = client().initialize().new_session(Vec::new()).close();
-        let deleted = client().initialize().new_session(Vec::new()).delete();
+        let closed = client().new_session(Vec::new()).close();
+        let deleted = client().new_session(Vec::new()).delete();
 
         let _: Session<Closed> = closed;
         let _: Session<Deleted> = deleted;
@@ -82,11 +80,7 @@ mod tests {
 
     #[tokio::test]
     async fn closed_session_can_be_deleted() {
-        let session = client()
-            .initialize()
-            .new_session(Vec::new())
-            .close()
-            .delete();
+        let session = client().new_session(Vec::new()).close().delete();
 
         let _: Session<Deleted> = session;
     }

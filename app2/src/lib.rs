@@ -5,8 +5,7 @@ mod workflow;
 
 pub use acp::{
     Active as SessionActive, Client, Closed as SessionClosed, Connected as ClientConnected,
-    Deleted as SessionDeleted, Disconnected as ClientDisconnected,
-    Initialized as ClientInitialized, McpServer, Session,
+    Deleted as SessionDeleted, Disconnected as ClientDisconnected, McpServer, Session,
 };
 
 pub use application::ApplicationEntry;

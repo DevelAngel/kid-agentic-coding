@@ -2,6 +2,7 @@ use agent_client_protocol::AcpAgent;
 use anyhow::{Context, Result};
 use clap::Parser;
 use kid_agentic_coding_app2::{Client, ClientDisconnected};
+use tokio::io::{self, AsyncBufReadExt, BufReader};
 
 #[derive(Debug, Parser)]
 #[command(about = "ACP client for an agent program")]
@@ -18,14 +19,30 @@ async fn main() -> Result<()> {
     tracing::debug!("logging initialized");
     let agent_args = args.agent_args.join(" ");
     let agent = AcpAgent::from_args(args.agent_args)?;
-    Client::<ClientDisconnected>::new(agent)
+
+    let client = Client::<ClientDisconnected>::new(agent)
         .connect()
         .await
-        .context(format!("Failed to connect to agent `{agent_args}`"))?
-        .initialize()
-        .wait()
+        .context(format!("Failed to connect to agent {agent_args}"))?;
+
+    let mut stdin = BufReader::new(io::stdin());
+    loop {
+        println!("Enter a prompt:");
+        let mut prompt = String::new();
+        if stdin.read_line(&mut prompt).await? == 0 {
+            break;
+        }
+
+        client
+            .prompt(prompt.trim().to_owned())
+            .await
+            .context(format!("Agent {agent_args} stopped with an error"))?;
+    }
+
+    client
+        .disconnect()
         .await
-        .context(format!("Agent `{agent_args}` stopped with an error"))?;
+        .context(format!("Agent {agent_args} stopped with an error"))?;
     Ok(())
 }
 
