@@ -1,6 +1,6 @@
 use super::{Workflow, WorkflowCompletionReason};
 use crate::{CompletionTool, ToolResult};
-use std::marker::PhantomData;
+use std::{any, marker::PhantomData};
 
 pub struct Defined;
 
@@ -25,6 +25,7 @@ impl<K> Workflow<K, Defined> {
     }
 
     pub fn start(self) -> Workflow<K, Started> {
+        tracing::warn!(workflow = any::type_name::<K>(), "Starting workflow");
         Workflow {
             definition: self.definition,
             state: Started,
