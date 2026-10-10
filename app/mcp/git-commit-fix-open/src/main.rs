@@ -24,7 +24,7 @@ use std::time::Duration;
 struct Args {
     /// Name or path of the Unix socket used for workflow events.
     #[arg(long)]
-    socket: String,
+    socket: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -47,13 +47,13 @@ const COMMIT_FIX_INSTRUCTIONS: &str = "Commit the current changes. The tldr/why/
 
 #[derive(Clone)]
 struct GitCommitFixOpenTools {
-    socket_name: String,
+    socket_name: Option<String>,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
 impl GitCommitFixOpenTools {
-    fn new(socket_name: String) -> Self {
+    fn new(socket_name: Option<String>) -> Self {
         Self {
             socket_name,
             tool_router: Self::tool_router(),
@@ -91,7 +91,13 @@ impl GitCommitFixOpenTools {
                 Some(json!({"reason": err.to_string()})),
             )
         })?;
-        match notify_bridge(&self.socket_name, &message, ACK_WAIT) {
+        let Some(socket) = self.socket_name.as_deref() else {
+            return Err(McpError::internal_error(
+                "git_commit_with_fix requires the --socket bridge option",
+                None,
+            ));
+        };
+        match notify_bridge(socket, &message, ACK_WAIT) {
             Ok(CommitFixVerdict::Opening) => {
                 tracing::info!("commit-fix session requested");
                 Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -187,10 +193,11 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    if let Err(err) = connect_to_bridge(&args.socket) {
-        tracing::error!("{}", bridge_error(&args.socket, &err));
+    if let Some(socket) = args.socket.as_deref()
+        && let Err(err) = connect_to_bridge(socket)
+    {
+        tracing::error!("{}", bridge_error(socket, &err));
     }
-
     let server = GitCommitFixOpenTools::new(args.socket);
     let transport = transport::io::stdio();
     let running = service::serve_server(server, transport).await?;
@@ -245,7 +252,7 @@ mod tests {
             payload
         });
 
-        let tools = GitCommitFixOpenTools::new(path.display().to_string());
+        let tools = GitCommitFixOpenTools::new(Some(path.display().to_string()));
         let result = tools
             .git_commit_with_fix(Parameters(GitCommitWithFixParams {
                 tldr: "Replace the flat context field with tldr/why/what.".to_owned(),
