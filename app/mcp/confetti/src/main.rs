@@ -25,18 +25,18 @@ struct Args {
     /// Name or path of the Unix socket the parent kid-agentic-coding
     /// process listens on for confetti notifications.
     #[arg(long)]
-    socket: String,
+    socket: Option<String>,
 }
 
 #[derive(Clone)]
 struct ConfettiTools {
-    socket_name: String,
+    socket_name: Option<String>,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
 impl ConfettiTools {
-    fn new(socket_name: String) -> Self {
+    fn new(socket_name: Option<String>) -> Self {
         Self {
             socket_name,
             tool_router: Self::tool_router(),
@@ -58,9 +58,11 @@ impl ConfettiTools {
     )]
     async fn confetti(&self) -> Result<CallToolResult, McpError> {
         tracing::info!("confetti tool invoked");
-        notify_bridge(&self.socket_name).map_err(|err| {
-            let message = bridge_error(&self.socket_name, &err);
-            tracing::error!("{message}");
+        let socket = self.socket_name.as_deref().ok_or_else(|| {
+            McpError::internal_error("confetti requires the --socket bridge option", None)
+        })?;
+        notify_bridge(socket).map_err(|err| {
+            let message = bridge_error(socket, &err);
             McpError::internal_error(
                 "failed to notify confetti bridge",
                 Some(json!({"reason": message})),
@@ -103,8 +105,10 @@ async fn main() -> Result<()> {
     // would leave the agent waiting for this server to become ready, and
     // server stderr is not reliably visible to the user anyway. Tool calls
     // report the same error when they need the bridge.
-    if let Err(err) = connect_to_bridge(&args.socket) {
-        tracing::error!("{}", bridge_error(&args.socket, &err));
+    if let Some(socket) = args.socket.as_deref()
+        && let Err(err) = connect_to_bridge(socket)
+    {
+        tracing::error!("{}", bridge_error(socket, &err));
     }
     let server = ConfettiTools::new(args.socket);
     let transport = transport::io::stdio();
