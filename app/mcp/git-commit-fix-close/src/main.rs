@@ -29,7 +29,7 @@ use std::result;
 struct Args {
     /// Name or path of the Unix socket used for workflow events.
     #[arg(long)]
-    socket: String,
+    socket: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -271,13 +271,13 @@ fn lowercase_first_char(value: &str) -> String {
 
 #[derive(Clone)]
 struct GitCommitFixCloseTools {
-    socket_name: String,
+    socket_name: Option<String>,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
 impl GitCommitFixCloseTools {
-    fn new(socket_name: String) -> Self {
+    fn new(socket_name: Option<String>) -> Self {
         Self {
             socket_name,
             tool_router: Self::tool_router(),
@@ -343,7 +343,7 @@ impl GitCommitFixCloseTools {
         &self,
         Parameters(params): Parameters<AddParams>,
     ) -> Result<CallToolResult, McpError> {
-        authorize_action(&self.socket_name, CloseAction::Add)?;
+        authorize_action(self.socket_name.as_deref(), CloseAction::Add)?;
 
         let path = params.path.to_string_lossy();
         let result = command_result(
@@ -358,7 +358,7 @@ impl GitCommitFixCloseTools {
             success: result.is_ok(),
             reason: result.as_ref().err().map(ToString::to_string),
         };
-        notify_outcome(&self.socket_name, outcome)?;
+        notify_outcome(self.socket_name.as_deref(), outcome)?;
         result
     }
 
@@ -387,7 +387,7 @@ impl GitCommitFixCloseTools {
                 return Ok(CallToolResult::error(vec![ContentBlock::text(text)]));
             }
         };
-        authorize_action(&self.socket_name, CloseAction::Commit)?;
+        authorize_action(self.socket_name.as_deref(), CloseAction::Commit)?;
         let result = if params.amend {
             command_result(
                 "git",
@@ -414,8 +414,9 @@ impl GitCommitFixCloseTools {
                         Some(json!({"reason": err.to_string()})),
                     )
                 })?;
-                notify_bridge(&self.socket_name, &line).map_err(|err| {
-                    let message = bridge_error(&self.socket_name, &err);
+                let socket = require_socket(self.socket_name.as_deref(), "commit-fix completion")?;
+                notify_bridge(socket, &line).map_err(|err| {
+                    let message = bridge_error(socket, &err);
                     tracing::error!("{message}");
                     McpError::internal_error(
                         "failed to notify commit-fix-done bridge",
@@ -427,7 +428,7 @@ impl GitCommitFixCloseTools {
             }
             Err(error) => {
                 notify_outcome(
-                    &self.socket_name,
+                    self.socket_name.as_deref(),
                     CloseActionOutcome {
                         action: CloseAction::Commit,
                         success: false,
@@ -439,7 +440,16 @@ impl GitCommitFixCloseTools {
         }
     }
 }
-fn authorize_action(socket: &str, action: CloseAction) -> Result<(), McpError> {
+fn require_socket<'a>(socket: Option<&'a str>, action: &str) -> Result<&'a str, McpError> {
+    socket.ok_or_else(|| {
+        McpError::internal_error(
+            format!("{action} requires the --socket bridge option"),
+            None,
+        )
+    })
+}
+
+fn authorize_action(socket: Option<&str>, action: CloseAction) -> Result<(), McpError> {
     let request = CloseActionRequest { action };
     let line = request.to_line().map_err(|err| {
         McpError::internal_error(
@@ -447,6 +457,7 @@ fn authorize_action(socket: &str, action: CloseAction) -> Result<(), McpError> {
             Some(json!({"reason": err.to_string()})),
         )
     })?;
+    let socket = require_socket(socket, "close-action authorization")?;
     let mut stream = connect_to_bridge(socket).map_err(|err| {
         let message = bridge_error(socket, &err);
         McpError::internal_error(
@@ -501,13 +512,14 @@ fn authorize_action(socket: &str, action: CloseAction) -> Result<(), McpError> {
     }
 }
 
-fn notify_outcome(socket: &str, outcome: CloseActionOutcome) -> Result<(), McpError> {
+fn notify_outcome(socket: Option<&str>, outcome: CloseActionOutcome) -> Result<(), McpError> {
     let line = outcome.to_line().map_err(|err| {
         McpError::internal_error(
             "failed to encode close-action outcome",
             Some(json!({"reason": err.to_string()})),
         )
     })?;
+    let socket = require_socket(socket, "close-action outcome")?;
     notify_bridge(socket, &line).map_err(|err| {
         let message = bridge_error(socket, &err);
         tracing::error!("{message}");
@@ -617,8 +629,10 @@ async fn main() -> Result<()> {
     // would leave the agent waiting for this server to become ready, and
     // server stderr is not reliably visible to the user anyway. Tool calls
     // report the same error when they need the bridge.
-    if let Err(err) = connect_to_bridge(&args.socket) {
-        tracing::error!("{}", bridge_error(&args.socket, &err));
+    if let Some(socket) = args.socket.as_deref()
+        && let Err(err) = connect_to_bridge(socket)
+    {
+        tracing::error!("{}", bridge_error(socket, &err));
     }
     let server = GitCommitFixCloseTools::new(args.socket);
     let transport = transport::io::stdio();
@@ -664,7 +678,7 @@ mod tests {
                 .expect("writes verdict");
         });
 
-        authorize_action(&path.display().to_string(), CloseAction::Add)
+        authorize_action(Some(&path.display().to_string()), CloseAction::Add)
             .expect("authorized action succeeds");
         responder.join().expect("responder finishes");
         let _ = fs::remove_file(path);
@@ -687,7 +701,7 @@ mod tests {
                 .expect("writes verdict");
         });
 
-        let error = authorize_action(&path.display().to_string(), CloseAction::Commit)
+        let error = authorize_action(Some(&path.display().to_string()), CloseAction::Commit)
             .expect_err("rejected action fails");
         assert!(error.to_string().contains("close-action rejected"));
         responder.join().expect("responder finishes");
