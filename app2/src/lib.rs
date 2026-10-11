@@ -1,4 +1,6 @@
 mod acp;
+pub use acp::CommitFixRequest;
+
 mod application;
 mod tool;
 mod workflow;

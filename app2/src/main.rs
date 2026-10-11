@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
     let agent_args = args.agent_args.join(" ");
     let agent = AcpAgent::from_args(args.agent_args)?;
 
-    let client = Client::<ClientDisconnected>::new(agent)
+    let mut client = Client::<ClientDisconnected>::new(agent)
         .connect()
         .await
         .context(format!("Failed to connect to agent {agent_args}"))?;
@@ -48,6 +48,18 @@ async fn main() -> Result<()> {
         .context(format!("Agent {agent_args} stopped with an error"))?;
 
     let workflow = workflow.run();
+    if let Some(request) = client.take_commit_fix_request() {
+        let _workflow = workflow.commit_fix();
+        client
+            .prompt_in_new_session(request.prompt(), request.cwd.clone())
+            .await
+            .context("Commit-fix workflow stopped with an error")?;
+        client
+            .disconnect()
+            .await
+            .context(format!("Agent {agent_args} stopped with an error"))?;
+        return Ok(());
+    }
 
     loop {
         println!("Enter a prompt:");
@@ -60,6 +72,14 @@ async fn main() -> Result<()> {
             .prompt(workflow.prompt(prompt.trim().to_owned()).into_inner())
             .await
             .context(format!("Agent {agent_args} stopped with an error"))?;
+        if let Some(request) = client.take_commit_fix_request() {
+            let _workflow = workflow.commit_fix();
+            client
+                .prompt_in_new_session(request.prompt(), request.cwd.clone())
+                .await
+                .context("Commit-fix workflow stopped with an error")?;
+            break;
+        }
     }
 
     client
