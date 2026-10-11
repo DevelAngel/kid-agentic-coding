@@ -56,29 +56,50 @@ flowchart LR
 
 ## Channels
 
-`Client::connect` spawns one connection task that owns the ACP connection. The caller side talks to it only through these channels.
+`Client::connect` spawns one connection task that owns the ACP connection. Caller and task share five channels. Each channel has a sender end on one side and a receiver end on the other.
 
 ```mermaid
 flowchart LR
-    caller["Client Connected"]
-    task["connection task"]
-    agent["Agent process"]
+    subgraph caller["Caller side: connect() and Client Connected"]
+        prompt_tx["prompt_tx (Sender)"]
+        response_rx["response_rx (Receiver)"]
+        shutdown_tx["shutdown (Sender)"]
+        ready_rx["ready_rx (Receiver)"]
+        error_rx["error_rx (Receiver)"]
+    end
 
-    caller -->|"prompt_tx: mpsc capacity 1<br/>prompt text + response oneshot"| task
-    task -->|"response oneshot: Result PromptResponse"| caller
-    caller -->|"shutdown: oneshot unit"| task
-    task -->|"ready_tx: oneshot Result InitializeResponse"| caller
-    task -->|"error_tx: oneshot Error"| caller
-    task <-->|"ACP over stdio"| agent
+    subgraph task["Connection task"]
+        prompt_rx["prompt_rx (Receiver)"]
+        response_tx["response_tx (Sender)"]
+        shutdown_rx["shutdown_rx (Receiver)"]
+        ready_tx["ready_tx (Sender)"]
+        error_tx["error_tx (Sender)"]
+    end
+
+    prompt_tx ==>|"MPSC: many messages, capacity 1"| prompt_rx
+    prompt_rx -.->|"each message carries the sender"| response_tx
+    response_tx -->|"ONESHOT: one result per prompt"| response_rx
+    shutdown_tx -->|"ONESHOT: stop signal"| shutdown_rx
+    ready_tx -->|"ONESHOT: handshake result"| ready_rx
+    error_tx -->|"ONESHOT: task error"| error_rx
 ```
 
-| Channel | Kind | From → To | Payload | Notes |
-|---|---|---|---|---|
-| `ready_tx` | oneshot | task → `connect()` | `Result<InitializeResponse, Error>` | Sent after `initialize` and `session/new`. |
-| `error_tx` | oneshot | task → `connect()` | `Error` | Read only when `ready_tx` was dropped, so the handshake error reaches the caller. |
-| `shutdown` | oneshot | `Client<Connected>` → task | `()` | `disconnect()` drops the sender. |
-| `prompt_tx` | mpsc, capacity 1 | `Client::prompt` → task | prompt text plus a response oneshot | The task handles one prompt at a time. |
-| response oneshot | oneshot | task → `Client::prompt` | `Result<PromptResponse, Error>` | One per prompt. |
+Thick arrow: `mpsc`, many messages over time. Thin arrow: `oneshot`, exactly one message, then closed. Dotted arrow: not a channel. It shows that `response_tx` arrives inside the prompt message, so every prompt gets its own `oneshot`.
+
+| Kind | Messages | Ends | Used for |
+|---|---|---|---|
+| `mpsc` | many, buffered | many senders, one receiver. Only one sender exists here, so it behaves like SPSC. | `prompt_tx` |
+| `oneshot` | exactly one | one sender, one receiver. A sender dropped without sending makes the receiver return an error. | the other four |
+
+`broadcast`, `watch`, and MPMC channels are not used.
+
+| Channel | Carries | Notes |
+|---|---|---|
+| `prompt_tx` | prompt text plus a fresh `response_tx` | Capacity 1, so `prompt()` waits while the task is busy. One prompt at a time. |
+| response | `Result<PromptResponse, Error>` | New per prompt. |
+| `shutdown` | `()` | `disconnect()` drops the sender. |
+| ready | `Result<InitializeResponse, Error>` | Sent after `initialize` and `session/new`. `connect()` waits on it. |
+| error | `Error` | Read only when `ready_tx` was dropped, so the handshake error reaches the caller. |
 
 The task loop ends on `shutdown`, on `incoming_closed()` of the connection, or when `prompt_tx` is closed. Agent notifications are only logged.
 
