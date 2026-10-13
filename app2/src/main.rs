@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
     let agent = AcpAgent::from_args(args.agent_args)?;
 
     let client = Client::<ClientDisconnected>::new(agent)
-        .connect()
+        .connect(tokio::sync::mpsc::channel(1).0)
         .await
         .context(format!("Failed to connect to agent {agent_args}"))?;
 
