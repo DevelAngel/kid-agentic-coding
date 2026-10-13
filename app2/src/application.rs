@@ -1,3 +1,4 @@
+use anyhow::Context as _;
 use std::marker::PhantomData;
 
 use agent_client_protocol::AcpAgent;
@@ -37,35 +38,17 @@ impl Application {
         let agent_command = self.agent_args.join(" ");
         let agent = AcpAgent::from_args(self.agent_args)?;
         let initial = ApplicationEntry::<Programming>::default().workflow();
-        let Channels {
-            workflow,
-            acp,
-            mut completions,
-        } = Channels::open();
+        let Channels { workflow, acp } = Channels::open();
 
-        tokio::spawn(Client::<ClientDisconnected>::new(agent).serve(acp));
-        tokio::spawn(Runner::new(initial, workflow).run(input));
+        let acp_task = tokio::spawn(Client::<ClientDisconnected>::new(agent).serve(acp));
+        let workflow_task = tokio::spawn(Runner::new(initial, workflow).run(input));
+        let (workflow_result, acp_result) = tokio::join!(workflow_task, acp_task);
 
-        let mut failure = None;
-        for _ in 0..2 {
-            match completions.recv().await {
-                Some(Ok(())) => {}
-                Some(Err(error)) => {
-                    failure.get_or_insert(error);
-                }
-                None => {
-                    failure.get_or_insert_with(|| {
-                        anyhow::anyhow!("a module stopped without reporting completion")
-                    });
-                    break;
-                }
-            }
-        }
-
-        let Some(error) = failure else {
-            return Ok(());
-        };
-        Err(error.context(format!("Agent {agent_command} stopped with an error")))
+        workflow_result.context("workflow task panicked")??;
+        acp_result
+            .context("ACP task panicked")?
+            .context(format!("Agent {agent_command} stopped with an error"))?;
+        Ok(())
     }
 }
 
