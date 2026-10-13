@@ -10,8 +10,11 @@ use agent_client_protocol::schema::v1::{
     PromptResponse, SessionNotification, TextContent,
 };
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Client as AcpClient, Error};
+use anyhow::Context as _;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+
+use crate::channel::{self, AcpEnds, AgentEvent};
 
 pub struct Disconnected {
     config: AcpAgentConfig,
@@ -37,7 +40,10 @@ impl Client<Disconnected> {
         }
     }
 
-    pub async fn connect(self) -> Result<Client<Connected>, Error> {
+    pub async fn connect(
+        self,
+        events: mpsc::Sender<AgentEvent>,
+    ) -> Result<Client<Connected>, Error> {
         let Disconnected { config } = self.state;
         let agent = AcpAgent::new(config.clone());
 
@@ -51,8 +57,8 @@ impl Client<Disconnected> {
             let result = AcpClient
                 .builder()
                 .on_receive_notification(
-                    async |notification: SessionNotification, _| {
-                        tracing::info!(?notification.update, "agent message");
+                    async move |notification: SessionNotification, _| {
+                        let _ = events.send(notification).await;
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -130,6 +136,28 @@ impl Client<Disconnected> {
             },
         })
     }
+
+    #[allow(dead_code, reason = "wired into the application in a later commit")]
+    pub(crate) async fn serve(self, ends: AcpEnds) {
+        let AcpEnds {
+            prompts,
+            sessions: _sessions,
+            events,
+            completion,
+        } = ends;
+
+        let outcome = async {
+            let client = self
+                .connect(events)
+                .await
+                .context("failed to connect to agent")?;
+            client.serve_prompts(prompts).await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        let _ = completion.send(outcome).await;
+    }
 }
 
 impl Client<Connected> {
@@ -155,6 +183,22 @@ impl Client<Connected> {
         Ok(Client {
             state: Disconnected { config },
         })
+    }
+
+    #[allow(dead_code, reason = "wired into the application in a later commit")]
+    pub(crate) async fn serve_prompts(
+        self,
+        mut prompts: mpsc::Receiver<channel::PromptRequest>,
+    ) -> Result<Client<Disconnected>, Error> {
+        while let Some(channel::PromptRequest { text, reply }) = prompts.recv().await {
+            let result = self.prompt(text).await;
+            let failed = result.is_err();
+            let _ = reply.send(result);
+            if failed {
+                break;
+            }
+        }
+        self.disconnect().await
     }
 
     #[cfg(test)]
@@ -191,5 +235,38 @@ mod tests {
         let client = Client::<Connected>::connected_for_test();
         let client = client.disconnect().await.unwrap();
         let _: Client<Disconnected> = client;
+    }
+
+    #[tokio::test]
+    async fn serving_disconnects_when_the_prompt_sender_is_dropped() {
+        let (prompts_tx, prompts_rx) = mpsc::channel(1);
+        drop(prompts_tx);
+
+        let client = Client::<Connected>::connected_for_test()
+            .serve_prompts(prompts_rx)
+            .await
+            .unwrap();
+
+        let _: Client<Disconnected> = client;
+    }
+
+    #[tokio::test]
+    async fn failed_prompt_is_reported_to_the_requester() {
+        let (prompts_tx, prompts_rx) = mpsc::channel(1);
+        let (reply, reply_rx) = oneshot::channel();
+        prompts_tx
+            .send(channel::PromptRequest {
+                text: "hello".to_owned(),
+                reply,
+            })
+            .await
+            .unwrap();
+        drop(prompts_tx);
+
+        let _ = Client::<Connected>::connected_for_test()
+            .serve_prompts(prompts_rx)
+            .await;
+
+        assert!(reply_rx.await.unwrap().is_err());
     }
 }
