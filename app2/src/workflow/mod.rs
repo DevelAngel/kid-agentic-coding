@@ -1,15 +1,10 @@
 mod definition;
 mod kind;
-#[allow(dead_code, reason = "wired into the application in a later commit")]
 mod runner;
 mod state;
 pub use definition::{WorkflowCompletionReason, WorkflowDefinition, WorkflowPrompt};
 use kind::TransientWorkflow;
 pub use kind::{CommitFix, InitialWorkflow, Planning, Programming, WorkflowPromptProvider};
-#[allow(
-    unused_imports,
-    reason = "wired into the application in a later commit"
-)]
 pub(crate) use runner::Runner;
 pub use state::{Completed, Defined, Running, Started};
 

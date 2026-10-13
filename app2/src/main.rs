@@ -1,10 +1,7 @@
-use agent_client_protocol::AcpAgent;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
-use kid_agentic_coding_app2::{
-    ApplicationEntry, Client, ClientDisconnected, Programming, WorkflowPromptProvider,
-};
-use tokio::io::{self, AsyncBufReadExt, BufReader};
+use kid_agentic_coding_app2::Application;
+use tokio::io::{self, BufReader};
 
 #[derive(Debug, Parser)]
 #[command(about = "ACP client for an agent program")]
@@ -19,54 +16,10 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     tracing_subscriber::fmt().init();
     tracing::debug!("logging initialized");
-    let agent_args = args.agent_args.join(" ");
-    let agent = AcpAgent::from_args(args.agent_args)?;
 
-    let client = Client::<ClientDisconnected>::new(agent)
-        .connect(tokio::sync::mpsc::channel(1).0)
+    Application::new(args.agent_args)
+        .run(BufReader::new(io::stdin()))
         .await
-        .context(format!("Failed to connect to agent {agent_args}"))?;
-
-    let workflow = ApplicationEntry::<Programming>::default()
-        .workflow()
-        .start();
-
-    let mut stdin = BufReader::new(io::stdin());
-    println!("Enter a prompt:");
-    let mut prompt = String::new();
-    if stdin.read_line(&mut prompt).await? == 0 {
-        client
-            .disconnect()
-            .await
-            .context(format!("Agent {agent_args} stopped with an error"))?;
-        return Ok(());
-    }
-
-    client
-        .prompt(workflow.prompt(prompt.trim().to_owned()).into_inner())
-        .await
-        .context(format!("Agent {agent_args} stopped with an error"))?;
-
-    let workflow = workflow.run();
-
-    loop {
-        println!("Enter a prompt:");
-        let mut prompt = String::new();
-        if stdin.read_line(&mut prompt).await? == 0 {
-            break;
-        }
-
-        client
-            .prompt(workflow.prompt(prompt.trim().to_owned()).into_inner())
-            .await
-            .context(format!("Agent {agent_args} stopped with an error"))?;
-    }
-
-    client
-        .disconnect()
-        .await
-        .context(format!("Agent {agent_args} stopped with an error"))?;
-    Ok(())
 }
 
 #[cfg(test)]

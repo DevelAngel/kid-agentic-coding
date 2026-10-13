@@ -137,7 +137,6 @@ impl Client<Disconnected> {
         })
     }
 
-    #[allow(dead_code, reason = "wired into the application in a later commit")]
     pub(crate) async fn serve(self, ends: AcpEnds) {
         let AcpEnds {
             prompts,
@@ -185,7 +184,6 @@ impl Client<Connected> {
         })
     }
 
-    #[allow(dead_code, reason = "wired into the application in a later commit")]
     pub(crate) async fn serve_prompts(
         self,
         mut prompts: mpsc::Receiver<channel::PromptRequest>,
