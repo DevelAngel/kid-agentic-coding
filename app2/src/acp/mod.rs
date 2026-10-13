@@ -4,6 +4,8 @@ mod session;
 pub use mcp::McpServer;
 pub use session::{Active, Closed, Deleted, Session};
 
+use crate::channel::{self, AcpEnds, AgentEvent};
+
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     ContentBlock, InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest,
@@ -14,7 +16,7 @@ use anyhow::Context as _;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::channel::{self, AcpEnds, AgentEvent};
+use std::env;
 
 pub struct Disconnected {
     config: AcpAgentConfig,
@@ -68,7 +70,7 @@ impl Client<Disconnected> {
                     let response = connection.send_request(request).block_task().await?;
                     let session = connection
                         .send_request(NewSessionRequest::new(
-                            std::env::current_dir().map_err(|_| Error::internal_error())?,
+                            env::current_dir().map_err(|_| Error::internal_error())?,
                         ))
                         .block_task()
                         .await?;
@@ -137,25 +139,14 @@ impl Client<Disconnected> {
         })
     }
 
-    pub(crate) async fn serve(self, ends: AcpEnds) {
-        let AcpEnds {
-            prompts,
-            sessions: _sessions,
-            events,
-            completion,
-        } = ends;
-
-        let outcome = async {
-            let client = self
-                .connect(events)
-                .await
-                .context("failed to connect to agent")?;
-            client.serve_prompts(prompts).await?;
-            Ok::<(), anyhow::Error>(())
-        }
-        .await;
-
-        let _ = completion.send(outcome).await;
+    pub(crate) async fn serve(self, ends: AcpEnds) -> anyhow::Result<()> {
+        let AcpEnds { prompts, events } = ends;
+        let client = self
+            .connect(events)
+            .await
+            .context("failed to connect to agent")?;
+        client.serve_prompts(prompts).await?;
+        Ok(())
     }
 }
 

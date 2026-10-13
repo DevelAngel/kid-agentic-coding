@@ -15,33 +15,25 @@ impl Runner {
         Self { workflow, ends }
     }
 
-    pub(crate) async fn run(self, mut input: impl AsyncBufRead + Unpin) {
+    pub(crate) async fn run(self, mut input: impl AsyncBufRead + Unpin) -> anyhow::Result<()> {
         let WorkflowEnds {
             prompts,
-            sessions: _sessions,
             mut events,
-            completion,
         } = self.ends;
 
-        let outcome = async {
-            let workflow = self.workflow.start();
-            let Some(first) = Self::read_prompt(&mut input).await? else {
-                return Ok(());
-            };
-            let first = workflow.prompt(first).into_inner();
-            Self::submit(&prompts, &mut events, first).await?;
+        let workflow = self.workflow.start();
+        let Some(first) = Self::read_prompt(&mut input).await? else {
+            return Ok(());
+        };
+        let first = workflow.prompt(first).into_inner();
+        Self::submit(&prompts, &mut events, first).await?;
 
-            let workflow = workflow.run();
-            while let Some(next) = Self::read_prompt(&mut input).await? {
-                let next = workflow.prompt(next).into_inner();
-                Self::submit(&prompts, &mut events, next).await?;
-            }
-            Ok(())
+        let workflow = workflow.run();
+        while let Some(next) = Self::read_prompt(&mut input).await? {
+            let next = workflow.prompt(next).into_inner();
+            Self::submit(&prompts, &mut events, next).await?;
         }
-        .await;
-
-        drop(prompts);
-        let _ = completion.send(outcome).await;
+        Ok(())
     }
 
     async fn read_prompt(
@@ -96,11 +88,7 @@ mod tests {
 
     #[tokio::test]
     async fn sends_context_with_first_prompt_then_bare_prompts_until_input_ends() {
-        let Channels {
-            workflow,
-            mut acp,
-            mut completions,
-        } = Channels::open();
+        let Channels { workflow, mut acp } = Channels::open();
         let run = tokio::spawn(runner(workflow).run(&b"first\nsecond\n"[..]));
 
         let first = acp.prompts.recv().await.unwrap();
@@ -120,53 +108,37 @@ mod tests {
             .send(Ok(PromptResponse::new(StopReason::EndTurn)))
             .unwrap();
 
-        assert!(completions.recv().await.unwrap().is_ok());
+        assert!(run.await.unwrap().is_ok());
         assert!(acp.prompts.recv().await.is_none());
-        run.await.unwrap();
     }
 
     #[tokio::test]
     async fn ending_input_without_a_prompt_completes_without_a_request() {
-        let Channels {
-            workflow,
-            mut acp,
-            mut completions,
-        } = Channels::open();
+        let Channels { workflow, mut acp } = Channels::open();
         let run = tokio::spawn(runner(workflow).run(&b""[..]));
 
-        assert!(completions.recv().await.unwrap().is_ok());
+        assert!(run.await.unwrap().is_ok());
         assert!(acp.prompts.recv().await.is_none());
-        run.await.unwrap();
     }
 
     #[tokio::test]
     async fn failed_prompt_is_reported_as_failed_completion() {
-        let Channels {
-            workflow,
-            mut acp,
-            mut completions,
-        } = Channels::open();
+        let Channels { workflow, mut acp } = Channels::open();
         let run = tokio::spawn(runner(workflow).run(&b"first\nsecond\n"[..]));
 
         let first = acp.prompts.recv().await.unwrap();
         first.reply.send(Err(Error::internal_error())).unwrap();
 
-        assert!(completions.recv().await.unwrap().is_err());
-        run.await.unwrap();
+        assert!(run.await.unwrap().is_err());
     }
 
     #[tokio::test]
     async fn dropped_reply_is_reported_as_failed_completion() {
-        let Channels {
-            workflow,
-            mut acp,
-            mut completions,
-        } = Channels::open();
+        let Channels { workflow, mut acp } = Channels::open();
         let run = tokio::spawn(runner(workflow).run(&b"first\n"[..]));
 
         drop(acp.prompts.recv().await.unwrap());
 
-        assert!(completions.recv().await.unwrap().is_err());
-        run.await.unwrap();
+        assert!(run.await.unwrap().is_err());
     }
 }
