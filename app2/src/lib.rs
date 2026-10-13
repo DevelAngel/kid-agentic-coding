@@ -1,5 +1,7 @@
 mod acp;
 mod application;
+#[allow(dead_code, reason = "wired into the application in a later commit")]
+mod channel;
 mod tool;
 mod workflow;
 
