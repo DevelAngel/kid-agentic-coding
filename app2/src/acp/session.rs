@@ -74,15 +74,16 @@ impl Session<Active> {
         .await?;
         Ok(self.into_state())
     }
-
-    pub fn delete(self) -> Session<Deleted> {
-        self.into_state()
-    }
 }
 
 impl Session<Closed> {
-    pub fn delete(self) -> Session<Deleted> {
-        self.into_state()
+    pub async fn delete(self) -> Result<Session<Deleted>, Error> {
+        Command::request(&self.commands, |reply| Command::Delete {
+            session_id: self.id.clone(),
+            reply,
+        })
+        .await?;
+        Ok(self.into_state())
     }
 }
 
@@ -155,21 +156,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_session_can_be_deleted() {
-        let client = TestAgent::default().connect().await;
+    async fn deleting_a_closed_session_sends_session_delete() {
+        let agent = TestAgent::deleting();
+        let client = agent.connect().await;
+        let session = client.new_session(Vec::new()).await.unwrap();
+        let id = session.id().clone();
 
-        let deleted = client.new_session(Vec::new()).await.unwrap().delete();
+        let deleted = session.close().await.unwrap().delete().await.unwrap();
 
         let _: Session<Deleted> = deleted;
+        assert_eq!(
+            agent.recorded(),
+            vec![
+                Recorded::NewSession(Vec::new()),
+                Recorded::Close(id.clone()),
+                Recorded::Delete(id),
+            ]
+        );
     }
 
     #[tokio::test]
-    async fn closed_session_can_be_deleted() {
-        let client = TestAgent::default().connect().await;
+    async fn deleting_without_the_capability_is_an_error_and_sends_nothing() {
+        let agent = TestAgent::default();
+        let client = agent.connect().await;
         let session = client.new_session(Vec::new()).await.unwrap();
+        let id = session.id().clone();
+        let closed = session.close().await.unwrap();
 
-        let deleted = session.close().await.unwrap().delete();
+        let result = closed.delete().await;
 
-        let _: Session<Deleted> = deleted;
+        assert!(result.is_err());
+        assert_eq!(
+            agent.recorded(),
+            vec![Recorded::NewSession(Vec::new()), Recorded::Close(id)]
+        );
     }
 }
