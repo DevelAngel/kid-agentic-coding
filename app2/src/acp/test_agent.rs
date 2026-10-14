@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    ContentBlock, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
-    PromptRequest, PromptResponse, SessionId, StopReason,
+    CloseSessionRequest, CloseSessionResponse, ContentBlock, InitializeRequest, InitializeResponse,
+    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId, StopReason,
 };
 use agent_client_protocol::{
     AcpAgentConfig, Agent, Client as AcpClient, ConnectTo, ConnectionTo, Error, Responder,
@@ -16,6 +16,7 @@ use super::{Client, Connected, McpServer};
 pub(super) enum Recorded {
     NewSession(Vec<McpServer>),
     Prompt(SessionId, String),
+    Close(SessionId),
 }
 
 #[derive(Clone, Default)]
@@ -46,6 +47,7 @@ impl TestAgent {
     fn transport(&self) -> impl ConnectTo<AcpClient> {
         let new_session = self.clone();
         let prompt = self.clone();
+        let close = self.clone();
 
         Agent
             .builder()
@@ -95,6 +97,19 @@ impl TestAgent {
                         return Err(Error::internal_error());
                     }
                     responder.respond(PromptResponse::new(StopReason::EndTurn))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |request: CloseSessionRequest,
+                            responder: Responder<CloseSessionResponse>,
+                            _connection: ConnectionTo<AcpClient>| {
+                    close
+                        .recorded
+                        .lock()
+                        .unwrap()
+                        .push(Recorded::Close(request.session_id));
+                    responder.respond(CloseSessionResponse::default())
                 },
                 agent_client_protocol::on_receive_request!(),
             )

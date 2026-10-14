@@ -10,8 +10,8 @@ use crate::channel::{self, AcpEnds, AgentEvent};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, PromptResponse, SessionId,
-    SessionNotification, TextContent,
+    CloseSessionRequest, ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
+    PromptResponse, SessionId, SessionNotification, TextContent,
 };
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Client as AcpClient, ConnectTo, Error};
 use anyhow::Context as _;
@@ -29,6 +29,10 @@ enum Command {
         session_id: SessionId,
         text: String,
         reply: oneshot::Sender<Result<PromptResponse, Error>>,
+    },
+    Close {
+        session_id: SessionId,
+        reply: oneshot::Sender<Result<(), Error>>,
     },
 }
 
@@ -167,6 +171,15 @@ impl Client<Connected> {
                                             }
                                         }
                                     }
+                                    Command::Close { session_id, reply } => {
+                                        let result = connection
+                                            .send_request(CloseSessionRequest::new(session_id))
+                                            .block_task()
+                                            .await
+                                            .map(|_| ());
+                                        let _ = reply.send(result);
+                                    }
+
                                 }
                             }
                         }
