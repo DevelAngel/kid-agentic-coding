@@ -66,8 +66,13 @@ impl Session<Active> {
         .await
     }
 
-    pub fn close(self) -> Session<Closed> {
-        self.into_state()
+    pub async fn close(self) -> Result<Session<Closed>, Error> {
+        Command::request(&self.commands, |reply| Command::Close {
+            session_id: self.id.clone(),
+            reply,
+        })
+        .await?;
+        Ok(self.into_state())
     }
 
     pub fn delete(self) -> Session<Deleted> {
@@ -134,27 +139,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_session_can_be_closed_or_deleted() {
-        let client = TestAgent::default().connect().await;
+    async fn closing_a_session_sends_session_close() {
+        let agent = TestAgent::default();
+        let client = agent.connect().await;
+        let session = client.new_session(Vec::new()).await.unwrap();
+        let id = session.id().clone();
 
-        let closed = client.new_session(Vec::new()).await.unwrap().close();
-        let deleted = client.new_session(Vec::new()).await.unwrap().delete();
+        let closed = session.close().await.unwrap();
 
         let _: Session<Closed> = closed;
+        assert_eq!(
+            agent.recorded(),
+            vec![Recorded::NewSession(Vec::new()), Recorded::Close(id)]
+        );
+    }
+
+    #[tokio::test]
+    async fn active_session_can_be_deleted() {
+        let client = TestAgent::default().connect().await;
+
+        let deleted = client.new_session(Vec::new()).await.unwrap().delete();
+
         let _: Session<Deleted> = deleted;
     }
 
     #[tokio::test]
     async fn closed_session_can_be_deleted() {
         let client = TestAgent::default().connect().await;
+        let session = client.new_session(Vec::new()).await.unwrap();
 
-        let session = client
-            .new_session(Vec::new())
-            .await
-            .unwrap()
-            .close()
-            .delete();
+        let deleted = session.close().await.unwrap().delete();
 
-        let _: Session<Deleted> = session;
+        let _: Session<Deleted> = deleted;
     }
 }
