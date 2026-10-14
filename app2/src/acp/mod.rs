@@ -10,8 +10,8 @@ use crate::channel::{self, AcpEnds, AgentEvent};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    CloseSessionRequest, ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
-    PromptResponse, SessionId, SessionNotification, TextContent,
+    CloseSessionRequest, ContentBlock, DeleteSessionRequest, InitializeRequest, NewSessionRequest,
+    PromptRequest, PromptResponse, SessionId, SessionNotification, TextContent,
 };
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Client as AcpClient, ConnectTo, Error};
 use anyhow::Context as _;
@@ -31,6 +31,10 @@ enum Command {
         reply: oneshot::Sender<Result<PromptResponse, Error>>,
     },
     Close {
+        session_id: SessionId,
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
+    Delete {
         session_id: SessionId,
         reply: oneshot::Sender<Result<(), Error>>,
     },
@@ -116,7 +120,7 @@ impl Client<Connected> {
                     agent_client_protocol::on_receive_notification!(),
                 )
                 .connect_with(transport, async move |connection| {
-                    connection
+                    let initialize = connection
                         .send_request(InitializeRequest::new(ProtocolVersion::V1))
                         .block_task()
                         .await?;
@@ -177,6 +181,23 @@ impl Client<Connected> {
                                             .block_task()
                                             .await
                                             .map(|_| ());
+                                        let _ = reply.send(result);
+                                    }
+                                    Command::Delete { session_id, reply } => {
+                                        let result = if initialize
+                                            .agent_capabilities
+                                            .session_capabilities
+                                            .delete
+                                            .is_some()
+                                        {
+                                            connection
+                                                .send_request(DeleteSessionRequest::new(session_id))
+                                                .block_task()
+                                                .await
+                                                .map(|_| ())
+                                        } else {
+                                            Err(Error::method_not_found())
+                                        };
                                         let _ = reply.send(result);
                                     }
 

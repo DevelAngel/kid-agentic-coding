@@ -2,8 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    CloseSessionRequest, CloseSessionResponse, ContentBlock, InitializeRequest, InitializeResponse,
-    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId, StopReason,
+    AgentCapabilities, CloseSessionRequest, CloseSessionResponse, ContentBlock,
+    DeleteSessionRequest, DeleteSessionResponse, InitializeRequest, InitializeResponse,
+    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionCapabilities,
+    SessionDeleteCapabilities, SessionId, StopReason,
 };
 use agent_client_protocol::{
     AcpAgentConfig, Agent, Client as AcpClient, ConnectTo, ConnectionTo, Error, Responder,
@@ -17,18 +19,27 @@ pub(super) enum Recorded {
     NewSession(Vec<McpServer>),
     Prompt(SessionId, String),
     Close(SessionId),
+    Delete(SessionId),
 }
 
 #[derive(Clone, Default)]
 pub(super) struct TestAgent {
     recorded: Arc<Mutex<Vec<Recorded>>>,
     fail_prompts: bool,
+    delete_supported: bool,
 }
 
 impl TestAgent {
     pub(super) fn failing_prompts() -> Self {
         Self {
             fail_prompts: true,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn deleting() -> Self {
+        Self {
+            delete_supported: true,
             ..Self::default()
         }
     }
@@ -48,6 +59,8 @@ impl TestAgent {
         let new_session = self.clone();
         let prompt = self.clone();
         let close = self.clone();
+        let delete = self.clone();
+        let initialize = self.clone();
 
         Agent
             .builder()
@@ -55,7 +68,15 @@ impl TestAgent {
                 async move |_request: InitializeRequest,
                             responder: Responder<InitializeResponse>,
                             _connection: ConnectionTo<AcpClient>| {
-                    responder.respond(InitializeResponse::new(ProtocolVersion::V1))
+                    let mut response = InitializeResponse::new(ProtocolVersion::V1);
+                    if initialize.delete_supported {
+                        response = response.agent_capabilities(
+                            AgentCapabilities::new().session_capabilities(
+                                SessionCapabilities::new().delete(SessionDeleteCapabilities::new()),
+                            ),
+                        );
+                    }
+                    responder.respond(response)
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -110,6 +131,19 @@ impl TestAgent {
                         .unwrap()
                         .push(Recorded::Close(request.session_id));
                     responder.respond(CloseSessionResponse::default())
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |request: DeleteSessionRequest,
+                            responder: Responder<DeleteSessionResponse>,
+                            _connection: ConnectionTo<AcpClient>| {
+                    delete
+                        .recorded
+                        .lock()
+                        .unwrap()
+                        .push(Recorded::Delete(request.session_id));
+                    responder.respond(DeleteSessionResponse::default())
                 },
                 agent_client_protocol::on_receive_request!(),
             )
