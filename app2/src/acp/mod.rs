@@ -1,5 +1,7 @@
 mod mcp;
 mod session;
+#[cfg(test)]
+mod test_agent;
 
 pub use mcp::McpServer;
 pub use session::{Active, Closed, Deleted, Session};
@@ -8,15 +10,41 @@ use crate::channel::{self, AcpEnds, AgentEvent};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    ContentBlock, InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest,
-    PromptResponse, SessionNotification, TextContent,
+    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, PromptResponse, SessionId,
+    SessionNotification, TextContent,
 };
-use agent_client_protocol::{AcpAgent, AcpAgentConfig, Client as AcpClient, Error};
+use agent_client_protocol::{AcpAgent, AcpAgentConfig, Client as AcpClient, ConnectTo, Error};
 use anyhow::Context as _;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use std::env;
+
+enum Command {
+    NewSession {
+        mcp_servers: Vec<McpServer>,
+        reply: oneshot::Sender<Result<SessionId, Error>>,
+    },
+    Prompt {
+        session_id: SessionId,
+        text: String,
+        reply: oneshot::Sender<Result<PromptResponse, Error>>,
+    },
+}
+
+impl Command {
+    async fn request<T>(
+        commands: &mpsc::Sender<Command>,
+        command: impl FnOnce(oneshot::Sender<Result<T, Error>>) -> Command,
+    ) -> Result<T, Error> {
+        let (reply, response) = oneshot::channel();
+        commands
+            .send(command(reply))
+            .await
+            .map_err(|_| Error::internal_error())?;
+        response.await.map_err(|_| Error::internal_error())?
+    }
+}
 
 pub struct Disconnected {
     config: AcpAgentConfig,
@@ -24,7 +52,7 @@ pub struct Disconnected {
 
 pub struct Connected {
     shutdown: oneshot::Sender<()>,
-    prompt_tx: mpsc::Sender<(String, oneshot::Sender<Result<PromptResponse, Error>>)>,
+    commands: mpsc::Sender<Command>,
     task: JoinHandle<Result<(), Error>>,
     config: AcpAgentConfig,
 }
@@ -48,12 +76,30 @@ impl Client<Disconnected> {
     ) -> Result<Client<Connected>, Error> {
         let Disconnected { config } = self.state;
         let agent = AcpAgent::new(config.clone());
+        Client::connect_over(agent, config, events).await
+    }
 
-        let (ready_tx, ready_rx) = oneshot::channel::<Result<InitializeResponse, Error>>();
+    pub(crate) async fn serve(self, ends: AcpEnds) -> anyhow::Result<()> {
+        let AcpEnds { prompts, events } = ends;
+        let client = self
+            .connect(events)
+            .await
+            .context("failed to connect to agent")?;
+        client.serve_prompts(prompts).await?;
+        Ok(())
+    }
+}
+
+impl Client<Connected> {
+    async fn connect_over(
+        transport: impl ConnectTo<AcpClient>,
+        config: AcpAgentConfig,
+        events: mpsc::Sender<AgentEvent>,
+    ) -> Result<Client<Connected>, Error> {
+        let (ready_tx, ready_rx) = oneshot::channel::<()>();
         let (error_tx, error_rx) = oneshot::channel();
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
-        let (prompt_tx, mut prompt_rx) =
-            mpsc::channel::<(String, oneshot::Sender<Result<PromptResponse, Error>>)>(1);
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let (commands_tx, mut commands_rx) = mpsc::channel::<Command>(1);
 
         let task = tokio::spawn(async move {
             let result = AcpClient
@@ -65,50 +111,61 @@ impl Client<Disconnected> {
                     },
                     agent_client_protocol::on_receive_notification!(),
                 )
-                .connect_with(agent, async move |connection| {
-                    let request = InitializeRequest::new(ProtocolVersion::V1);
-                    let response = connection.send_request(request).block_task().await?;
-                    let session = connection
-                        .send_request(NewSessionRequest::new(
-                            env::current_dir().map_err(|_| Error::internal_error())?,
-                        ))
+                .connect_with(transport, async move |connection| {
+                    connection
+                        .send_request(InitializeRequest::new(ProtocolVersion::V1))
                         .block_task()
                         .await?;
-                    ready_tx
-                        .send(Ok(response))
-                        .map_err(|_| Error::internal_error())?;
+                    ready_tx.send(()).map_err(|_| Error::internal_error())?;
 
                     loop {
                         tokio::select! {
-                            result = &mut shutdown_rx => {
-                                result.map_err(|_| Error::internal_error())?;
+                            _ = &mut shutdown_rx => {
                                 break;
                             }
                             _ = connection.incoming_closed() => {
                                 break;
                             }
-                            prompt = prompt_rx.recv() => {
-                                let Some((prompt, response_tx)) = prompt else {
+                            command = commands_rx.recv() => {
+                                let Some(command) = command else {
                                     break;
                                 };
 
-                                tracing::info!(%prompt, "sending prompt");
-                                let result = connection
-                                    .send_request(PromptRequest::new(
-                                        session.session_id.clone(),
-                                        vec![ContentBlock::Text(TextContent::new(prompt))],
-                                    ))
-                                    .block_task()
-                                    .await;
-
-                                match result {
-                                    Ok(response) => {
-                                        tracing::info!(?response.stop_reason, "agent completed");
-                                        let _ = response_tx.send(Ok(response));
+                                match command {
+                                    Command::NewSession { mcp_servers, reply } => {
+                                        let result = match env::current_dir() {
+                                            Ok(cwd) => connection
+                                                .send_request(
+                                                    NewSessionRequest::new(cwd)
+                                                        .mcp_servers(mcp_servers),
+                                                )
+                                                .block_task()
+                                                .await
+                                                .map(|response| response.session_id),
+                                            Err(_) => Err(Error::internal_error()),
+                                        };
+                                        let _ = reply.send(result);
                                     }
-                                    Err(error) => {
-                                        let _ = response_tx.send(Err(error.clone()));
-                                        return Err(error);
+                                    Command::Prompt { session_id, text, reply } => {
+                                        tracing::info!(prompt = %text, "sending prompt");
+                                        let result = connection
+                                            .send_request(PromptRequest::new(
+                                                session_id,
+                                                vec![ContentBlock::Text(TextContent::new(text))],
+                                            ))
+                                            .block_task()
+                                            .await;
+
+                                        match result {
+                                            Ok(response) => {
+                                                tracing::info!(?response.stop_reason, "agent completed");
+                                                let _ = reply.send(Ok(response));
+                                            }
+                                            Err(error) => {
+                                                let _ = reply.send(Err(error.clone()));
+                                                return Err(error);
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -126,39 +183,17 @@ impl Client<Disconnected> {
         });
 
         match ready_rx.await {
-            Ok(_) => {}
+            Ok(()) => {}
             Err(_) => return Err(error_rx.await.map_err(|_| Error::internal_error())?),
         }
         Ok(Client {
             state: Connected {
                 shutdown: shutdown_tx,
-                prompt_tx,
+                commands: commands_tx,
                 task,
                 config,
             },
         })
-    }
-
-    pub(crate) async fn serve(self, ends: AcpEnds) -> anyhow::Result<()> {
-        let AcpEnds { prompts, events } = ends;
-        let client = self
-            .connect(events)
-            .await
-            .context("failed to connect to agent")?;
-        client.serve_prompts(prompts).await?;
-        Ok(())
-    }
-}
-
-impl Client<Connected> {
-    pub async fn prompt(&self, prompt: String) -> Result<PromptResponse, Error> {
-        let (response_tx, response_rx) = oneshot::channel();
-        self.state
-            .prompt_tx
-            .send((prompt, response_tx))
-            .await
-            .map_err(|_| Error::internal_error())?;
-        response_rx.await.map_err(|_| Error::internal_error())?
     }
 
     pub async fn disconnect(self) -> Result<Client<Disconnected>, Error> {
@@ -179,36 +214,23 @@ impl Client<Connected> {
         self,
         mut prompts: mpsc::Receiver<channel::PromptRequest>,
     ) -> Result<Client<Disconnected>, Error> {
+        let session = self.new_session(Vec::new()).await?;
         while let Some(channel::PromptRequest { text, reply }) = prompts.recv().await {
-            let result = self.prompt(text).await;
+            let result = session.prompt(text).await;
             let failed = result.is_err();
             let _ = reply.send(result);
             if failed {
                 break;
             }
         }
+        drop(session);
         self.disconnect().await
-    }
-
-    #[cfg(test)]
-    pub(super) fn connected_for_test() -> Client<Connected> {
-        let (shutdown, _receiver) = oneshot::channel();
-        let (prompt_tx, _receiver) = mpsc::channel(1);
-        let task = tokio::spawn(async { Ok(()) });
-
-        Client {
-            state: Connected {
-                shutdown,
-                prompt_tx,
-                task,
-                config: AcpAgentConfig::new("/bin/true"),
-            },
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::test_agent::{Recorded, TestAgent};
     use super::*;
 
     #[test]
@@ -221,26 +243,31 @@ mod tests {
 
     #[tokio::test]
     async fn connected_client_can_disconnect() {
-        let client = Client::<Connected>::connected_for_test();
+        let client = TestAgent::default().connect().await;
         let client = client.disconnect().await.unwrap();
         let _: Client<Disconnected> = client;
     }
 
     #[tokio::test]
     async fn serving_disconnects_when_the_prompt_sender_is_dropped() {
+        let agent = TestAgent::default();
         let (prompts_tx, prompts_rx) = mpsc::channel(1);
         drop(prompts_tx);
 
-        let client = Client::<Connected>::connected_for_test()
+        let client = agent
+            .connect()
+            .await
             .serve_prompts(prompts_rx)
             .await
             .unwrap();
 
         let _: Client<Disconnected> = client;
+        assert_eq!(agent.recorded(), vec![Recorded::NewSession(Vec::new())]);
     }
 
     #[tokio::test]
     async fn failed_prompt_is_reported_to_the_requester() {
+        let agent = TestAgent::failing_prompts();
         let (prompts_tx, prompts_rx) = mpsc::channel(1);
         let (reply, reply_rx) = oneshot::channel();
         prompts_tx
@@ -252,9 +279,7 @@ mod tests {
             .unwrap();
         drop(prompts_tx);
 
-        let _ = Client::<Connected>::connected_for_test()
-            .serve_prompts(prompts_rx)
-            .await;
+        let _ = agent.connect().await.serve_prompts(prompts_rx).await;
 
         assert!(reply_rx.await.unwrap().is_err());
     }
