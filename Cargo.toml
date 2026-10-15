@@ -16,6 +16,7 @@ clap-verbosity-flag = { version = "3.0.4", features = ["tracing"] }
 color-eyre = "0.6.5"
 derive_more = { version = "1", features = ["deref", "display"] }
 kid-agentic-coding-chat = { path = "app/chat" }
+indoc = "2"
 log-buffer = { package = "kid-agentic-coding-log-buffer", path = "app/log-buffer" }
 nerdicons_rs = "0.1"
 schemars = "1"

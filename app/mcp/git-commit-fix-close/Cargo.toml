@@ -15,3 +15,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
 wire.workspace = true
+
+[dev-dependencies]
+indoc.workspace = true
