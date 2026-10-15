@@ -1644,6 +1644,7 @@ dependencies = [
  "anyhow",
  "clap",
  "cucumber",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

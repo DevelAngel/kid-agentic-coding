@@ -1,10 +1,13 @@
+mod events;
 mod mcp;
 mod session;
 
 pub use mcp::McpServer;
 pub use session::{Active, Closed, Deleted, Session};
 
-use crate::channel::{self, AcpEnds, AgentEvent};
+use crate::ToolEvent;
+use crate::channel::{self, AcpEnds};
+use events::Router;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
@@ -60,6 +63,7 @@ pub struct Connected {
     shutdown: oneshot::Sender<()>,
     commands: mpsc::Sender<Command>,
     task: JoinHandle<Result<(), Error>>,
+    router: Router,
     config: AcpAgentConfig,
 }
 
@@ -78,7 +82,14 @@ impl Client<Disconnected> {
 
     pub async fn connect(
         self,
-        events: mpsc::Sender<AgentEvent>,
+        events: mpsc::Sender<SessionNotification>,
+    ) -> Result<Client<Connected>, Error> {
+        self.connect_observing(Some(events)).await
+    }
+
+    async fn connect_observing(
+        self,
+        events: Option<mpsc::Sender<SessionNotification>>,
     ) -> Result<Client<Connected>, Error> {
         let Disconnected { config } = self.state;
         let agent = AcpAgent::new(config.clone());
@@ -88,10 +99,10 @@ impl Client<Disconnected> {
     pub(crate) async fn serve(self, ends: AcpEnds) -> anyhow::Result<()> {
         let AcpEnds { prompts, events } = ends;
         let client = self
-            .connect(events)
+            .connect_observing(None)
             .await
             .context("failed to connect to agent")?;
-        client.serve_prompts(prompts).await?;
+        client.serve_prompts(prompts, events).await?;
         Ok(())
     }
 }
@@ -100,19 +111,25 @@ impl Client<Connected> {
     async fn connect_over(
         transport: impl ConnectTo<AcpClient>,
         config: AcpAgentConfig,
-        events: mpsc::Sender<AgentEvent>,
+        events: Option<mpsc::Sender<SessionNotification>>,
     ) -> Result<Client<Connected>, Error> {
         let (ready_tx, ready_rx) = oneshot::channel::<()>();
         let (error_tx, error_rx) = oneshot::channel();
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
         let (commands_tx, mut commands_rx) = mpsc::channel::<Command>(1);
+        let router = Router::default();
+        let handler_router = router.clone();
 
         let task = tokio::spawn(async move {
             let result = AcpClient
                 .builder()
                 .on_receive_notification(
                     async move |notification: SessionNotification, _| {
-                        let _ = events.send(notification).await;
+                        tracing::info!(?notification.update, "agent message");
+                        handler_router.dispatch(&notification).await;
+                        if let Some(events) = &events {
+                            let _ = events.send(notification).await;
+                        }
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -223,6 +240,7 @@ impl Client<Connected> {
                 shutdown: shutdown_tx,
                 commands: commands_tx,
                 task,
+                router,
                 config,
             },
         })
@@ -245,8 +263,10 @@ impl Client<Connected> {
     pub(crate) async fn serve_prompts(
         self,
         mut prompts: mpsc::Receiver<channel::PromptRequest>,
+        events: mpsc::Sender<ToolEvent>,
     ) -> Result<Client<Disconnected>, Error> {
         let session = self.new_session(Vec::new()).await?;
+        self.route(&session, events);
         while let Some(channel::PromptRequest { text, reply }) = prompts.recv().await {
             let result = session.prompt(text).await;
             let failed = result.is_err();
