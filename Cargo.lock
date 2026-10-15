@@ -1692,6 +1692,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "indoc",
  "kid-agentic-coding-wire",
  "rmcp 3.1.4",
  "schemars 1.2.2",

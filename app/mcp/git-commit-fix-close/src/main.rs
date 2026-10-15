@@ -110,7 +110,7 @@ enum CommitMessageError {
 
 fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<CommitMessageError>> {
     let mut errors = Vec::new();
-    let paragraphs = split_paragraphs(&params.body);
+    let paragraphs = split_paragraphs(&remove_commit_metadata(&params.body));
 
     if !VALID_COMMIT_TYPES.contains(&params.commit_type.as_str()) {
         errors.push(CommitMessageError::InvalidType(params.commit_type.clone()));
@@ -178,6 +178,36 @@ fn build_commit_message(params: &CommitParams) -> result::Result<String, Vec<Com
         message.push_str(&lines.join("\n    "));
     }
     Ok(message)
+}
+
+fn remove_commit_metadata(text: &str) -> String {
+    let mut lines = Vec::new();
+
+    for line in text.lines() {
+        let lowercase = line.to_ascii_lowercase();
+        let trimmed = lowercase.trim_start();
+        let is_co_author =
+            trimmed.starts_with("co-authored-by:") || trimmed.starts_with("co-authored-by,");
+        let is_session_url = lowercase.contains("session")
+            && line.split_once("://").is_some_and(|(_, remainder)| {
+                remainder
+                    .chars()
+                    .any(|character| character.is_ascii_alphanumeric())
+            });
+
+        if is_co_author || is_session_url {
+            while lines
+                .last()
+                .is_some_and(|line: &&str| line.trim().is_empty())
+            {
+                lines.pop();
+            }
+        } else {
+            lines.push(line);
+        }
+    }
+
+    lines.join("\n")
 }
 
 /// Splits body text into paragraphs at blank lines, trimming and dropping empty ones.
@@ -645,6 +675,7 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indoc::indoc;
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
@@ -766,6 +797,110 @@ mod tests {
     }
 
     #[test]
+    fn build_commit_message_removes_co_author_trailers_and_preceding_blank_lines() {
+        let params = CommitParams {
+            commit_type: "fix".to_owned(),
+            scope: None,
+            description: "Clean commit metadata".to_owned(),
+            body: indoc! {"
+                Keep this paragraph.
+
+                Co-Authored-By: Example <example@example.com>
+
+                co-authored-by, Another <another@example.com>
+
+                Keep this too.
+            "}
+            .to_owned(),
+            breaking_change_note: None,
+            amend: false,
+            cwd: None,
+        };
+
+        let message = build_commit_message(&params).unwrap();
+
+        assert_eq!(
+            message,
+            indoc! {"
+                fix: clean commit metadata
+
+                Keep this paragraph.
+
+                Keep this too.
+            "}
+            .trim_end()
+        );
+    }
+
+    #[test]
+    fn build_commit_message_removes_session_lines_with_any_url() {
+        let params = CommitParams {
+            commit_type: "fix".to_owned(),
+            scope: None,
+            description: "Clean session metadata".to_owned(),
+            body: indoc! {"
+                Keep this paragraph.
+
+                Claude Session: https://example.com/session/123
+
+                SESSION link: http://other.example/path
+
+                Keep this too.
+            "}
+            .to_owned(),
+            breaking_change_note: None,
+            amend: false,
+            cwd: None,
+        };
+
+        let message = build_commit_message(&params).unwrap();
+
+        assert_eq!(
+            message,
+            indoc! {"
+                fix: clean session metadata
+
+                Keep this paragraph.
+
+                Keep this too.
+            "}
+            .trim_end()
+        );
+    }
+
+    #[test]
+    fn build_commit_message_keeps_session_without_url_and_unrelated_urls() {
+        let params = CommitParams {
+            commit_type: "fix".to_owned(),
+            scope: None,
+            description: "Keep regular body lines".to_owned(),
+            body: indoc! {"
+                A session without a URL stays.
+
+                A URL without metadata stays: https://example.com/path
+            "}
+            .to_owned(),
+            breaking_change_note: None,
+            amend: false,
+            cwd: None,
+        };
+
+        let message = build_commit_message(&params).unwrap();
+
+        assert_eq!(
+            message,
+            indoc! {"
+                fix: keep regular body lines
+
+                A session without a URL stays.
+
+                A URL without metadata stays: https://example.com/path
+            "}
+            .trim_end()
+        );
+    }
+
+    #[test]
     fn commit_params_default_to_create_a_new_commit() {
         let params: CommitParams = serde_json::from_value(json!({
             "type": "fix",
@@ -794,7 +929,14 @@ mod tests {
 
         assert_eq!(
             message,
-            "feat(session)!: improve commit handling\n\nHandle commit messages centrally.\n\nBREAKING CHANGE: The commit input is now structured."
+            indoc! {"
+                feat(session)!: improve commit handling
+
+                Handle commit messages centrally.
+
+                BREAKING CHANGE: The commit input is now structured.
+            "}
+            .trim_end()
         );
     }
 
@@ -921,7 +1063,12 @@ mod tests {
             commit_type: "fix".to_owned(),
             scope: None,
             description: "Explain in two paragraphs".to_owned(),
-            body: "First paragraph.\n\nSecond paragraph.".to_owned(),
+            body: indoc! {"
+                First paragraph.
+
+                Second paragraph.
+            "}
+            .to_owned(),
             breaking_change_note: None,
             amend: false,
             cwd: None,
@@ -931,7 +1078,14 @@ mod tests {
 
         assert_eq!(
             message,
-            "fix: explain in two paragraphs\n\nFirst paragraph.\n\nSecond paragraph."
+            indoc! {"
+                fix: explain in two paragraphs
+
+                First paragraph.
+
+                Second paragraph.
+            "}
+            .trim_end()
         );
     }
 
@@ -941,7 +1095,12 @@ mod tests {
             commit_type: "fix".to_owned(),
             scope: None,
             description: "Rewrap a pre-broken paragraph".to_owned(),
-            body: "Line one\nline two\nline three".to_owned(),
+            body: indoc! {"
+                Line one
+                line two
+                line three
+            "}
+            .to_owned(),
             breaking_change_note: None,
             amend: false,
             cwd: None,
@@ -951,7 +1110,12 @@ mod tests {
 
         assert_eq!(
             message,
-            "fix: rewrap a pre-broken paragraph\n\nLine one line two line three"
+            indoc! {"
+                fix: rewrap a pre-broken paragraph
+
+                Line one line two line three
+            "}
+            .trim_end()
         );
     }
 
@@ -968,7 +1132,12 @@ mod tests {
 
         assert_eq!(
             wrap_breaking_change_note_lines(note).join("\n    "),
-            "This breaking change note is deliberately long enough\n    to wrap across multiple lines while keeping continuation lines\n    indented."
+            indoc! {"
+                This breaking change note is deliberately long enough
+                    to wrap across multiple lines while keeping continuation lines
+                    indented.
+            "}
+            .trim_end()
         );
     }
 
