@@ -7,11 +7,13 @@ use clap::Parser;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentNotification, CancelNotification, ConfigOptionUpdate, ConnectMcpRequest, ContentBlock,
-    ContentChunk, InitializeRequest, InitializeResponse, McpServer, McpServerAcpId, McpServerStdio,
-    MessageMcpNotification, MessageMcpRequest, NewSessionRequest, NewSessionResponse,
-    PromptRequest, PromptResponse, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOption, SessionId, SessionNotification, SessionUpdate, StopReason,
+    AgentNotification, CancelNotification, CloseSessionRequest, CloseSessionResponse,
+    ConfigOptionUpdate, ConnectMcpRequest, ContentBlock, ContentChunk, DeleteSessionRequest,
+    DeleteSessionResponse, InitializeRequest, InitializeResponse, McpServer, McpServerAcpId,
+    McpServerStdio, MessageMcpNotification, MessageMcpRequest, NewSessionRequest,
+    NewSessionResponse, PromptRequest, PromptResponse, SessionCloseCapabilities,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
+    SessionDeleteCapabilities, SessionId, SessionNotification, SessionUpdate, StopReason,
     TextContent, ToolCall, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol::{
@@ -36,7 +38,7 @@ use std::io;
 use std::pin::Pin;
 use std::process;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 #[derive(Debug, Parser)]
@@ -59,6 +61,10 @@ struct Args {
     /// by default; pass this flag to opt out.
     #[arg(long = "disable-mcp")]
     disable_mcp: bool,
+
+    /// Advertises `session/delete` support in the initialize response.
+    #[arg(long)]
+    session_delete: bool,
 }
 
 /// Number of words the fake agent replies with per prompt.
@@ -102,6 +108,20 @@ static CONFETTI_SERVER_ID: OnceLock<McpServerAcpId> = OnceLock::new();
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 static SESSION_MCP_SERVERS: OnceLock<Mutex<HashMap<SessionId, SessionState>>> = OnceLock::new();
+static SESSION_LIFECYCLE: OnceLock<Mutex<HashMap<SessionId, Lifecycle>>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Lifecycle {
+    Open,
+    Closed,
+}
+
+fn lifecycles() -> Result<MutexGuard<'static, HashMap<SessionId, Lifecycle>>, Error> {
+    SESSION_LIFECYCLE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| Error::internal_error())
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SessionKind {
@@ -519,6 +539,12 @@ async fn main() -> Result<()> {
                 if !args.disable_mcp {
                     response.agent_capabilities.mcp_capabilities.acp = true;
                 }
+                response.agent_capabilities.session_capabilities.close =
+                    Some(SessionCloseCapabilities::new());
+                if args.session_delete {
+                    response.agent_capabilities.session_capabilities.delete =
+                        Some(SessionDeleteCapabilities::new());
+                }
                 responder.respond(response)
             },
             on_receive_request!(),
@@ -555,8 +581,31 @@ async fn main() -> Result<()> {
                             servers: request.mcp_servers.clone(),
                         },
                     );
+                lifecycles()?.insert(session_id.clone(), Lifecycle::Open);
 
                 responder.respond(NewSessionResponse::new(session_id))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async |request: CloseSessionRequest, responder, _cx| {
+                let mut sessions = lifecycles()?;
+                let Some(lifecycle) = sessions.get_mut(&request.session_id) else {
+                    return Err(Error::invalid_params());
+                };
+                *lifecycle = Lifecycle::Closed;
+                responder.respond(CloseSessionResponse::default())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async |request: DeleteSessionRequest, responder, _cx| {
+                let mut sessions = lifecycles()?;
+                if sessions.get(&request.session_id) != Some(&Lifecycle::Closed) {
+                    return Err(Error::invalid_params());
+                }
+                sessions.remove(&request.session_id);
+                responder.respond(DeleteSessionResponse::default())
             },
             on_receive_request!(),
         )
@@ -575,6 +624,9 @@ async fn main() -> Result<()> {
             async |request: PromptRequest, responder, cx| {
                 let prompt_index = NEXT_PROMPT_INDEX.fetch_add(1, Ordering::Relaxed);
                 CANCELLED.store(false, Ordering::Relaxed);
+                if lifecycles()?.get(&request.session_id) == Some(&Lifecycle::Closed) {
+                    return Err(Error::invalid_params());
+                }
 
                 if args.fail_session {
                     return Err(Error::from(ErrorCode::InternalError));
