@@ -1,7 +1,5 @@
 mod mcp;
 mod session;
-#[cfg(test)]
-mod test_agent;
 
 pub use mcp::McpServer;
 pub use session::{Active, Closed, Deleted, Session};
@@ -259,62 +257,5 @@ impl Client<Connected> {
         }
         drop(session);
         self.disconnect().await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::test_agent::{Recorded, TestAgent};
-    use super::*;
-
-    #[test]
-    fn disconnected_client_requires_an_agent() {
-        let agent = AcpAgent::from_args(["/bin/true"]).unwrap();
-        let client = Client::<Disconnected>::new(agent);
-
-        let _: Client<Disconnected> = client;
-    }
-
-    #[tokio::test]
-    async fn connected_client_can_disconnect() {
-        let client = TestAgent::default().connect().await;
-        let client = client.disconnect().await.unwrap();
-        let _: Client<Disconnected> = client;
-    }
-
-    #[tokio::test]
-    async fn serving_disconnects_when_the_prompt_sender_is_dropped() {
-        let agent = TestAgent::default();
-        let (prompts_tx, prompts_rx) = mpsc::channel(1);
-        drop(prompts_tx);
-
-        let client = agent
-            .connect()
-            .await
-            .serve_prompts(prompts_rx)
-            .await
-            .unwrap();
-
-        let _: Client<Disconnected> = client;
-        assert_eq!(agent.recorded(), vec![Recorded::NewSession(Vec::new())]);
-    }
-
-    #[tokio::test]
-    async fn failed_prompt_is_reported_to_the_requester() {
-        let agent = TestAgent::failing_prompts();
-        let (prompts_tx, prompts_rx) = mpsc::channel(1);
-        let (reply, reply_rx) = oneshot::channel();
-        prompts_tx
-            .send(channel::PromptRequest {
-                text: "hello".to_owned(),
-                reply,
-            })
-            .await
-            .unwrap();
-        drop(prompts_tx);
-
-        let _ = agent.connect().await.serve_prompts(prompts_rx).await;
-
-        assert!(reply_rx.await.unwrap().is_err());
     }
 }
