@@ -1,8 +1,8 @@
 use agent_client_protocol::Error;
-use agent_client_protocol::schema::v1::{PromptResponse, SessionNotification};
+use agent_client_protocol::schema::v1::PromptResponse;
 use tokio::sync::{mpsc, oneshot};
 
-pub(crate) type AgentEvent = SessionNotification;
+use crate::ToolEvent;
 
 pub(crate) struct PromptRequest {
     pub(crate) text: String,
@@ -11,12 +11,12 @@ pub(crate) struct PromptRequest {
 
 pub(crate) struct WorkflowEnds {
     pub(crate) prompts: mpsc::Sender<PromptRequest>,
-    pub(crate) events: mpsc::Receiver<AgentEvent>,
+    pub(crate) events: mpsc::Receiver<ToolEvent>,
 }
 
 pub(crate) struct AcpEnds {
     pub(crate) prompts: mpsc::Receiver<PromptRequest>,
-    pub(crate) events: mpsc::Sender<AgentEvent>,
+    pub(crate) events: mpsc::Sender<ToolEvent>,
 }
 
 pub(crate) struct Channels {

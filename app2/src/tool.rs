@@ -62,6 +62,32 @@ impl ToolResult {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolCall {
+    tool: Tool,
+    input: serde_json::Value,
+}
+
+impl ToolCall {
+    pub fn new(tool: Tool, input: serde_json::Value) -> Self {
+        Self { tool, input }
+    }
+
+    pub fn tool(&self) -> &Tool {
+        &self.tool
+    }
+
+    pub fn input(&self) -> &serde_json::Value {
+        &self.input
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ToolEvent {
+    Call(ToolCall),
+    Result(ToolResult),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompletionTool(Tool);
 
 impl CompletionTool {

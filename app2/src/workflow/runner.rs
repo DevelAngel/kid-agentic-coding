@@ -3,7 +3,8 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{Defined, Programming, Workflow, WorkflowPromptProvider};
-use crate::channel::{AgentEvent, PromptRequest, WorkflowEnds};
+use crate::ToolEvent;
+use crate::channel::{PromptRequest, WorkflowEnds};
 
 pub(crate) struct Runner {
     workflow: Workflow<Programming, Defined>,
@@ -50,7 +51,7 @@ impl Runner {
 
     async fn submit(
         prompts: &mpsc::Sender<PromptRequest>,
-        events: &mut mpsc::Receiver<AgentEvent>,
+        events: &mut mpsc::Receiver<ToolEvent>,
         text: String,
     ) -> anyhow::Result<()> {
         let (reply, mut reply_rx) = oneshot::channel();
@@ -62,7 +63,7 @@ impl Runner {
         loop {
             tokio::select! {
                 Some(event) = events.recv() => {
-                    tracing::info!(?event.update, "agent message");
+                    tracing::info!(?event, "tool event");
                 }
                 response = &mut reply_rx => {
                     let response = response.context("ACP module dropped the prompt")?;
