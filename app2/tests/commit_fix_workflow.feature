@@ -18,6 +18,11 @@ Feature: Commit-fix workflow
     Then the workflow is complete
     And the caller resumes with the result
 
+  Scenario: Workflow definition owns the contract
+    Given a running programming workflow
+    When the agent invokes the commit-fix entry tool with tldr, why, and what
+    Then the commit-fix definition declares its identity, tool names, and tools
+
   Scenario: Successful commit completes the workflow
     Given a running commit-fix workflow
     When git status succeeds

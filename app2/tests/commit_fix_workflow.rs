@@ -2,8 +2,9 @@ use std::fmt;
 
 use cucumber::{World as _, given, then, when};
 use kid_agentic_coding_app2::{
-    ApplicationEntry, CommitFix, Completed, EntryError, Programming, Running, Started, Tool,
-    ToolCall, ToolResult, Workflow, WorkflowCompletionReason, WorkflowPromptProvider,
+    ApplicationEntry, CommitFix, Completed, CompletionTool, EntryError, Programming, Running,
+    Started, Tool, ToolCall, ToolResult, Workflow, WorkflowCompletionReason,
+    WorkflowPromptProvider,
 };
 use serde_json::{Value, json};
 
@@ -114,6 +115,25 @@ async fn prompt_contains_parameters(world: &mut World) {
         "Return an error instead of panicking",
     ] {
         assert!(prompt.as_str().contains(expected), "missing: {expected}");
+    }
+}
+
+#[then("the commit-fix definition declares its identity, tool names, and tools")]
+async fn definition_declares_contract(world: &mut World) {
+    let started = world.started.as_ref().expect("commit-fix started");
+    let definition = started.definition();
+
+    assert_eq!(definition.name(), "commit-fix");
+    assert_eq!(
+        definition.entry_tool().map(Tool::name),
+        Some("git_commit_with_fix")
+    );
+    assert_eq!(
+        definition.exit_tool().map(CompletionTool::name),
+        Some("git_commit")
+    );
+    for tool in ["git_status", "git_diff", "git_commit"] {
+        assert!(definition.tools().contains(tool), "missing: {tool}");
     }
 }
 
