@@ -244,6 +244,7 @@ mod tests {
         assert_second_prompt_follows(ToolEvent::Result(ToolResult::success(status))).await;
     }
 
+    #[derive(Default)]
     struct Scripted;
 
     impl WorkflowPromptProvider for Workflow<Scripted, Started> {

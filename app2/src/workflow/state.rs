@@ -1,6 +1,6 @@
-use super::{Workflow, WorkflowCompletionReason};
+use super::{Workflow, WorkflowCompletionReason, WorkflowDefinition};
 use crate::{CompletionTool, ToolResult};
-use std::{any, marker::PhantomData};
+use std::any;
 
 pub struct Defined;
 
@@ -16,11 +16,11 @@ pub struct Completed {
 }
 
 impl<K> Workflow<K, Defined> {
-    pub(super) fn from_definition(definition: super::WorkflowDefinition) -> Self {
+    pub(super) fn from_parts(kind: K, definition: WorkflowDefinition) -> Self {
         Self {
             definition,
             state: Defined,
-            kind: PhantomData,
+            kind,
         }
     }
 
@@ -29,8 +29,14 @@ impl<K> Workflow<K, Defined> {
         Workflow {
             definition: self.definition,
             state: Started,
-            kind: PhantomData,
+            kind: self.kind,
         }
+    }
+}
+
+impl<K: Default> Workflow<K, Defined> {
+    pub(super) fn from_definition(definition: WorkflowDefinition) -> Self {
+        Self::from_parts(K::default(), definition)
     }
 }
 
@@ -39,7 +45,7 @@ impl<K> Workflow<K, Started> {
         Workflow {
             definition: self.definition,
             state: Running,
-            kind: PhantomData,
+            kind: self.kind,
         }
     }
 }
@@ -68,7 +74,7 @@ impl<K> Workflow<K, Running> {
                     tool: result.tool().clone().into(),
                 },
             },
-            kind: PhantomData,
+            kind: self.kind,
         })
     }
 }
@@ -76,5 +82,9 @@ impl<K> Workflow<K, Running> {
 impl<K> Workflow<K, Completed> {
     pub fn completion_reason(&self) -> &WorkflowCompletionReason {
         &self.state.reason
+    }
+
+    pub(super) fn into_parts(self) -> (K, WorkflowCompletionReason) {
+        (self.kind, self.state.reason)
     }
 }

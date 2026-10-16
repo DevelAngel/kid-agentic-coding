@@ -3,18 +3,17 @@ mod kind;
 mod runner;
 mod state;
 pub use definition::{WorkflowCompletionReason, WorkflowDefinition, WorkflowPrompt};
-use kind::TransientWorkflow;
-pub use kind::{CommitFix, InitialWorkflow, Planning, Programming, WorkflowPromptProvider};
+pub use kind::{
+    CommitFix, EntryError, InitialWorkflow, Planning, Programming, WorkflowPromptProvider,
+};
 pub(crate) use runner::Runner;
 pub use state::{Completed, Defined, Running, Started};
-
-use std::marker::PhantomData;
 
 #[cfg_attr(test, derive(Debug))]
 pub struct Workflow<K, S> {
     definition: WorkflowDefinition,
     state: S,
-    kind: PhantomData<K>,
+    kind: K,
 }
 
 impl<K, S> Workflow<K, S> {
@@ -23,25 +22,32 @@ impl<K, S> Workflow<K, S> {
     }
 }
 
-impl Workflow<Programming, Running> {
-    pub fn commit_fix(self) -> Workflow<CommitFix, Running> {
-        let _ = self;
-        Workflow::<CommitFix, Defined>::transient().start().run()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Tool, ToolResult};
+    use crate::{Tool, ToolCall, ToolResult};
+    use serde_json::json;
     use std::assert_matches;
 
     fn commit_tool() -> Tool {
         Tool::new("git_commit")
     }
 
+    fn valid_input() -> serde_json::Value {
+        json!({ "tldr": "Fix parser", "why": "It panics", "what": "Return an error" })
+    }
+
+    fn entry_call(input: serde_json::Value) -> ToolCall {
+        ToolCall::new(Tool::new("git_commit_with_fix"), input)
+    }
+
     fn commit_fix_workflow() -> Workflow<CommitFix, Running> {
-        Workflow::<CommitFix, Defined>::transient().start().run()
+        Workflow::<Programming, Defined>::initial()
+            .start()
+            .run()
+            .enter(&entry_call(valid_input()))
+            .expect("valid entry parameters")
+            .run()
     }
 
     #[test]
@@ -71,9 +77,31 @@ mod tests {
     }
 
     #[test]
-    fn programming_can_enter_commit_fix() {
-        let workflow = Workflow::<Programming, Defined>::initial().start().run();
-        let _: Workflow<CommitFix, Running> = workflow.commit_fix();
+    fn programming_enters_commit_fix_through_the_entry_tool() {
+        let programming = Workflow::<Programming, Defined>::initial().start().run();
+
+        let entered = programming.enter(&entry_call(valid_input()));
+
+        assert_matches!(entered, Ok(_));
+    }
+
+    #[test]
+    fn other_tools_do_not_enter_commit_fix() {
+        let programming = Workflow::<Programming, Defined>::initial().start().run();
+        let call = ToolCall::new(Tool::new("git_status"), valid_input());
+
+        assert_matches!(programming.enter(&call), Err((_, EntryError::NotEntryTool)));
+    }
+
+    #[test]
+    fn blank_parameters_do_not_enter_commit_fix() {
+        let programming = Workflow::<Programming, Defined>::initial().start().run();
+        let input = json!({ "tldr": "  ", "why": "why", "what": "what" });
+
+        assert_matches!(
+            programming.enter(&entry_call(input)),
+            Err((_, EntryError::InvalidParameters(_)))
+        );
     }
 
     #[test]
