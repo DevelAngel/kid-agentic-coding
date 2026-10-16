@@ -28,6 +28,8 @@ impl CommitFix {
             .with(commit.clone());
 
         WorkflowDefinition::default()
+            .named("commit-fix")
+            .entered_by(Tool::new(COMMIT_FIX_ENTRY_TOOL))
             .with_tools(tools)
             .completes_on_successful_tool(commit)
     }
@@ -91,13 +93,13 @@ impl WorkflowPromptProvider for Workflow<Programming, Running> {
 
 impl InitialWorkflow for Workflow<Programming, Defined> {
     fn initial() -> Self {
-        Workflow::from_definition(WorkflowDefinition::default())
+        Workflow::from_definition(WorkflowDefinition::default().named("programming"))
     }
 }
 
 impl InitialWorkflow for Workflow<Planning, Defined> {
     fn initial() -> Self {
-        Workflow::from_definition(WorkflowDefinition::default())
+        Workflow::from_definition(WorkflowDefinition::default().named("planning"))
     }
 }
 
